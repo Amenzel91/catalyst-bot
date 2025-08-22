@@ -1,16 +1,8 @@
-﻿# Python
+﻿.venv/
 __pycache__/
 *.pyc
-.venv/
 .env
-.env.*
-
-# Data/Logs
-data/
-logs/
-*.db
-*.sqlite
-*.jsonl
-
-# VS Code
+.DS_Store
+Thumbs.db
 .vscode/
+.idea/
