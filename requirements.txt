@@ -1,0 +1,11 @@
+﻿pydantic>=2.5
+pydantic-settings>=2.2
+aiohttp>=3.9
+feedparser>=6.0
+vaderSentiment>=3.3
+yfinance>=0.2
+discord.py>=2.4
+pre-commit>=3.7
+ruff>=0.5
+aiolimiter>=1.2
+tenacity>=9.0
