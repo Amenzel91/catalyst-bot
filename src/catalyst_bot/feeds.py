@@ -1,99 +1,89 @@
-"""RSS ingestion for the catalyst bot.
-
-This module fetches news and press releases from a set of RSS feeds,
-canonicalizes them into a uniform :class:`~catalyst_bot.models.NewsItem`
-structure, and persists them to disk. Deduplication is handled by the
-caller using the utilities in :mod:`catalyst_bot.dedupe`.
-"""
-
 from __future__ import annotations
+import hashlib, time, re
+from datetime import datetime, timezone
+from typing import Dict, Iterable, List, Optional, Tuple
+import requests
+import feedparser
+from dateutil import parser as date_parser
 
-import logging
-import time
-from datetime import datetime
-from urllib.parse import urlparse
-from typing import Generator, Iterable, List, Optional
+USER_AGENT = "CatalystBot/1.0 (+https://example.local)"
 
-try:
-    import feedparser  # type: ignore
-except Exception:  # pragma: no cover
-    feedparser = None  # type: ignore
+PR_FEEDS: List[Tuple[str, str]] = [
+    ("businesswire", "https://www.businesswire.com/portal/site/home/news/industry/?vnsId=31392&rss=1"),
+    ("globenewswire", "https://www.globenewswire.com/RssFeed/orgs/5560/feedTitle/Newswire"),
+    ("accesswire", "https://www.accesswire.com/rss/latest"),
+    ("prnewswire", "https://www.prnewswire.com/rss/news-releases-list.rss"),
+]
 
-from .config import get_settings
-from .models import NewsItem
+def _sha1(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
+def _to_utc(ts: Optional[str]) -> str:
+    if not ts:
+        return datetime.now(timezone.utc).isoformat()
+    dt = date_parser.parse(ts)
+    if not dt.tzinfo:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
-def fetch_feed(url: str, max_entries: int = 50) -> List[dict]:
-    """Fetch and parse an RSS feed.
+def stable_id(source: str, guid: Optional[str], title: str, pub: Optional[str]) -> str:
+    return _sha1("|".join([source, guid or "", title.strip(), pub or ""]))
 
-    Returns a list of raw feed entries. Errors are logged and return
-    empty lists.
-    """
-    if feedparser is None:
-        return []
-    try:
-        feed = feedparser.parse(url)
-        return feed.entries[:max_entries] if hasattr(feed, "entries") else []
-    except Exception:
-        return []
+def parse_entry(source: str, e) -> Dict:
+    # feedparser normalizes some fields; keep robust
+    title = (e.get("title") or "").strip()
+    link = (e.get("link") or "").strip()
+    guid = e.get("id") or e.get("guid")
+    pub = e.get("published") or e.get("updated") or ""
+    ts = _to_utc(pub)
+    return {
+        "id": stable_id(source, guid, title, pub),
+        "source": source,
+        "title": title,
+        "link": link,
+        "ts": ts,
+        "ticker": extract_ticker(title),
+    }
 
+TICKER_PATTERNS = [
+    re.compile(r"\((?:NASDAQ|NYSE|AMEX|NYSEMKT|NYSE American):\s*([A-Z]{1,5})\)"),
+    re.compile(r"\b([A-Z]{1,5})\b\s*(?:receives|announces|reports|grants|award|FDA|NDA|IND)"),
+]
 
-def canonicalize_entry(entry: dict) -> Optional[NewsItem]:
-    """Convert a feed entry into a :class:`NewsItem`.
+def extract_ticker(text: str) -> Optional[str]:
+    for pat in TICKER_PATTERNS:
+        m = pat.search(text.upper())
+        if m:
+            return m.group(1)
+    return None
 
-    Attempts to extract the publication time, title, link, and source
-    host. If required fields are missing, ``None`` is returned.
-    """
-    title = entry.get("title") or entry.get("headline")
-    link = entry.get("link") or entry.get("id")
-    if not title or not link:
-        return None
-    # Parse publication time; fall back to now
-    published_ts = None
-    for key in ["published", "pubDate", "updated", "created"]:
-        ts = entry.get(key)
-        if ts:
-            try:
-                published_ts = datetime(*entry.get(f"{key}_parsed")[0:6])  # type: ignore[index]
-                break
-            except Exception:
-                try:
-                    published_ts = datetime.fromisoformat(ts)
-                    break
-                except Exception:
-                    continue
-    if not published_ts:
-        published_ts = datetime.utcnow()
-    host = urlparse(link).hostname or "unknown"
-    # Extract ticker symbol if present in the title in the format "(XYZ)"
-    ticker = None
-    import re
-
-    match = re.search(r"\(([A-Z]{1,5})\)", title)
-    if match:
-        ticker = match.group(1).upper()
-    return NewsItem(
-        ts_utc=published_ts,
-        title=title.strip(),
-        canonical_url=link,
-        source_host=host.lower(),
-        ticker=ticker,
-        raw_text=entry.get("summary"),
-    )
-
-
-def fetch_all_feeds() -> List[NewsItem]:
-    """Fetch all configured RSS feeds and return canonicalized news items."""
-    settings = get_settings()
-    items: List[NewsItem] = []
-    for host in settings.rss_sources.keys():
-        # Derive feed URL from host. In this simplified implementation, we
-        # assume standard RSS endpoints; override here if needed.
-        url = f"https://{host}/rss/"  # Many PR wires follow this pattern
-        entries = fetch_feed(url)
-        for entry in entries:
-            item = canonicalize_entry(entry)
-            if item:
-                items.append(item)
-        time.sleep(0.1)  # brief pause to avoid hammering hosts
+def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
+    items: List[Dict] = []
+    for name, url in PR_FEEDS:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+        for e in feed.entries:
+            items.append(parse_entry(name, e))
+        time.sleep(0.3)  # be polite
     return items
+
+def dedupe(items: Iterable[Dict]) -> List[Dict]:
+    seen: set[str] = set()
+    out: List[Dict] = []
+    for it in items:
+        i = it["id"]
+        if i not in seen:
+            out.append(it)
+            seen.add(i)
+    return out
+
+# Finviz token helper (non-fatal if missing/expired)
+def validate_finviz_token(cookie: str, timeout: int = 10) -> Tuple[bool, int]:
+    if not cookie:
+        return False, 0
+    try:
+        r = requests.get("https://finviz.com/news.ashx", headers={"Cookie": cookie, "User-Agent": USER_AGENT}, timeout=timeout, allow_redirects=False)
+        return (r.status_code == 200, r.status_code)
+    except Exception:
+        return False, 0
