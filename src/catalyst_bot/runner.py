@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from .config import get_settings
 from .logging_utils import setup_logging, get_logger
-from . import feeds, classifier
+from . import feeds
 
 try:
     import yfinance as yf  # optional
@@ -28,7 +28,7 @@ def price_snapshot(ticker: str) -> float | None:
         return None
 
 def _cycle(log, settings) -> tuple[int, int, int, int]:
-    weights = settings.keyword_categories  # simple mapping expected by tests
+    weights = settings.keyword_categories
     raw = feeds.fetch_pr_feeds()
     items = feeds.dedupe(raw)
 
@@ -37,14 +37,18 @@ def _cycle(log, settings) -> tuple[int, int, int, int]:
 
     for it in items:
         tick = it.get("ticker")
-        # use legacy classify signature if present; else fallback
+
+        # Prefer legacy classify() if present to satisfy tests
         try:
-            from .classify import classify as legacy_classify  # repo's original
-            cls = legacy_classify(it)  # expects dict-like item with 'title'
+            from .classify import classify as legacy_classify
+            cls = legacy_classify(it)
         except Exception:
-            # fallback to our lightweight classifier if needed
-            from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-            s = SentimentIntensityAnalyzer().polarity_scores(it["title"])["compound"]
+            # lightweight fallback
+            try:
+                from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+                s = SentimentIntensityAnalyzer().polarity_scores(it["title"])["compound"]
+            except Exception:
+                s = 0.0
             wscore = 0.0
             tags = []
             lt = it["title"].lower()
@@ -53,6 +57,7 @@ def _cycle(log, settings) -> tuple[int, int, int, int]:
                     wscore += w
                     tags.append(k)
             cls = {"sentiment": s, "keywords": tags, "score": wscore}
+
         it["cls"] = cls
 
         px = price_snapshot(tick) if tick else None
@@ -87,7 +92,6 @@ def _cycle(log, settings) -> tuple[int, int, int, int]:
     return len(raw), len(items), len(enriched), alerted
 
 def runner_main(once: bool = False, loop: bool = False) -> int:
-    """Entry used by tests: run once or loop based on arguments."""
     settings = get_settings()
     setup_logging(settings.log_level)
     log = get_logger("runner")
@@ -96,7 +100,7 @@ def runner_main(once: bool = False, loop: bool = False) -> int:
     signal.signal(signal.SIGTERM, _sig_handler)
     log.info("boot_start")
 
-    do_loop = loop or (not once)  # default behavior matches CLI if neither is specified
+    do_loop = loop or (not once)  # default matches CLI if neither flag set
     while True:
         t0 = time.time()
         _cycle(log, settings)
@@ -110,12 +114,19 @@ def runner_main(once: bool = False, loop: bool = False) -> int:
     log.info("boot_end")
     return 0
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="run a single cycle")
-    parser.add_argument("--loop", action="store_true", help="run forever with sleep between cycles")
-    args = parser.parse_args()
-    return runner_main(once=args.once, loop=args.loop)
+def main(once: bool | None = None, loop: bool | None = None) -> int:
+    """
+    CLI entrypoint. Also accepts optional keyword args for test harness
+    that may call main(once=True, loop=False).
+    """
+    if once is None and loop is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--once", action="store_true", help="run a single cycle")
+        parser.add_argument("--loop", action="store_true", help="run forever with sleep between cycles")
+        args = parser.parse_args()
+        return runner_main(once=args.once, loop=args.loop)
+    # If kwargs provided, bypass argparse.
+    return runner_main(once=bool(once), loop=bool(loop))
 
 if __name__ == "__main__":
     sys.exit(main())

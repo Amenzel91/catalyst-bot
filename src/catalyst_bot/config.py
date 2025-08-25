@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict
+from pathlib import Path
 import os
 
 def _b(name: str, default: bool) -> bool:
@@ -25,6 +26,12 @@ class Settings:
     tz: str = os.getenv("TZ", "America/Chicago")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # --- Paths expected by tests/legacy code ---
+    # Allow override of project root via env (rare). Default: current working dir.
+    project_root: Path = field(default_factory=lambda: Path(os.getenv("PROJECT_ROOT", os.getcwd())).resolve())
+    data_dir: Path = field(default_factory=lambda: (Path(os.getenv("DATA_DIR", "data")).resolve()))
+    out_dir: Path = field(default_factory=lambda: (Path(os.getenv("OUT_DIR", "out")).resolve()))
+
     # Expected by tests: a keyword weight table
     keyword_categories: Dict[str, float] = field(default_factory=lambda: {
         # positive
@@ -41,7 +48,7 @@ class Settings:
         "going concern": -3.0,
     })
 
-    # Back-compat aliases for any newer modules we added earlier
+    # Back-compat aliases for any newer modules we added elsewhere
     @property
     def alpha_key(self) -> str:
         return self.alphavantage_api_key
