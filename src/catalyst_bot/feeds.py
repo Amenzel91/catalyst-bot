@@ -6,6 +6,9 @@ import requests
 import feedparser
 from dateutil import parser as date_parser
 
+from .logging_utils import get_logger
+log = get_logger("feeds")
+
 USER_AGENT = "CatalystBot/1.0 (+https://example.local)"
 
 PR_FEEDS: List[Tuple[str, str]] = [
@@ -16,7 +19,8 @@ PR_FEEDS: List[Tuple[str, str]] = [
 ]
 
 def _sha1(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    import hashlib as _h
+    return _h.sha1(s.encode("utf-8")).hexdigest()
 
 def _to_utc(ts: Optional[str]) -> str:
     if not ts:
@@ -30,7 +34,6 @@ def stable_id(source: str, guid: Optional[str], title: str, pub: Optional[str]) 
     return _sha1("|".join([source, guid or "", title.strip(), pub or ""]))
 
 def parse_entry(source: str, e) -> Dict:
-    # feedparser normalizes some fields; keep robust
     title = (e.get("title") or "").strip()
     link = (e.get("link") or "").strip()
     guid = e.get("id") or e.get("guid")
@@ -60,12 +63,25 @@ def extract_ticker(text: str) -> Optional[str]:
 def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
     items: List[Dict] = []
     for name, url in PR_FEEDS:
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-        resp.raise_for_status()
-        feed = feedparser.parse(resp.text)
-        for e in feed.entries:
-            items.append(parse_entry(name, e))
-        time.sleep(0.3)  # be polite
+        try:
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
+        except Exception as e:
+            log.warning(f"feed_http_error source={name} err={e!s}")
+            continue
+
+        if resp.status_code != 200:
+            log.warning(f"feed_http status={resp.status_code} source={name} url={url}")
+            continue  # <-- do NOT raise during tests; just skip
+
+        try:
+            feed = feedparser.parse(resp.text)
+            for e in feed.entries:
+                items.append(parse_entry(name, e))
+        except Exception as e:
+            log.warning(f"feed_parse_error source={name} err={e!s}")
+            continue
+
+        time.sleep(0.1)  # be polite
     return items
 
 def dedupe(items: Iterable[Dict]) -> List[Dict]:
@@ -78,12 +94,16 @@ def dedupe(items: Iterable[Dict]) -> List[Dict]:
             seen.add(i)
     return out
 
-# Finviz token helper (non-fatal if missing/expired)
-def validate_finviz_token(cookie: str, timeout: int = 10) -> Tuple[bool, int]:
+def validate_finviz_token(cookie: str, timeout: int = 10) -> tuple[bool, int]:
     if not cookie:
         return False, 0
     try:
-        r = requests.get("https://finviz.com/news.ashx", headers={"Cookie": cookie, "User-Agent": USER_AGENT}, timeout=timeout, allow_redirects=False)
+        r = requests.get(
+            "https://finviz.com/news.ashx",
+            headers={"Cookie": cookie, "User-Agent": USER_AGENT},
+            timeout=timeout,
+            allow_redirects=False,
+        )
         return (r.status_code == 200, r.status_code)
     except Exception:
         return False, 0

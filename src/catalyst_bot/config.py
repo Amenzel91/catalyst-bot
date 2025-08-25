@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, List
 from pathlib import Path
 import os
 
@@ -8,7 +8,7 @@ def _b(name: str, default: bool) -> bool:
 
 @dataclass
 class Settings:
-    # Keys / tokens (names expected by older code/tests)
+    # Keys / tokens
     alphavantage_api_key: str = os.getenv("ALPHAVANTAGE_API_KEY", "")
     finviz_auth_token: str = os.getenv("FINVIZ_AUTH_TOKEN", "")
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
@@ -26,29 +26,47 @@ class Settings:
     tz: str = os.getenv("TZ", "America/Chicago")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
-    # --- Paths expected by tests/legacy code ---
-    # Allow override of project root via env (rare). Default: current working dir.
+    # Paths (tests expect Path fields)
     project_root: Path = field(default_factory=lambda: Path(os.getenv("PROJECT_ROOT", os.getcwd())).resolve())
-    data_dir: Path = field(default_factory=lambda: (Path(os.getenv("DATA_DIR", "data")).resolve()))
-    out_dir: Path = field(default_factory=lambda: (Path(os.getenv("OUT_DIR", "out")).resolve()))
+    data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR", "data")).resolve())
+    out_dir: Path = field(default_factory=lambda: Path(os.getenv("OUT_DIR", "out")).resolve())
 
-    # Expected by tests: a keyword weight table
-    keyword_categories: Dict[str, float] = field(default_factory=lambda: {
-        # positive
-        "fda approval": 3.2,
-        "fda clearance": 3.0,
-        "phase 3": 2.5,
-        "breakthrough": 2.0,
-        "contract award": 2.2,
-        "strategic partnership": 1.8,
-        "uplisting": 1.5,
-        # negative
-        "offering": -3.0,
-        "dilution": -3.2,
-        "going concern": -3.0,
+    # Default keyword weight if analyzer doesn't provide a dynamic override
+    keyword_default_weight: float = float(os.getenv("KEYWORD_DEFAULT_WEIGHT", "1.0"))
+
+    # Tests expect: dict[str, list[str]] (categories → keyword phrases)
+    keyword_categories: Dict[str, List[str]] = field(default_factory=lambda: {
+        "fda": [
+            "fda approval", "fda clearance", "510(k)", "de novo",
+        ],
+        "clinical": [
+            "phase 3", "phase iii", "phase 2", "phase ii",
+            "breakthrough", "fast track", "orphan drug",
+        ],
+        "partnership": [
+            "contract award", "strategic partnership", "collaboration",
+            "distribution agreement",
+        ],
+        "uplisting": [
+            "uplisting", "listed on nasdaq", "transfer to nasdaq",
+        ],
+        "dilution": [
+            "offering", "registered direct", "atm offering", "dilution",
+        ],
+        "going_concern": [
+            "going concern",
+        ],
     })
 
-    # Back-compat aliases for any newer modules we added elsewhere
+    # Per-source weight map (lowercase hosts) — used by classify()
+    rss_sources: Dict[str, float] = field(default_factory=lambda: {
+        "businesswire.com": 1.2,
+        "globenewswire.com": 1.1,
+        "prnewswire.com": 1.1,
+        "accesswire.com": 1.0,
+    })
+
+    # Back-compat aliases for other modules
     @property
     def alpha_key(self) -> str:
         return self.alphavantage_api_key
@@ -61,9 +79,7 @@ class Settings:
     def discord_webhook(self) -> str:
         return self.discord_webhook_url
 
-# Singleton settings
 SETTINGS = Settings()
 
-# Back-compat accessor used by legacy modules/tests
 def get_settings() -> Settings:
     return SETTINGS
