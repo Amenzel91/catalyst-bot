@@ -1,0 +1,303 @@
+"""
+Site Hooks for Catalyst-Bot (import-time integration)
+
+Why this file?
+--------------
+Python automatically imports `sitecustomize` if present on sys.path.
+We use this to *safely* and *reversibly* attach integrations without modifying
+your existing modules:
+
+1) Hook alerts.send_alert_safe(...)  -> suppress re-alerts via SeenStore (TTL)
+2) Hook feeds.extract_ticker(...)    -> fallback to ticker_resolver on None
+3) Sanitize tickers before classify  -> drop obvious junk tickers
+4) (Optional) Rate-limit Discord posts to prevent bursts
+
+Toggle with env flags:
+- FEATURE_SITE_HOOKS            (default: "true")
+- HOOK_SEEN_ALERTS              (default: "true")
+- HOOK_TICKER_RESOLVER          (default: "true")
+- HOOK_TICKER_SANITY            (default: "true")
+- HOOK_ALERTS_RATE_LIMIT        (default: "false")  # opt-in
+- HOOK_FALLBACK_LOG_EVERY_N     (default: "100")    # throttle INFO logs
+- HOOK_SANITIZED_LOG_EVERY_N    (default: "50")     # throttle sanitized drops
+- ALERTS_RATE_WINDOW_SECS       (default: "60")     # if limiter on
+- ALERTS_RATE_MAX               (default: "4")      # if limiter on
+"""
+
+from __future__ import annotations
+
+import atexit
+import json
+import logging
+import os
+import sys
+import time
+import types
+
+try:
+    # Prefer project logger if available
+    from catalyst_bot.logging_utils import get_logger  # type: ignore
+except Exception:  # pragma: no cover - fallback
+    import logging as _logging
+
+    def get_logger(name: str):
+        _logging.basicConfig(
+            level=_logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        return _logging.getLogger(name)
+
+
+log = get_logger("site_hooks")
+
+
+def _flag(name: str, default: str = "true") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except Exception:
+        return default
+
+
+if not _flag("FEATURE_SITE_HOOKS", "true"):
+    log.info("site_hooks_disabled")
+else:
+    # Throttled counters
+    _fallback_hits = 0
+    _fallback_log_every = max(1, _int("HOOK_FALLBACK_LOG_EVERY_N", 100))
+
+    _sanitized_hits = 0
+    _sanitized_log_every = max(1, _int("HOOK_SANITIZED_LOG_EVERY_N", 50))
+
+    def _log_fallback_hit(**extra_fields):
+        """Emit an INFO message every N resolver fallbacks; keep total for exit summary."""
+        global _fallback_hits
+        _fallback_hits += 1
+        if _fallback_hits % _fallback_log_every == 0:
+            try:
+                log.info("ticker_resolver_fallback_hit", extra=extra_fields)
+            except Exception:
+                # Logging may be unavailable late in shutdown; swallow.
+                pass
+
+    def _log_sanitized_drop(**extra_fields):
+        """Emit an INFO message every N sanitized drops to reduce log noise."""
+        global _sanitized_hits
+        _sanitized_hits += 1
+        if _sanitized_hits % _sanitized_log_every == 0:
+            try:
+                log.info("ticker_sanitized_drop", extra=extra_fields)
+            except Exception:
+                pass
+
+    @atexit.register
+    def _exit_summary() -> None:
+        """Emit a summary at process exit without crashing if logging streams are closed."""
+        # Try normal logging; if it fails (e.g., under pytest capture), fall back to __stderr__
+        if _fallback_hits:
+            try:
+                log.info(
+                    "ticker_resolver_fallback_summary",
+                    extra={"hits": int(_fallback_hits)},
+                )
+            except Exception:
+                try:
+                    payload = {
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "level": "INFO",
+                        "name": "site_hooks",
+                        "msg": "ticker_resolver_fallback_summary",
+                        "hits": int(_fallback_hits),
+                    }
+                    stream = getattr(sys, "__stderr__", None) or getattr(
+                        sys, "stderr", None
+                    )
+                    if stream:
+                        stream.write(json.dumps(payload) + "\n")
+                        stream.flush()
+                except Exception:
+                    pass
+
+        if _sanitized_hits:
+            try:
+                log.info(
+                    "ticker_sanitized_summary", extra={"drops": int(_sanitized_hits)}
+                )
+            except Exception:
+                try:
+                    payload = {
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "level": "INFO",
+                        "name": "site_hooks",
+                        "msg": "ticker_sanitized_summary",
+                        "drops": int(_sanitized_hits),
+                    }
+                    stream = getattr(sys, "__stderr__", None) or getattr(
+                        sys, "stderr", None
+                    )
+                    if stream:
+                        stream.write(json.dumps(payload) + "\n")
+                        stream.flush()
+                except Exception:
+                    pass
+
+    # ---------------------------------------------------------------
+    # Hook 1: alerts.send_alert_safe -> persistent 'seen' suppression
+    # ---------------------------------------------------------------
+    if _flag("HOOK_SEEN_ALERTS", "true"):
+        try:
+            from catalyst_bot import alerts  # type: ignore
+            from catalyst_bot.alert_guard import build_alert_id
+
+            # `seen_store` is optional but recommended
+            try:
+                from catalyst_bot.seen_store import should_filter  # type: ignore
+            except Exception:  # pragma: no cover
+
+                def should_filter(_id: str) -> bool:
+                    return False
+
+            if isinstance(getattr(alerts, "send_alert_safe", None), types.FunctionType):
+                _orig_send = alerts.send_alert_safe
+
+                def _wrapped_send_alert_safe(payload, *args, **kwargs):
+                    try:
+                        item_id = build_alert_id(payload)
+                        if item_id and should_filter(item_id):
+                            log.info("alert_suppressed_seen", extra={"id": item_id})
+                            return {"status": "suppressed_seen", "id": item_id}
+                    except Exception as e:  # non-fatal
+                        log.warning("alert_seen_guard_error", extra={"error": str(e)})
+                    return _orig_send(payload, *args, **kwargs)
+
+                alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
+                log.info(
+                    "site_hooks_alerts_patched", extra={"target": "send_alert_safe"}
+                )
+            else:
+                log.info(
+                    "site_hooks_alerts_noop",
+                    extra={"reason": "send_alert_safe_missing"},
+                )
+        except Exception as e:  # pragma: no cover
+            log.warning("site_hooks_alerts_failed", extra={"error": str(e)})
+
+    # ----------------------------------------------------------------
+    # Hook 2: feeds.extract_ticker -> ticker_resolver as a safe fallback
+    # + Hook 3: Ticker sanitation
+    # ----------------------------------------------------------------
+    if _flag("HOOK_TICKER_RESOLVER", "true") or _flag("HOOK_TICKER_SANITY", "true"):
+        try:
+            from catalyst_bot import feeds  # type: ignore
+            from catalyst_bot.ticker_resolver import resolve_from_source
+            from catalyst_bot.ticker_sanity import sanitize_ticker
+
+            fn = getattr(feeds, "extract_ticker", None)
+            if isinstance(fn, types.FunctionType):
+                _orig_extract = fn
+
+                def _wrapped_extract_ticker(*args, **kwargs):
+                    # Try original first
+                    try:
+                        orig = _orig_extract(*args, **kwargs)
+                    except Exception as e:
+                        log.warning(
+                            "extract_ticker_orig_error", extra={"error": str(e)}
+                        )
+                        orig = None
+
+                    title = None
+                    link = None
+                    source_host = None
+                    if args:
+                        try:
+                            title = args[0]
+                        except Exception:
+                            pass
+                    title = kwargs.get("title", title)
+                    link = kwargs.get("link", link)
+                    source_host = kwargs.get("source_host", source_host)
+
+                    res = orig
+                    if not res and _flag("HOOK_TICKER_RESOLVER", "true"):
+                        try:
+                            r = resolve_from_source(title or "", link, source_host)
+                            if r.ticker:
+                                _log_fallback_hit(
+                                    method=r.method,
+                                    title=(title or "")[:80],
+                                    link=(link or "")[:120],
+                                )
+                                res = r.ticker
+                        except Exception as e:  # non-fatal
+                            log.warning(
+                                "ticker_resolver_fallback_error",
+                                extra={"error": str(e)},
+                            )
+
+                    if res and _flag("HOOK_TICKER_SANITY", "true"):
+                        cleaned = sanitize_ticker(res)
+                        if cleaned is None:
+                            _log_sanitized_drop(
+                                reason="failed_rules",
+                                raw=str(res)[:24],
+                                title=(title or "")[:80],
+                            )
+                            return None
+                        if cleaned != res:
+                            try:
+                                log.info(
+                                    "ticker_sanitized_adjust",
+                                    extra={"raw": str(res), "cleaned": cleaned},
+                                )
+                            except Exception:
+                                pass
+                        return cleaned
+
+                    return res
+
+                setattr(feeds, "extract_ticker", _wrapped_extract_ticker)
+                log.info("site_hooks_feeds_patched", extra={"target": "extract_ticker"})
+            else:
+                log.info(
+                    "site_hooks_feeds_noop", extra={"reason": "extract_ticker_missing"}
+                )
+        except Exception as e:  # pragma: no cover
+            log.warning("site_hooks_feeds_failed", extra={"error": str(e)})
+
+    # ---------------------------------------------------------------
+    # Hook 4 (optional): Alerts rate limiter (per ticker/channel)
+    # ---------------------------------------------------------------
+    if _flag("HOOK_ALERTS_RATE_LIMIT", "false"):
+        try:
+            from catalyst_bot import alerts  # type: ignore
+            from catalyst_bot.alerts_rate_limit import (
+                limiter_allow,
+                limiter_key_from_payload,
+            )
+
+            post_fn = getattr(alerts, "post_discord_json", None)
+            if isinstance(post_fn, types.FunctionType):
+                _orig_post = post_fn
+
+                def _wrapped_post_discord_json(payload: dict, *args, **kwargs):
+                    try:
+                        key = limiter_key_from_payload(payload)
+                        if not limiter_allow(key):
+                            log.info("alert_rate_limited", extra={"key": key})
+                            return {"status": "rate_limited", "key": key}
+                    except Exception as e:
+                        log.warning("alert_rate_limit_error", extra={"error": str(e)})
+                    return _orig_post(payload, *args, **kwargs)
+
+                alerts.post_discord_json = _wrapped_post_discord_json  # type: ignore
+                log.info("site_hooks_alerts_limiter_patched", extra={"target": "post"})
+            else:
+                log.info(
+                    "site_hooks_alerts_limiter_noop", extra={"reason": "post_missing"}
+                )
+        except Exception as e:  # pragma: no cover
+            log.warning("site_hooks_alerts_limiter_failed", extra={"error": str(e)})
