@@ -1,161 +1,65 @@
-"""Market data adapters for the catalyst bot.
-
-This module interfaces with the Alpha Vantage API to retrieve
-intraday and daily time series data. It provides a minimal wrapper
-around the HTTP API, handling retries and timeouts. The functions are
-written synchronously but could be adapted to async if needed.
-"""
-
+# src/catalyst_bot/market.py
 from __future__ import annotations
 
 import time
-from datetime import datetime
-from typing import Dict, Optional
+from typing import Optional, Tuple
 
-import pandas as pd
-import requests
+from .logging_utils import get_logger
 
-from .config import get_settings
+log = get_logger("yfinance")
 
-API_BASE_URL = "https://www.alphavantage.co/query"
-
-
-def _call_api(params: Dict[str, str], timeout: int = 15) -> Dict:
-    """Internal helper to call the Alpha Vantage API with retries."""
-    settings = get_settings()
-    params = params.copy()
-    params["apikey"] = settings.alphavantage_api_key
-    for attempt in range(3):
-        try:
-            resp = requests.get(API_BASE_URL, params=params, timeout=timeout)
-            if resp.status_code == 200:
-                data = resp.json()
-                if "Note" in data:
-                    # API throttling. Back off and retry
-                    time.sleep(12)  # wait ~12 seconds per Alpha Vantage docs
-                    continue
-                return data
-            else:
-                time.sleep(1)
-        except Exception:
-            time.sleep(1)
-    return {}
+try:
+    import yfinance as yf  # type: ignore
+except Exception:  # pragma: no cover
+    yf = None  # type: ignore
 
 
-def get_intraday(
-    symbol: str, interval: str = "5min", output_size: str = "compact"
-) -> Optional[pd.DataFrame]:
-    """Fetch intraday OHLCV data for ``symbol``.
+def _norm_ticker(t: Optional[str]) -> Optional[str]:
+    if not t:
+        return None
+    t = t.strip().upper()
+    if t.startswith("$"):
+        t = t[1:]
+    return t or None
 
-    Parameters
-    ----------
-    symbol : str
-        The ticker symbol to query.
-    interval : str
-        Interval between data points (e.g. '1min', '5min', '15min', '30min', '60min').
-    output_size : str
-        'compact' returns last 100 data points; 'full' returns full session. Use
-        'compact' to minimize API usage.
 
-    Returns
-    -------
-    Optional[pd.DataFrame]
-        A DataFrame indexed by timestamp in UTC with columns
-        ['open','high','low','close','volume']. Returns ``None`` on error.
+def get_last_price_snapshot(
+    ticker: str, retries: int = 2
+) -> Tuple[Optional[float], Optional[float]]:
     """
-    params = {
-        "function": "TIME_SERIES_INTRADAY",
-        "symbol": symbol,
-        "interval": interval,
-        "outputsize": output_size,
-        "datatype": "json",
-    }
-    data = _call_api(params)
-    key = f"Time Series ({interval})"
-    if not data or key not in data:
-        return None
-    ts_data = data[key]
-    records = []
-    for ts_str, values in ts_data.items():
-        # Alpha Vantage timestamps are returned in US/Eastern; convert to UTC
+    Best-effort last price and previous close from yfinance.
+    Returns (last_price, previous_close); either may be None.
+    Never raises.
+    """
+    if not ticker:
+        return None, None
+    if yf is None:
+        log.info("yf_missing skip_price_lookup")
+        return None, None
+
+    t = yf.Ticker(ticker)
+    last: Optional[float] = None
+    prev: Optional[float] = None
+
+    for attempt in range(retries + 1):
         try:
-            ts = datetime.fromisoformat(ts_str)
+            # fast path
+            fi = getattr(t, "fast_info", None)
+            if fi:
+                last = float(getattr(fi, "last_price", None) or 0) or None
+                prev = float(getattr(fi, "previous_close", None) or 0) or None
+            # fallback: 1d history
+            if last is None or prev is None:
+                hist = t.history(period="2d", interval="1d", auto_adjust=False)
+                if not hist.empty:
+                    last = float(hist["Close"].iloc[-1])
+                    if len(hist) >= 2:
+                        prev = float(hist["Close"].iloc[-2])
+                    elif "Previous Close" in getattr(t.info, "__dict__", {}):
+                        prev = float(t.info["previousClose"])  # type: ignore[index]
+            return last, prev
         except Exception:
-            continue
-        record = {
-            "timestamp": ts,
-            "open": float(values.get("1. open", 0.0)),
-            "high": float(values.get("2. high", 0.0)),
-            "low": float(values.get("3. low", 0.0)),
-            "close": float(values.get("4. close", 0.0)),
-            "volume": float(values.get("5. volume", 0.0)),
-        }
-        records.append(record)
-    if not records:
-        return None
-    df = pd.DataFrame(records)
-    # Sort by timestamp ascending
-    df = df.sort_values("timestamp").set_index("timestamp")
-    return df
-
-
-def get_latest_price(symbol: str) -> Optional[float]:
-    """Return the most recent close price for ``symbol`` using intraday data."""
-    df = get_intraday(symbol, interval="5min", output_size="compact")
-    if df is None or df.empty:
-        return None
-    try:
-        return float(df["close"].iloc[-1])
-    except Exception:
-        return None
-
-
-def get_daily_series(
-    symbol: str, output_size: str = "compact"
-) -> Optional[pd.DataFrame]:
-    """Fetch daily adjusted time series for ``symbol``."""
-    params = {
-        "function": "TIME_SERIES_DAILY_ADJUSTED",
-        "symbol": symbol,
-        "outputsize": output_size,
-        "datatype": "json",
-    }
-    data = _call_api(params)
-    key = "Time Series (Daily)"
-    if not data or key not in data:
-        return None
-    ts_data = data[key]
-    records = []
-    for ts_str, values in ts_data.items():
-        try:
-            ts = datetime.fromisoformat(ts_str)
-        except Exception:
-            continue
-        record = {
-            "timestamp": ts,
-            "open": float(values.get("1. open", 0.0)),
-            "high": float(values.get("2. high", 0.0)),
-            "low": float(values.get("3. low", 0.0)),
-            "close": float(values.get("4. close", 0.0)),
-            "adjusted_close": float(values.get("5. adjusted close", 0.0)),
-            "volume": float(values.get("6. volume", 0.0)),
-        }
-        records.append(record)
-    if not records:
-        return None
-    df = pd.DataFrame(records)
-    df = df.sort_values("timestamp").set_index("timestamp")
-    return df
-
-
-def get_20d_avg_volume(symbol: str) -> Optional[float]:
-    """Return the 20‑day average volume for ``symbol`` using daily data."""
-    df = get_daily_series(symbol, output_size="compact")
-    if df is None or df.empty:
-        return None
-    # Use the last 20 entries
-    try:
-        recent = df.tail(20)
-        return float(recent["volume"].mean())
-    except Exception:
-        return None
+            if attempt >= retries:
+                return last, prev
+            time.sleep(0.4 * (attempt + 1))
+    return last, prev

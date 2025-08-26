@@ -102,9 +102,9 @@ def classify(
     # Aggregate relevance (keep simple/deterministic)
     relevance = float(total_keyword_score) * float(source_weight)
 
-    # Build ScoredItem using your existing dataclass/constructor
-    return ScoredItem(
-        relevance_score=relevance,
-        sentiment_score=sentiment,
-        tags=hits,
-    )
+    # Total score: simple combination that is deterministic and monotonic
+    total_score = relevance + sentiment
+
+    # Build ScoredItem using positional args to match current dataclass signature:
+    # (relevance, sentiment, tags, source_weight, total_score)
+    return ScoredItem(relevance, sentiment, hits, source_weight, total_score)

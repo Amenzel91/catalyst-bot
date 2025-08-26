@@ -33,6 +33,8 @@ class Settings:
     # Misc
     tz: str = os.getenv("TZ", "America/Chicago")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    analyzer_utc_hour: int = int(os.getenv("ANALYZER_UTC_HOUR", "21"))
+    analyzer_utc_minute: int = int(os.getenv("ANALYZER_UTC_MINUTE", "30"))
 
     # Paths (tests expect Path fields)
     project_root: Path = field(

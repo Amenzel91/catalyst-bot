@@ -5,15 +5,18 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
-from . import feeds
+from . import feeds, market
+from .alerts import send_alert_safe
+from .analyzer import run_analyzer_once_if_scheduled
+from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .logging_utils import get_logger, setup_logging
-from .universe import get_universe_tickers
 
 try:
     import yfinance as yf  # type: ignore
@@ -138,148 +141,148 @@ def _load_dynamic_weights_with_fallback(
     return weights, loaded, str(path), path_exists
 
 
-def _cycle(log) -> Tuple[int, int, int, int]:
-    """
-    ingest -> dedupe -> (opt classify/price) -> alert (gated) -> persist
-    """
-    settings = get_settings()
-    record_only = settings.feature_record_only
-    keyword_categories = settings.keyword_categories
-    default_kw_weight = settings.keyword_default_weight
+def _cycle(log, settings) -> None:
+    """One ingest→dedupe→classify→alert pass with clean skip behavior."""
+    items = feeds.fetch_pr_feeds()
+    deduped = feeds.dedupe(items)
 
-    dynamic_weights, loaded_weights, weights_path, weights_exists = (
-        _load_dynamic_weights_with_fallback(log)
-    )
+    dyn_weights = load_dynamic_keyword_weights()
+    price_ceiling_env = (os.getenv("PRICE_CEILING") or "").strip()
+    price_ceiling = None
+    try:
+        if price_ceiling_env:
+            price_ceiling = float(price_ceiling_env)
+            if price_ceiling <= 0:
+                price_ceiling = None
+    except Exception:
+        price_ceiling = None
 
-    _PX_CACHE.clear()
+    tickers_present = sum(1 for it in deduped if (it.get("ticker") or "").strip())
+    tickers_missing = len(deduped) - tickers_present
 
-    # Universe (graceful fallback)
-    universe: set[str] = set()
-    u_total = 0
-    if settings.finviz_auth_token:
+    # Metrics for quiet skipping
+    skipped_no_ticker = 0
+    skipped_price_gate = 0
+    alerted = 0
+
+    for it in deduped:
+        ticker = (it.get("ticker") or "").strip()
+        source = it.get("source") or "unknown"
+
+        # If a ceiling is set, we require a ticker to check price.
+        if price_ceiling is not None and not ticker:
+            skipped_no_ticker += 1
+            continue
+
+        # Classify (lightweight; uses analyzer weights if present)
         try:
-            universe, u_total = get_universe_tickers(
-                settings.price_ceiling,
-                settings.finviz_auth_token,
+            scored = classify(
+                item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
+                keyword_weights=dyn_weights,
             )
-            log.info(
-                "universe: rows=%s tickers=%s (gating alerts)",
-                u_total,
-                len(universe),
-            )
-        except Exception as err:
-            log.info(
-                "universe_fetch_failed err=%s (alerts not gated)",
-                str(err),
-            )
-    else:
-        log.info("universe: finviz_token_missing (alerts not gated)")
+        except Exception:
+            # Keep running even if classification hiccups
+            log.warning("classify_error source=%s ticker=%s", source, ticker)
+            continue
 
-    raw = feeds.fetch_pr_feeds()
-    items = feeds.dedupe(raw)
+        # Optional price gating
+        last_px = None
+        last_chg = None
+        if ticker:
+            try:
+                last_px, last_chg = market.get_last_price_change(ticker)
+            except Exception:
+                # Price failed; if ceiling is set, skip. Otherwise, allow px=n/a
+                if price_ceiling is not None:
+                    skipped_price_gate += 1
+                    continue
 
-    with_ticker = sum(1 for it in items if (it.get("ticker") or "").strip())
-    without_ticker = len(items) - with_ticker
+        # If ceiling is active and we have a price, enforce it.
+        if price_ceiling is not None and last_px is not None:
+            if float(last_px) > float(price_ceiling):
+                skipped_price_gate += 1
+                continue
+
+        # Send alert
+        ok = send_alert_safe(
+            item_dict=it,
+            scored=scored,
+            last_price=last_px,
+            last_change_pct=last_chg,
+            record_only=settings.feature_record_only,
+            webhook_url=settings.discord_webhook_url,
+        )
+        if ok:
+            alerted += 1
+        else:
+            # Downgrade to info to avoid spammy warnings for legitimate skips
+            log.info("alert_skip source=%s ticker=%s", source, ticker)
+
     log.info(
         "cycle_metrics items=%s tickers_present=%s tickers_missing=%s "
-        "dyn_weights=%s dyn_path_exists=%s dyn_path='%s'",
+        "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' skipped_no_ticker=%s "
+        "skipped_price_gate=%s",
         len(items),
-        with_ticker,
-        without_ticker,
-        "yes" if loaded_weights else "no",
-        weights_exists,
-        weights_path,
+        tickers_present,
+        tickers_missing,
+        "yes" if dyn_weights else "no",
+        "yes" if dyn_weights else "no",
+        os.path.join(settings.data_dir, "analyzer", "keyword_stats.json"),
+        skipped_no_ticker,
+        skipped_price_gate,
     )
 
-    enriched: List[Dict] = []
-    for it in items:
-        title = it.get("title") or ""
-
-        if not record_only:
-            it["cls"] = _fallback_classify(
-                title,
-                keyword_categories,
-                default_kw_weight,
-                dynamic_weights=dynamic_weights,
-            )
-            tick = it.get("ticker")
-            px = price_snapshot(tick) if tick else None
-            it["price"] = px
-            if px is not None and px > settings.price_ceiling:
-                continue
-        else:
-            it["cls"] = None
-            it["price"] = None
-
-        enriched.append(it)
-
-    # persist
+    # Analyzer: run at the scheduled UTC time (no-op if not time)
     try:
-        os.makedirs("data", exist_ok=True)
-        with open("data/events.jsonl", "a", encoding="utf-8") as f:
-            for e in enriched:
-                f.write(json.dumps(e) + "\n")
-    except Exception as err:
-        log.warning("persist_events_failed err=%s", str(err))
+        run_analyzer_once_if_scheduled(get_settings())
+    except Exception:
+        log.warning("analyzer_schedule error=1")
 
-    # alerts (gated by universe AND requires ticker present)
-    alerted = 0
-    if not record_only and settings.feature_alerts:
-        webhook = settings.discord_webhook_url
-        if not webhook:
+
+def _maybe_run_analyzer(log, settings) -> None:
+    """Run analyzer once per UTC day after (hour, minute)."""
+    try:
+        now = datetime.now(timezone.utc)
+        target_h = int(os.getenv("ANALYZER_UTC_HOUR", settings.analyzer_utc_hour))
+        target_m = int(os.getenv("ANALYZER_UTC_MINUTE", settings.analyzer_utc_minute))
+
+        # Only run once per day; store stamp in data/analyzer/last_run.json
+        stamp_dir = settings.data_dir / "analyzer"
+        stamp_dir.mkdir(parents=True, exist_ok=True)
+        stamp_path = stamp_dir / "last_run.json"
+
+        last_day = None
+        if stamp_path.exists():
+            try:
+                last = json.loads(stamp_path.read_text())
+                last_day = last.get("utc_date")
+            except Exception:
+                last_day = None
+
+        today = now.strftime("%Y-%m-%d")
+        after_time = (now.hour, now.minute) >= (target_h, target_m)
+
+        if (last_day != today) and after_time:
             log.info(
-                "alerts_skipped reason=no_webhook count=%s",
-                len(enriched),
+                "analyzer_schedule trigger date=%s time=%02d:%02dZ",
+                today,
+                target_h,
+                target_m,
             )
-        else:
-
-            def has_ticker(e: Dict) -> bool:
-                return bool((e.get("ticker") or "").strip())
-
-            def in_universe(e: Dict) -> bool:
-                if not universe:
-                    return True
-                t = (e.get("ticker") or "").upper().strip()
-                return bool(t) and t in universe
-
-            eligible = [e for e in enriched if has_ticker(e) and in_universe(e)]
-
-            for e in eligible[:20]:
-                tick = e.get("ticker") or "UNK"
-                px = e.get("price")
-                if isinstance(px, (int, float)):
-                    px_str = f"${px:.2f}"
-                else:
-                    px_str = "n/a"
-                msg = (
-                    f"[{tick}] {e.get('title') or ''} • {e.get('source')} • "
-                    f"{e.get('ts')} • px={px_str}"
+            # Run analyzer (prior trading day default; analyzer handles empty)
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "catalyst_bot.analyzer"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
                 )
-                try:
-                    from .alerts import send_discord
-
-                    if send_discord(webhook, msg):
-                        alerted += 1
-                except Exception as err:
-                    log.warning("send_discord_failed err=%s", str(err))
-
-            if universe:
-                log.info(
-                    "alerts_gating universe_tickers=%s " "alerted_from=%s/%s",
-                    len(universe),
-                    len(eligible),
-                    len(enriched),
-                )
-
-    log.info(
-        "CYCLE ts=%s ingested=%s deduped=%s eligible=%s alerted=%s",
-        datetime.now(timezone.utc).isoformat(),
-        len(raw),
-        len(items),
-        len(enriched),
-        alerted,
-    )
-    return len(raw), len(items), len(enriched), alerted
+            finally:
+                # Write stamp regardless to avoid tight retry loops
+                stamp_path.write_text(json.dumps({"utc_date": today}))
+    except Exception:
+        # Never crash the runner for scheduler issues
+        log.warning("analyzer_schedule_error")
 
 
 def runner_main(once: bool = False, loop: bool = False) -> int:
@@ -309,13 +312,12 @@ def runner_main(once: bool = False, loop: bool = False) -> int:
     do_loop = loop or (not once)
     while True:
         t0 = time.time()
-        _cycle(log)
-        took = round(time.time() - t0, 2)
-        log.info("CYCLE_DONE took=%ss", took)
-
-        if not do_loop or STOP:
+        _cycle(log, settings)  # pass settings
+        _maybe_run_analyzer(log, settings)
+        log.info("CYCLE_DONE took=%.2fs", time.time() - t0)
+        if not do_loop:
             break
-        time.sleep(max(1, settings.loop_seconds))
+        time.sleep(settings.loop_seconds)
 
     log.info("boot_end")
     return 0

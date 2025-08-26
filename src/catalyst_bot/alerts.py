@@ -1,9 +1,7 @@
+# src/catalyst_bot/alerts.py
 from __future__ import annotations
 
-import json
-import random
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -11,99 +9,94 @@ from .logging_utils import get_logger
 
 log = get_logger("alerts")
 
-JSON = Dict[str, Any]
 
-
-def _sleep_with_jitter(attempt: int) -> None:
-    """Exponential backoff with small jitter, capped."""
-    base = min(2**attempt, 16)
-    time.sleep(base + random.uniform(0, 0.25))
-
-
-def _parse_retry_after(header_val: Optional[str]) -> Optional[float]:
-    if not header_val:
-        return None
+def _fmt_change(change: Optional[float]) -> str:
+    if change is None:
+        return "n/a"
     try:
-        return float(header_val)
+        return f"{change:+.2f}%"
     except Exception:
-        return None
+        return "n/a"
 
 
-def send_discord(
-    webhook_url: str,
-    content: str,
-    embeds: Optional[List[JSON]] = None,
-    timeout: int = 10,
-    max_attempts: int = 4,
+def _format_discord_content(
+    item: Dict[str, Any],
+    last_price: Optional[float],
+    last_change_pct: Optional[float],
+    scored: Optional[Any] = None,
+) -> str:
+    """Compose a compact, readable Discord message body."""
+    ticker = (item.get("ticker") or "n/a").upper()
+    title = item.get("title") or "(no title)"
+    source = item.get("source") or "unknown"
+    ts = item.get("ts") or ""
+    link = item.get("link") or ""
+
+    px = "n/a" if last_price is None else f"{float(last_price):.2f}"
+    chg = _fmt_change(last_change_pct)
+
+    # Try to show a couple high-signal tags if available
+    tags_part = ""
+    try:
+        tags = getattr(scored, "tags", None) or []
+        if tags:
+            tags_part = " • tags: " + ", ".join(tags[:3])
+    except Exception:
+        pass
+
+    line1 = f"[{ticker}] {title}"
+    line2 = f"{source} • {ts} • px={px} ({chg}){tags_part}"
+    line3 = link
+
+    # Keep under Discord's limits; three short lines is plenty.
+    return f"{line1}\n{line2}\n{line3}".strip()
+
+
+def send_alert_safe(
+    item_dict: Dict[str, Any],
+    scored: Optional[Any],
+    last_price: Optional[float],
+    last_change_pct: Optional[float],
+    record_only: bool,
+    webhook_url: Optional[str],
 ) -> bool:
     """
-    Send a Discord webhook message with retries and rate-limit handling.
-    Returns True on success, False on non-fatal failures. Never raises.
+    Post a Discord alert. Returns True on success, False on skip/error.
+
+    - If record_only=True: log and return True (treated as success, but no post).
+    - If webhook is missing: return False (caller may log a skip).
+    - Network or non-2xx/204 responses: log a warning and return False.
     """
+    source = item_dict.get("source") or "unknown"
+    ticker = (item_dict.get("ticker") or "").upper()
+
+    if record_only:
+        log.info("alert_record_only source=%s ticker=%s", source, ticker)
+        return True
+
     if not webhook_url:
-        log.info("webhook_missing skip_send")
+        # No destination; let caller count it as a skip.
         return False
 
-    payload: JSON = {"content": content}
-    if embeds:
-        payload["embeds"] = embeds
+    content = _format_discord_content(item_dict, last_price, last_change_pct, scored)
 
-    headers = {"Content-Type": "application/json"}
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = requests.post(
-                webhook_url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=timeout,
-            )
-        except Exception as err:
-            if attempt >= max_attempts:
-                log.warning(
-                    "webhook_http_error attempt=%s err=%s",
-                    attempt,
-                    str(err),
-                )
-                return False
-            _sleep_with_jitter(attempt)
-            continue
-
-        # success
-        if 200 <= resp.status_code < 300:
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={"content": content},
+            timeout=10,
+        )
+        # Discord webhooks usually return 204 No Content on success.
+        if resp.status_code in (200, 201, 202, 204):
             return True
 
-        # 429 rate limit: respect Retry-After
-        if resp.status_code == 429:
-            ra = _parse_retry_after(resp.headers.get("Retry-After"))
-            if attempt >= max_attempts:
-                log.warning(
-                    "webhook_rate_limited attempts=%s retry_after=%s",
-                    attempt,
-                    ra,
-                )
-                return False
-            time.sleep(min(ra or 2.0, 10.0))
-            continue
-
-        # 5xx: retry with backoff
-        if 500 <= resp.status_code < 600:
-            if attempt >= max_attempts:
-                log.warning(
-                    "webhook_5xx status=%s attempts=%s",
-                    resp.status_code,
-                    attempt,
-                )
-                return False
-            _sleep_with_jitter(attempt)
-            continue
-
-        # 4xx (not 429): don't retry
         log.warning(
-            "webhook_4xx status=%s body=%s",
+            "alert_error source=%s ticker=%s http_status=%s",
+            source,
+            ticker,
             resp.status_code,
-            resp.text[:200],
         )
         return False
-
-    return False
+    except Exception:
+        log.warning("alert_error source=%s ticker=%s", source, ticker)
+        return False
