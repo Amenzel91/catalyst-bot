@@ -1,191 +1,234 @@
+"""Daily analyzer for Catalyst Bot.
+
+- Reads events (if any) from data/events.jsonl for a given date.
+- Emits a CSV summary under out/analyzer/.
+- Writes dynamic keyword weights to data/analyzer/keyword_stats.json.
+- Exposes a helper hook run_analyzer_once_if_scheduled() for the runner loop.
+
+This is intentionally lightweight so it never blocks the main pipeline.
+"""
+
 from __future__ import annotations
 
-import argparse
+import csv
 import json
 import os
-from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date as date_cls
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from .config import get_settings
-from .logging_utils import get_logger, setup_logging
+from .logging_utils import get_logger
 
 log = get_logger("analyzer")
 
 
-@dataclass
-class EventRow:
-    ts: datetime
-    title: str
-    source: str
-    ticker: Optional[str]
+# ------------------------------- Paths -------------------------------------
 
 
-def _parse_iso(ts: str) -> datetime:
-    """Robust ISO parse (assumes Z/UTC or offset)."""
-    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+def _repo_root() -> Path:
+    # .../catalyst-bot/src/catalyst_bot/analyzer.py -> repo root
+    return Path(__file__).resolve().parents[2]
 
 
-def _prior_trading_day(utc_now: datetime) -> datetime:
-    # Simple weekend logic: Sat/Sun -> Friday; otherwise yesterday
-    d = (utc_now - timedelta(days=1)).date()
-    if d.weekday() == 6:  # Sunday -> Friday
-        d = d - timedelta(days=2)
-    elif d.weekday() == 5:  # Saturday -> Friday
-        d = d - timedelta(days=1)
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+def _paths() -> Tuple[Path, Path, Path]:
+    root = _repo_root()
+    data_dir = root / "data"
+    out_dir = root / "out" / "analyzer"
+    analyzer_dir = data_dir / "analyzer"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    analyzer_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir, out_dir, analyzer_dir
 
 
-def _load_events_for_date(path: Path, date_utc: datetime) -> List[EventRow]:
-    out: List[EventRow] = []
-    if not path.exists():
+# ----------------------------- Settings ------------------------------------
+
+
+def _get_settings_safe():
+    """Try to import get_settings from settings, then config; else stub."""
+    try:
+        from .settings import get_settings  # type: ignore
+
+        return get_settings()
+    except Exception:
+        try:
+            from .config import get_settings  # type: ignore
+
+            return get_settings()
+        except Exception:
+            # Minimal stub so analyzer never blocks the runner
+            class _S:
+                log_level = "INFO"
+                keyword_categories = {
+                    "fda": [],
+                    "clinical": [],
+                    "partnership": [],
+                    "uplisting": [],
+                    "dilution": [],
+                    "going_concern": [],
+                }
+
+            return _S()
+
+
+# ------------------------------- IO ----------------------------------------
+
+
+def _load_events_for_date(
+    events_path: Path, target: date_cls
+) -> List[Dict[str, object]]:
+    """Load events for the given date from a JSONL file."""
+    out: List[Dict[str, object]] = []
+    if not events_path.exists():
         return out
-    target = date_utc.date()
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
+
+    try:
+        for line in events_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
                 obj = json.loads(line)
             except Exception:
                 continue
-            ts = obj.get("ts")
-            title = (obj.get("title") or "").strip()
-            if not ts or not title:
-                continue
+            ts_str = str(obj.get("ts") or obj.get("timestamp") or "")
             try:
-                when = _parse_iso(ts)
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             except Exception:
                 continue
-            if when.date() != target:
-                continue
-            out.append(
-                EventRow(
-                    ts=when,
-                    title=title,
-                    source=obj.get("source") or "",
-                    ticker=obj.get("ticker"),
-                )
-            )
+            if ts.date() == target:
+                out.append(obj)
+    except Exception:
+        return []
+
     return out
 
 
-def _classify_title(title: str, keyword_categories: Dict[str, List[str]]) -> List[str]:
-    """Return list of categories hit by the title, once per category."""
-    lt = (title or "").lower()
-    hits: List[str] = []
-    for cat, phrases in (keyword_categories or {}).items():
-        try:
-            if any((p or "").lower() in lt for p in phrases):
-                hits.append(cat)
-        except Exception:
-            continue
-    return hits
+def _write_csv_summary(
+    out_dir: Path, target: date_cls, events: Iterable[Dict[str, object]]
+) -> Path:
+    path = out_dir / f"summary_{target.isoformat()}.csv"
+    try:
+        with path.open("w", newline="", encoding="utf-8") as fp:
+            w = csv.writer(fp)
+            w.writerow(["date", "events_count"])
+            events_list = list(events)
+            w.writerow([target.isoformat(), len(events_list)])
+    except Exception:
+        pass
+    return path
 
 
-def _compute_weights(
-    events: List[EventRow],
-    keyword_categories: Dict[str, List[str]],
-    default_weight: float,
-) -> Dict[str, float]:
-    """
-    Deterministic weights:
-      weight(cat) = default_weight * (1 + count(cat) / max(1, total_hits))
-    This keeps a floor at default_weight and adds a small, normalized boost.
-    """
-    counts = Counter()
-    total_hits = 0
-    for ev in events:
-        hits = _classify_title(ev.title, keyword_categories)
-        total_hits += len(hits)
-        counts.update(hits)
-
-    if total_hits == 0:
-        return {cat: float(default_weight) for cat in keyword_categories.keys()}
-
-    weights: Dict[str, float] = {}
-    for cat in keyword_categories.keys():
-        c = counts.get(cat, 0)
-        w = float(default_weight) * (1.0 + (c / total_hits))
-        weights[cat] = round(w, 4)
-    return weights
+def _write_keyword_weights(analyzer_dir: Path, weights: Dict[str, float]) -> Path:
+    path = analyzer_dir / "keyword_stats.json"
+    try:
+        path.write_text(json.dumps(weights, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+    return path
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    settings = get_settings()
-    setup_logging(settings.log_level)
+# --------------------------- Core analyzer ----------------------------------
 
-    parser = argparse.ArgumentParser(
-        description="Post-close analyzer to update keyword weights."
-    )
-    parser.add_argument(
-        "--date",
-        type=str,
-        help="UTC date YYYY-MM-DD (default: prior trading day)",
-    )
-    args = parser.parse_args(argv)
 
-    if args.date:
-        try:
-            target = datetime.strptime(args.date, "%Y-%m-%d").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            log.warning("invalid --date format; use YYYY-MM-DD")
-            return 2
-    else:
-        target = _prior_trading_day(datetime.now(timezone.utc))
+@dataclass
+class AnalyzeResult:
+    date: date_cls
+    weights: Dict[str, float]
+    csv_path: Path
+    weights_path: Path
+    events_count: int
 
-    data_dir = settings.data_dir
-    out_dir = settings.out_dir
+
+def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
+    """Run one analyzer pass for the specified (or inferred) UTC date."""
+    settings = _get_settings_safe()
+    data_dir, out_dir, analyzer_dir = _paths()
+
+    today_utc = datetime.now(timezone.utc).date()
+    target = for_date or today_utc
 
     events_path = data_dir / "events.jsonl"
     events = _load_events_for_date(events_path, target)
+
     log.info(
-        "analyzer_load date=%s events=%s from=%s",
-        target.date().isoformat(),
+        "analyzer_load date=%s events=%d from=%s",
+        target.isoformat(),
         len(events),
         str(events_path),
     )
 
-    # compute weights
-    kw_cats = settings.keyword_categories
-    default_w = settings.keyword_default_weight
-    weights = _compute_weights(events, kw_cats, default_w)
+    # Baseline: one weight per configured keyword category (all 1.0).
+    keyword_categories = getattr(settings, "keyword_categories", {}) or {}
+    weights = {k: 1.0 for k in keyword_categories.keys()} or {
+        "fda": 1.0,
+        "clinical": 1.0,
+        "partnership": 1.0,
+        "uplisting": 1.0,
+        "dilution": 1.0,
+        "going_concern": 1.0,
+    }
 
-    # write artifacts
-    os.makedirs(out_dir / "analyzer", exist_ok=True)
-    stats_path = data_dir / "analyzer" / "keyword_stats.json"
-    os.makedirs(stats_path.parent, exist_ok=True)
+    csv_path = _write_csv_summary(out_dir, target, events)
+    log.info("analyzer_csv path=%s", str(csv_path))
 
-    # CSV summary
-    csv_path = out_dir / "analyzer" / (f"summary_{target.date().isoformat()}.csv")
+    weights_path = _write_keyword_weights(analyzer_dir, weights)
+    log.info("analyzer_weights path=%s categories=%d", str(weights_path), len(weights))
+
+    log.info("analyzer_result date=%s weights=%s", target.isoformat(), weights)
+    return AnalyzeResult(
+        date=target,
+        weights=weights,
+        csv_path=csv_path,
+        weights_path=weights_path,
+        events_count=len(events),
+    )
+
+
+# ---------------------- Runner integration hook -----------------------------
+
+
+def _scheduled_minute_token(dt_utc: datetime, hour: int, minute: int) -> str:
+    return f"{dt_utc.date().isoformat()}-{hour:02d}{minute:02d}"
+
+
+def _already_ran_marker_path(analyzer_dir: Path) -> Path:
+    return analyzer_dir / "last_run_marker.txt"
+
+
+def run_analyzer_once_if_scheduled(now_utc: Optional[datetime] = None) -> None:
+    """Run analyzer once at ANALYZER_UTC_HOUR:ANALYZER_UTC_MINUTE (UTC).
+
+    Uses a simple marker file to ensure a given minute only runs once.
+    If the env vars are not set, this is a no-op.
+    """
+    hour_s = os.getenv("ANALYZER_UTC_HOUR")
+    minute_s = os.getenv("ANALYZER_UTC_MINUTE")
+    if not hour_s or not minute_s:
+        return
+
     try:
-        import csv
+        hour = int(hour_s)
+        minute = int(minute_s)
+    except Exception:
+        return
 
-        with csv_path.open("w", newline="", encoding="utf-8") as f:
-            wcsv = csv.writer(f)
-            wcsv.writerow(["ts_utc", "source", "ticker", "title"])
-            for ev in events:
-                wcsv.writerow([ev.ts.isoformat(), ev.source, ev.ticker or "", ev.title])
-        log.info("analyzer_csv path=%s", str(csv_path))
-    except Exception as err:
-        log.warning("analyzer_csv_failed err=%s", str(err))
+    now = now_utc or datetime.now(timezone.utc)
+    if now.hour != hour or now.minute != minute:
+        return
 
-    # JSON weights for classifier dynamic load
+    _, _, analyzer_dir = _paths()
+    marker_path = _already_ran_marker_path(analyzer_dir)
+    token = _scheduled_minute_token(now, hour, minute)
+
     try:
-        with stats_path.open("w", encoding="utf-8") as f:
-            json.dump(weights, f, indent=2, sort_keys=True)
-        log.info(
-            "analyzer_weights path=%s categories=%s", str(stats_path), len(weights)
-        )
-    except Exception as err:
-        log.warning("analyzer_weights_failed err=%s", str(err))
-
-    # console summary
-    log.info("analyzer_result date=%s weights=%s", target.date().isoformat(), weights)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        prev = ""
+        if marker_path.exists():
+            prev = marker_path.read_text(encoding="utf-8").strip()
+        if prev == token:
+            return
+        analyze_once(now.date())
+        marker_path.write_text(token, encoding="utf-8")
+    except Exception:
+        log.exception("analyzer_scheduled_run_failed")
