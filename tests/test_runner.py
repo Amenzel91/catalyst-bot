@@ -1,6 +1,5 @@
 """Smoke tests for the runner module."""
 
-import os
 from catalyst_bot.runner import main as runner_main
 
 

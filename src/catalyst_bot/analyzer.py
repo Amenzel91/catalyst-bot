@@ -1,83 +1,191 @@
 from __future__ import annotations
-import argparse, csv, json, os
-from datetime import date, datetime, timedelta, timezone
-from collections import defaultdict
-from .logging_utils import setup_logging, get_logger
-from .classifier import load_keyword_weights, save_keyword_weights
 
-def prior_trading_day_utc() -> date:
-    d = datetime.now(timezone.utc).date() - timedelta(days=1)
-    # crude weekend adjust
-    if d.weekday() == 6:  # Sunday
-        d -= timedelta(days=2)
-    elif d.weekday() == 5:  # Saturday
-        d -= timedelta(days=1)
-    return d
+import argparse
+import json
+import os
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Dict, List, Optional
 
-def run_for(day: date):
-    os.makedirs("out/analyzer", exist_ok=True)
-    weights = load_keyword_weights()
-    by_ticker = defaultdict(list)
+from .config import get_settings
+from .logging_utils import get_logger, setup_logging
 
-    # read events
-    if not os.path.exists("data/events.jsonl"):
-        return {"count": 0, "updated": False}
-    with open("data/events.jsonl", "r", encoding="utf-8") as f:
+log = get_logger("analyzer")
+
+
+@dataclass
+class EventRow:
+    ts: datetime
+    title: str
+    source: str
+    ticker: Optional[str]
+
+
+def _parse_iso(ts: str) -> datetime:
+    """Robust ISO parse (assumes Z/UTC or offset)."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _prior_trading_day(utc_now: datetime) -> datetime:
+    # Simple weekend logic: Sat/Sun -> Friday; otherwise yesterday
+    d = (utc_now - timedelta(days=1)).date()
+    if d.weekday() == 6:  # Sunday -> Friday
+        d = d - timedelta(days=2)
+    elif d.weekday() == 5:  # Saturday -> Friday
+        d = d - timedelta(days=1)
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
+def _load_events_for_date(path: Path, date_utc: datetime) -> List[EventRow]:
+    out: List[EventRow] = []
+    if not path.exists():
+        return out
+    target = date_utc.date()
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
-            e = json.loads(line)
-            ts = e.get("ts") or ""
-            if not ts.startswith(str(day)):
+            try:
+                obj = json.loads(line)
+            except Exception:
                 continue
-            tick = e.get("ticker") or "UNK"
-            by_ticker[tick].append(e)
+            ts = obj.get("ts")
+            title = (obj.get("title") or "").strip()
+            if not ts or not title:
+                continue
+            try:
+                when = _parse_iso(ts)
+            except Exception:
+                continue
+            if when.date() != target:
+                continue
+            out.append(
+                EventRow(
+                    ts=when,
+                    title=title,
+                    source=obj.get("source") or "",
+                    ticker=obj.get("ticker"),
+                )
+            )
+    return out
 
-    # naive scoring: positive sentiment+relevance => +1 weight for seen tags; negative => -1
-    tag_delta = defaultdict(int)
-    total = 0
-    for tick, events in by_ticker.items():
-        for e in events:
-            total += 1
-            cls = e.get("cls") or {}
-            sent = float(cls.get("sentiment_score") or 0.0)
-            rel = float(cls.get("relevance_score") or 0.0)
-            for tag in cls.get("tags") or []:
-                if sent + rel > 0.5:
-                    tag_delta[tag] += 1
-                elif sent + rel < -0.5:
-                    tag_delta[tag] -= 1
 
-    # apply deterministic weight updates (bounded, sorted by key for stable output)
-    changed = False
-    for tag in sorted(tag_delta.keys()):
-        delta = tag_delta[tag]
-        if delta == 0:
+def _classify_title(title: str, keyword_categories: Dict[str, List[str]]) -> List[str]:
+    """Return list of categories hit by the title, once per category."""
+    lt = (title or "").lower()
+    hits: List[str] = []
+    for cat, phrases in (keyword_categories or {}).items():
+        try:
+            if any((p or "").lower() in lt for p in phrases):
+                hits.append(cat)
+        except Exception:
             continue
-        w = weights.get(tag, 0.0)
-        nw = max(min(w + 0.1 * delta, 5.0), -5.0)
-        if nw != w:
-            weights[tag] = round(nw, 3)
-            changed = True
+    return hits
 
-    # persist artifacts
-    with open(f"out/analyzer/summary_{day}.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["tag", "delta"])
-        for k in sorted(tag_delta.keys()):
-            w.writerow([k, tag_delta[k]])
-    if changed:
-        save_keyword_weights(weights)
-    return {"count": total, "updated": changed}
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", help="YYYY-MM-DD; default = prior trading day")
-    args = parser.parse_args()
-    setup_logging()
-    log = get_logger("analyzer")
-    d = prior_trading_day_utc() if not args.date else datetime.strptime(args.date, "%Y-%m-%d").date()
-    res = run_for(d)
-    log.info(f"analyzer_done date={d} events={res['count']} weights_updated={res['updated']}")
+def _compute_weights(
+    events: List[EventRow],
+    keyword_categories: Dict[str, List[str]],
+    default_weight: float,
+) -> Dict[str, float]:
+    """
+    Deterministic weights:
+      weight(cat) = default_weight * (1 + count(cat) / max(1, total_hits))
+    This keeps a floor at default_weight and adds a small, normalized boost.
+    """
+    counts = Counter()
+    total_hits = 0
+    for ev in events:
+        hits = _classify_title(ev.title, keyword_categories)
+        total_hits += len(hits)
+        counts.update(hits)
+
+    if total_hits == 0:
+        return {cat: float(default_weight) for cat in keyword_categories.keys()}
+
+    weights: Dict[str, float] = {}
+    for cat in keyword_categories.keys():
+        c = counts.get(cat, 0)
+        w = float(default_weight) * (1.0 + (c / total_hits))
+        weights[cat] = round(w, 4)
+    return weights
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    settings = get_settings()
+    setup_logging(settings.log_level)
+
+    parser = argparse.ArgumentParser(
+        description="Post-close analyzer to update keyword weights."
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="UTC date YYYY-MM-DD (default: prior trading day)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.date:
+        try:
+            target = datetime.strptime(args.date, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            log.warning("invalid --date format; use YYYY-MM-DD")
+            return 2
+    else:
+        target = _prior_trading_day(datetime.now(timezone.utc))
+
+    data_dir = settings.data_dir
+    out_dir = settings.out_dir
+
+    events_path = data_dir / "events.jsonl"
+    events = _load_events_for_date(events_path, target)
+    log.info(
+        "analyzer_load date=%s events=%s from=%s",
+        target.date().isoformat(),
+        len(events),
+        str(events_path),
+    )
+
+    # compute weights
+    kw_cats = settings.keyword_categories
+    default_w = settings.keyword_default_weight
+    weights = _compute_weights(events, kw_cats, default_w)
+
+    # write artifacts
+    os.makedirs(out_dir / "analyzer", exist_ok=True)
+    stats_path = data_dir / "analyzer" / "keyword_stats.json"
+    os.makedirs(stats_path.parent, exist_ok=True)
+
+    # CSV summary
+    csv_path = out_dir / "analyzer" / (f"summary_{target.date().isoformat()}.csv")
+    try:
+        import csv
+
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            wcsv = csv.writer(f)
+            wcsv.writerow(["ts_utc", "source", "ticker", "title"])
+            for ev in events:
+                wcsv.writerow([ev.ts.isoformat(), ev.source, ev.ticker or "", ev.title])
+        log.info("analyzer_csv path=%s", str(csv_path))
+    except Exception as err:
+        log.warning("analyzer_csv_failed err=%s", str(err))
+
+    # JSON weights for classifier dynamic load
+    try:
+        with stats_path.open("w", encoding="utf-8") as f:
+            json.dump(weights, f, indent=2, sort_keys=True)
+        log.info(
+            "analyzer_weights path=%s categories=%s", str(stats_path), len(weights)
+        )
+    except Exception as err:
+        log.warning("analyzer_weights_failed err=%s", str(err))
+
+    # console summary
+    log.info("analyzer_result date=%s weights=%s", target.date().isoformat(), weights)
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

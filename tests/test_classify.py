@@ -1,8 +1,9 @@
 """Tests for the classification module."""
 
+from datetime import datetime
+
 from catalyst_bot.classify import classify
 from catalyst_bot.models import NewsItem
-from datetime import datetime
 
 
 def test_classify_detects_fda_keyword_and_sentiment() -> None:

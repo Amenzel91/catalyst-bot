@@ -18,14 +18,22 @@ log = get_logger("feeds")
 USER_AGENT = "CatalystBot/1.0 (+https://example.local)"
 
 PR_FEEDS: List[Tuple[str, str]] = [
-    ("businesswire", "https://www.businesswire.com/portal/site/home/news/industry/?vnsId=31392&rss=1"),
-    ("globenewswire", "https://www.globenewswire.com/RssFeed/orgs/5560/feedTitle/Newswire"),
+    (
+        "businesswire",
+        "https://www.businesswire.com/portal/site/home/news/industry/?vnsId=31392&rss=1",
+    ),
+    (
+        "globenewswire",
+        "https://www.globenewswire.com/RssFeed/orgs/5560/feedTitle/Newswire",
+    ),
     ("accesswire", "https://www.accesswire.com/rss/latest"),
     ("prnewswire", "https://www.prnewswire.com/rss/news-releases-list.rss"),
 ]
 
+
 def _sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
 
 def _to_utc(ts: Optional[str]) -> str:
     if not ts:
@@ -35,8 +43,10 @@ def _to_utc(ts: Optional[str]) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()
 
+
 def stable_id(source: str, guid: Optional[str], title: str, pub: Optional[str]) -> str:
     return _sha1("|".join([source, guid or "", title.strip(), pub or ""]))
+
 
 def parse_entry(source: str, e) -> Dict:
     title = (e.get("title") or "").strip()
@@ -53,6 +63,7 @@ def parse_entry(source: str, e) -> Dict:
         "ticker": extract_ticker(title),
     }
 
+
 # Ticker extraction (tight): explicit formats only to avoid false positives.
 _EXCH = r"(?:NASDAQ|NYSE|AMEX|NYSEMKT|NYSE\s*American)"
 TICKER_PATTERNS = [
@@ -61,6 +72,7 @@ TICKER_PATTERNS = [
     re.compile(r"\$([A-Z]{1,5})\b"),  # $ABC
 ]
 
+
 def extract_ticker(text: str) -> Optional[str]:
     t = (text or "").upper()
     for pat in TICKER_PATTERNS:
@@ -68,6 +80,7 @@ def extract_ticker(text: str) -> Optional[str]:
         if m:
             return m.group(m.lastindex or 1)
     return None
+
 
 def _make_session() -> requests.Session:
     s = requests.Session()
@@ -95,6 +108,7 @@ def _make_session() -> requests.Session:
         pass
     return s
 
+
 def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
     session = _make_session()
     items: List[Dict] = []
@@ -103,7 +117,8 @@ def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
 
     for name, url in PR_FEEDS:
         m = metrics.setdefault(
-            name, {"ok": 0, "http4": 0, "http5": 0, "errors": 0, "entries": 0, "t_ms": 0.0}
+            name,
+            {"ok": 0, "http4": 0, "http5": 0, "errors": 0, "entries": 0, "t_ms": 0.0},
         )
         t0 = time.perf_counter()
 
@@ -114,7 +129,9 @@ def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
             except Exception as e:
                 m["errors"] += 1
                 if attempt >= max_attempts:
-                    log.warning(f"feed_http_error source={name} attempt={attempt} err={e!s}")
+                    log.warning(
+                        f"feed_http_error source={name} attempt={attempt} err={e!s}"
+                    )
                     break
                 _sleep_with_jitter(attempt)
                 continue
@@ -145,7 +162,9 @@ def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
                         m["http4"] += 1  # count 429 under http4
                     else:
                         m["http5"] += 1
-                    log.warning(f"feed_http status={status} source={name} url={url} attempts={attempt}")
+                    log.warning(
+                        f"feed_http status={status} source={name} url={url} attempts={attempt}"
+                    )
                     break
                 ra = _parse_retry_after(resp.headers.get("Retry-After"))
                 if ra is not None:
@@ -161,13 +180,22 @@ def fetch_pr_feeds(timeout: int = 15) -> List[Dict]:
         time.sleep(0.05)
 
     t_cycle_ms = round((time.perf_counter() - t_cycle_start) * 1000.0, 1)
-    summary = {"feeds_summary": {"sources": len(PR_FEEDS), "items": len(items), "t_ms": t_cycle_ms, "by_source": metrics}}
+    summary = {
+        "feeds_summary": {
+            "sources": len(PR_FEEDS),
+            "items": len(items),
+            "t_ms": t_cycle_ms,
+            "by_source": metrics,
+        }
+    }
     log.info(summary)
     return items
 
+
 def _sleep_with_jitter(attempt: int) -> None:
-    base = min(2 ** attempt, 8)
+    base = min(2**attempt, 8)
     time.sleep(base + random.uniform(0, 0.25))
+
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     if not value:
@@ -177,18 +205,22 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     except Exception:
         return None
 
+
 def dedupe(items: Iterable[Dict]) -> List[Dict]:
     seen: set[str] = set()
     out: List[Dict] = []
     for it in items:
         i = it.get("id")
         if not i:
-            i = stable_id(it.get("source", ""), "", it.get("title", ""), it.get("ts", ""))
+            i = stable_id(
+                it.get("source", ""), "", it.get("title", ""), it.get("ts", "")
+            )
             it["id"] = i
         if i not in seen:
             out.append(it)
             seen.add(i)
     return out
+
 
 def validate_finviz_token(cookie: str, timeout: int = 10) -> Tuple[bool, int]:
     if not cookie:

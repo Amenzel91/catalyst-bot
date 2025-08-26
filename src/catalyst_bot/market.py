@@ -8,18 +8,14 @@ written synchronously but could be adapted to async if needed.
 
 from __future__ import annotations
 
-import json
-import logging
 import time
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import requests
 
 from .config import get_settings
-
 
 API_BASE_URL = "https://www.alphavantage.co/query"
 
@@ -46,7 +42,9 @@ def _call_api(params: Dict[str, str], timeout: int = 15) -> Dict:
     return {}
 
 
-def get_intraday(symbol: str, interval: str = "5min", output_size: str = "compact") -> Optional[pd.DataFrame]:
+def get_intraday(
+    symbol: str, interval: str = "5min", output_size: str = "compact"
+) -> Optional[pd.DataFrame]:
     """Fetch intraday OHLCV data for ``symbol``.
 
     Parameters
@@ -112,7 +110,9 @@ def get_latest_price(symbol: str) -> Optional[float]:
         return None
 
 
-def get_daily_series(symbol: str, output_size: str = "compact") -> Optional[pd.DataFrame]:
+def get_daily_series(
+    symbol: str, output_size: str = "compact"
+) -> Optional[pd.DataFrame]:
     """Fetch daily adjusted time series for ``symbol``."""
     params = {
         "function": "TIME_SERIES_DAILY_ADJUSTED",

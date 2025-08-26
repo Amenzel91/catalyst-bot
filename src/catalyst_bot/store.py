@@ -12,9 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Set
-
-from .config import get_settings
+from typing import Dict, Iterator, List, Set
 
 
 def append_jsonl(path: Path, record: Dict) -> None:
