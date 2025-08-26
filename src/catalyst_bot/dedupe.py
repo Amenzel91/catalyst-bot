@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable
 
 try:
     from rapidfuzz import fuzz
@@ -50,7 +49,9 @@ def similarity(a: str, b: str) -> float:
     return fuzz.token_set_ratio(a, b) / 100.0
 
 
-def is_near_duplicate(title: str, existing: Iterable[str], threshold: float = 0.8) -> bool:
+def is_near_duplicate(
+    title: str, existing: Iterable[str], threshold: float = 0.8
+) -> bool:
     """Determine if ``title`` is a near duplicate of any in ``existing``.
 
     Parameters

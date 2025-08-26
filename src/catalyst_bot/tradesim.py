@@ -10,11 +10,10 @@ constraints of the data available from Alpha Vantage.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Dict, Iterator, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 
-from .config import get_settings
 from .market import get_intraday
 from .models import NewsItem, TradeSimConfig, TradeSimResult
 
@@ -32,7 +31,9 @@ def _find_bar_index(df: pd.DataFrame, ts: datetime) -> Optional[int]:
         return None
 
 
-def simulate_trades(item: NewsItem, config: Optional[TradeSimConfig] = None) -> List[TradeSimResult]:
+def simulate_trades(
+    item: NewsItem, config: Optional[TradeSimConfig] = None
+) -> List[TradeSimResult]:
     """Simulate a set of entry and hold strategies for a single news item.
 
     Parameters
@@ -78,7 +79,11 @@ def simulate_trades(item: NewsItem, config: Optional[TradeSimConfig] = None) -> 
                     item=item,
                     entry_offset=offset,
                     hold_duration=hold,
-                    returns={"best": pct_return, "mid": pct_return, "worst": pct_return},
+                    returns={
+                        "best": pct_return,
+                        "mid": pct_return,
+                        "worst": pct_return,
+                    },
                 )
             )
     return results

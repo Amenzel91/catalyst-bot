@@ -8,7 +8,7 @@ consistency and facilitates easier refactoring in the future.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional
 
 
@@ -41,7 +41,9 @@ class TradeSimConfig:
 
     position_size: float = 500.0  # dollars deployed per trade
     slippage_bps: float = 5.0  # slippage in basis points (0.01%)
-    entry_offsets: List[int] = field(default_factory=lambda: [0, 5, 15, 30])  # minutes after news
+    entry_offsets: List[int] = field(
+        default_factory=lambda: [0, 5, 15, 30]
+    )  # minutes after news
     hold_durations: List[int] = field(
         default_factory=lambda: [5, 15, 30, 60, 120, 240]  # minutes to hold
     )
