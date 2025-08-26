@@ -118,8 +118,7 @@ def _load_dynamic_weights_with_fallback(
 
     weights: Dict[str, float] = {}
     try:
-        from .classify import load_dynamic_keyword_weights
-
+        # Prefer the library loader
         weights = load_dynamic_keyword_weights()
     except Exception as err:
         log.info("dyn_weights_helper_failed err=%s", str(err))
@@ -146,7 +145,11 @@ def _cycle(log, settings) -> None:
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
 
-    dyn_weights = load_dynamic_keyword_weights()
+    # Load analyzer weights (with fallback) and track path existence for metrics
+    dyn_weights, dyn_loaded, dyn_path, dyn_path_exists = (
+        _load_dynamic_weights_with_fallback(log)
+    )
+
     price_ceiling_env = (os.getenv("PRICE_CEILING") or "").strip()
     price_ceiling = None
     try:
@@ -169,15 +172,22 @@ def _cycle(log, settings) -> None:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
-        # If a ceiling is set, we require a ticker to check price.
-        if price_ceiling is not None and not ticker:
+        # NEW: hard guard — do not classify items without a ticker
+        if not ticker:
             skipped_no_ticker += 1
+            continue
+
+        # Prepare item object (can raise if feed dict is malformed)
+        try:
+            item_obj = market.NewsItem.from_feed_dict(it)  # type: ignore[attr-defined]
+        except Exception:
+            log.info("item_parse_skip source=%s ticker=%s", source, ticker)
             continue
 
         # Classify (lightweight; uses analyzer weights if present)
         try:
             scored = classify(
-                item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
+                item=item_obj,
                 keyword_weights=dyn_weights,
             )
         except Exception:
@@ -188,14 +198,13 @@ def _cycle(log, settings) -> None:
         # Optional price gating
         last_px = None
         last_chg = None
-        if ticker:
-            try:
-                last_px, last_chg = market.get_last_price_change(ticker)
-            except Exception:
-                # Price failed; if ceiling is set, skip. Otherwise, allow px=n/a
-                if price_ceiling is not None:
-                    skipped_price_gate += 1
-                    continue
+        try:
+            last_px, last_chg = market.get_last_price_change(ticker)
+        except Exception:
+            # Price failed; if ceiling is set, skip. Otherwise, allow px=n/a
+            if price_ceiling is not None:
+                skipped_price_gate += 1
+                continue
 
         # If ceiling is active and we have a price, enforce it.
         if price_ceiling is not None and last_px is not None:
@@ -225,9 +234,9 @@ def _cycle(log, settings) -> None:
         len(items),
         tickers_present,
         tickers_missing,
-        "yes" if dyn_weights else "no",
-        "yes" if dyn_weights else "no",
-        os.path.join(settings.data_dir, "analyzer", "keyword_stats.json"),
+        "yes" if dyn_loaded else "no",
+        "yes" if dyn_path_exists else "no",
+        dyn_path,
         skipped_no_ticker,
         skipped_price_gate,
     )
@@ -299,7 +308,7 @@ def runner_main(once: bool = False, loop: bool = False) -> int:
         finviz_status = "missing"
 
     log.info(
-        "boot_start alerts_enabled=%s webhook=%s record_only=%s " "finviz_token=%s",
+        "boot_start alerts_enabled=%s webhook=%s record_only=%s finviz_token=%s",
         settings.feature_alerts,
         "set" if settings.discord_webhook_url else "missing",
         settings.feature_record_only,
