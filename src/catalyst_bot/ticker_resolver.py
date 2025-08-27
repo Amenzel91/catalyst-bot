@@ -1,184 +1,228 @@
-"""
-Ticker Resolver v1
-
-Goal
-----
-Best-effort ticker extraction with two stages:
-1) Title pattern matching (no network).
-2) Optional HTML page scrape (network, short timeout), gated by FEATURE_TICKER_RESOLVER_HTML.
-
-Design
-------
-- No required changes to existing code. Provide `resolve_from_source(...)` that can be
-  called as a fallback from feeds.extract_ticker(title) when it returns None.
-- Reads env flags directly to avoid churn in settings.py today.
-
-Env Flags
----------
-FEATURE_TICKER_RESOLVER            (default: "true")
-FEATURE_TICKER_RESOLVER_HTML       (default: "false")
-TICKER_RESOLVER_HTML_TIMEOUT_SEC   (default: "3")
-TICKER_RESOLVER_USER_AGENT         (default: custom UA)
-"""
-
+# src/catalyst_bot/ticker_resolver.py
 from __future__ import annotations
 
 import os
 import re
+import sqlite3
+import logging
+import pathlib
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, List, Optional, Tuple
 
-try:
-    # If the project has a structured logger, prefer it.
-    from catalyst_bot.logging_utils import get_logger  # type: ignore
-except Exception:  # pragma: no cover - fallback logger
-    import logging
+log = logging.getLogger(__name__)
 
-    def get_logger(name: str):
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+# Resolve the default database path:
+# repo_root / data / tickers.db  (or override with env TICKERS_DB_PATH)
+def _default_db_path() -> str:
+    env = os.getenv("TICKERS_DB_PATH")
+    if env:
+        return env
+    # src/catalyst_bot/ticker_resolver.py -> .../src -> repo root
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    return str(repo_root / "data" / "tickers.db")
+
+
+@dataclass(frozen=True)
+class TickerRecord:
+    cik: int
+    ticker: str
+    name: str
+
+
+class TickerResolver:
+    """
+    SQLite-backed resolver for tickers and company names.
+
+    - Exact ticker match: fast O(log n) via index.
+    - Normalization: handles 'BRK.B', 'BRKB', '$nvda', stray spaces/punct.
+    - Name search: simple AND-of-tokens using LIKE with a few ranking heuristics.
+    """
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
+        self.db_path = db_path or _default_db_path()
+        if not os.path.exists(self.db_path):
+            raise FileNotFoundError(
+                f"Tickers DB not found at {self.db_path}. "
+                "Create it via import_tickers_from_ndjson.py."
+            )
+        self._conn = self._connect()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        # small perf bump / consistency
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        return conn
+
+    # --------------------------
+    # Public API
+    # --------------------------
+    def resolve(self, query: str, limit: int = 5) -> List[TickerRecord]:
+        """
+        Auto-detect whether the query is likely a ticker or a name,
+        then return up to `limit` best matches.
+        """
+        q = _clean(query)
+        if not q:
+            return []
+
+        # Likely a ticker if short and mostly alnum with A/B share suffixes, etc.
+        if _looks_like_ticker(q):
+            hit = self._by_ticker(q)
+            if hit:
+                return [hit]
+            # If exact miss, try name search as a fallback
+            return self._by_name(q, limit=limit)
+
+        # Otherwise treat as company name
+        return self._by_name(q, limit=limit)
+
+    def resolve_one(self, query: str) -> Optional[TickerRecord]:
+        """Return the single best match, if any."""
+        rows = self.resolve(query, limit=1)
+        return rows[0] if rows else None
+
+    # --------------------------
+    # Internals
+    # --------------------------
+    def _by_ticker(self, raw: str) -> Optional[TickerRecord]:
+        """
+        Try a series of normalizations to find a ticker:
+         - exact
+         - dot <-> dash (BRK.B <-> BRK-B)
+         - strip dash (BRKB)
+         - uppercase already applied in _clean
+        """
+        q = raw.upper()
+
+        # 1) exact (case-insensitive)
+        row = self._one(
+            "SELECT cik,ticker,name FROM tickers WHERE ticker = ? COLLATE NOCASE",
+            (q,),
         )
-        return logging.getLogger(name)
+        if row:
+            return _row_to_rec(row)
 
+        # 2) dot->dash form (BRK.B -> BRK-B)
+        alt_dash = q.replace(".", "-")
+        if alt_dash != q:
+            row = self._one(
+                "SELECT cik,ticker,name FROM tickers WHERE ticker = ? COLLATE NOCASE",
+                (alt_dash,),
+            )
+            if row:
+                return _row_to_rec(row)
 
-log = get_logger("ticker_resolver")
+        # 3) dash->dot form (BRK-B -> BRK.B) — some people type dots
+        alt_dot = q.replace("-", ".")
+        if alt_dot != q:
+            row = self._one(
+                "SELECT cik,ticker,name FROM tickers WHERE ticker = ? COLLATE NOCASE",
+                (alt_dot,),
+            )
+            if row:
+                return _row_to_rec(row)
 
-# Compile once; support common PR wire headline patterns.
-# Examples:
-#  - "Acme Corp (NASDAQ: ABC) announces..."
-#  - "Something something — NYSE: XYZ"
-#  - "Company Name (OTC: ABCD)"
-#  - "Company (Nasdaq: ABC)"
-#  - "Company [NYSE American: XYZ]"
-_EXCH_LABEL = r"(NASDAQ|Nasdaq|NYSE|NYSE\s+American|OTC|OTCQB|OTCQX|CSE|TSX|AMEX)"
-_TICKER_CORE = r"[A-Z]{1,5}(?:\.[A-Z])?"  # allow A, ABCD, BRK.B
+        # 4) compact form (BRKB) against stored ticker with dashes removed
+        compact = q.replace("-", "").replace(".", "")
+        row = self._one(
+            "SELECT cik,ticker,name FROM tickers WHERE REPLACE(REPLACE(ticker,'-',''),'.','') = ? COLLATE NOCASE",
+            (compact,),
+        )
+        if row:
+            return _row_to_rec(row)
 
-# Case-insensitive patterns so "wIdg" matches and is normalized to "WIDG".
-_FLAGS = re.IGNORECASE
-TITLE_PATTERNS = [
-    re.compile(rf"\(\s*{_EXCH_LABEL}\s*:\s*({_TICKER_CORE})\s*\)", _FLAGS),
-    re.compile(rf"{_EXCH_LABEL}\s*:\s*({_TICKER_CORE})", _FLAGS),
-    re.compile(rf"\[\s*{_EXCH_LABEL}\s*:\s*({_TICKER_CORE})\s*\]", _FLAGS),
-]
-
-# Very loose symbol guard for fallbacks.
-_SYMBOL_RE = re.compile(rf"\b({_TICKER_CORE})\b", _FLAGS)
-
-DEFAULT_UA = (
-    "CatalystBot/1.0 (+https://github.com/Amenzel91/catalyst-bot) "
-    "Python-requests/RESOLVER"
-)
-
-
-def _env_flag(name: str, default: str) -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-@dataclass
-class ResolveResult:
-    ticker: Optional[str]
-    method: str  # "title", "html", or "none"
-
-
-def _try_from_title(title: str) -> Optional[str]:
-    if not title:
-        return None
-    for pat in TITLE_PATTERNS:
-        m = pat.search(title)
-        if m:
-            sym = m.group(2 if m.lastindex and m.lastindex >= 2 else 1)
-            return sym.upper()
-    # Extremely conservative loose fallback: single-hit token that looks
-    # like a symbol.
-    # Avoid returning common words; require it to be in parentheses or
-    # brackets context if ambiguous.
-    paren_ctx = re.findall(r"\(([^)]{1,40})\)", title) + re.findall(
-        r"\[([^\]]{1,40})\]", title
-    )
-    for ctx in paren_ctx:
-        m = _SYMBOL_RE.search(ctx)
-        if m:
-            return m.group(1).upper()
-    return None
-
-
-def _try_from_html(url: str) -> Optional[str]:
-    """Fetch page and attempt to find a labeled ticker. Short timeouts, safe failure."""
-    try:
-        import requests  # lazy import so tests without requests can still run
-    except Exception:
         return None
 
-    if not url or url.startswith("about:"):
-        return None
+    def _by_name(self, raw: str, limit: int = 5) -> List[TickerRecord]:
+        """
+        Token-AND search with LIKE. Prioritize:
+          - prefix match on first token
+          - shorter names
+        """
+        tokens = _name_tokens(raw)
+        if not tokens:
+            return []
 
-    timeout = float(os.getenv("TICKER_RESOLVER_HTML_TIMEOUT_SEC", "3"))
-    ua = os.getenv("TICKER_RESOLVER_USER_AGENT", DEFAULT_UA)
-    headers = {"User-Agent": ua}
+        # Build WHERE: name LIKE ? AND name LIKE ? ...
+        wheres = " AND ".join(["name LIKE ?"] * len(tokens))
+        params: List[str] = [f"%{t}%" for t in tokens]
 
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout)
-        if resp.status_code != 200 or not resp.text:
-            return None
-        html = resp.text
-    except Exception:
-        return None
+        # Ranking:
+        #  - exact-ish prefix on first token first (e.g., 'APPLE%')
+        #  - then shorter names
+        first = tokens[0]
+        order = """
+            ORDER BY
+              CASE WHEN UPPER(name) LIKE ? THEN 0 ELSE 1 END,
+              LENGTH(name) ASC,
+              ticker ASC
+            LIMIT ?
+        """
+        params.extend([f"{first}%".upper(), limit])
 
-    # Look for explicit "NASDAQ: ABC" etc first
-    for pat in TITLE_PATTERNS:
-        m = pat.search(html)
-        if m:
-            sym = m.group(2 if m.lastindex and m.lastindex >= 2 else 1)
-            return sym.upper()
+        sql = f"SELECT cik,ticker,name FROM tickers WHERE {wheres} {order}"
+        rows = list(self._all(sql, tuple(params)))
+        return [_row_to_rec(r) for r in rows]
 
-    # Then look for likely symbol near exchange words
-    exch_words = [
-        "Nasdaq",
-        "NASDAQ",
-        "NYSE",
-        "NYSE American",
-        "OTC",
-        "OTCQX",
-        "OTCQB",
-        "CSE",
-        "TSX",
-        "AMEX",
-    ]
-    for w in exch_words:
-        idx = html.find(w)
-        if idx != -1:
-            window = html[max(0, idx - 50) : idx + 50]
-            m = _SYMBOL_RE.search(window)
-            if m:
-                return m.group(1).upper()
+    def _one(self, sql: str, params: Tuple) -> Optional[sqlite3.Row]:
+        cur = self._conn.execute(sql, params)
+        row = cur.fetchone()
+        cur.close()
+        return row
 
-    return None
+    def _all(self, sql: str, params: Tuple) -> Iterable[sqlite3.Row]:
+        cur = self._conn.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
 
 
-def resolve_from_source(
-    title: str,
-    link: Optional[str],
-    source_host: Optional[str],
-) -> ResolveResult:
-    """
-    Public entrypoint used by feeds.py fallback.
+# --------------------------
+# Helpers
+# --------------------------
+_PUNCT_RE = re.compile(r"[\s\$\#\@\!\?\,\;\:\(\)\[\]\{\}]+")
 
-    Returns:
-        ResolveResult(ticker=<str|None>, method="title"|"html"|"none")
-    """
-    if not _env_flag("FEATURE_TICKER_RESOLVER", "true"):
-        return ResolveResult(ticker=None, method="none")
+def _clean(q: str) -> str:
+    # trim, normalize spaces/punct, uppercase
+    q = q.strip()
+    q = _PUNCT_RE.sub(" ", q)
+    return q.upper().strip()
 
-    # Stage 1: title
-    t = _try_from_title(title or "")
-    if t:
-        return ResolveResult(ticker=t, method="title")
+def _looks_like_ticker(q: str) -> bool:
+    # Heuristics: short, mostly A-Z0-9, allows . or - for share classes
+    if len(q) <= 6 and re.fullmatch(r"[A-Z0-9][A-Z0-9\.\-]{0,5}", q):
+        return True
+    # leading $NVDA style
+    if q.startswith("$") and len(q) <= 7:
+        return True
+    return False
 
-    # Stage 2: optional HTML probe (opt-in)
-    if _env_flag("FEATURE_TICKER_RESOLVER_HTML", "false") and link:
-        h = _try_from_html(link)
-        if h:
-            return ResolveResult(ticker=h, method="html")
+_STOPWORDS = {"INC", "CORP", "PLC", "LLC", "CO", "COMPANY", "SA", "NV", "LP", "LTD", "GROUP"}
 
-    return ResolveResult(ticker=None, method="none")
+def _name_tokens(q: str) -> List[str]:
+    # keep alnum words; drop common suffixes
+    words = re.findall(r"[A-Z0-9]+", q.upper())
+    return [w for w in words if w not in _STOPWORDS and len(w) > 1]
+
+def _row_to_rec(r: sqlite3.Row) -> TickerRecord:
+    return TickerRecord(cik=int(r["cik"]), ticker=str(r["ticker"]), name=str(r["name"]))
+
+
+# --------------------------
+# CLI (handy for quick tests)
+# --------------------------
+if __name__ == "__main__":
+    import argparse, json
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+
+    p = argparse.ArgumentParser(description="Resolve tickers/company names via SQLite.")
+    p.add_argument("query", help="Ticker or company name to resolve")
+    p.add_argument("--db", dest="db_path", default=None, help="Path to tickers.db (optional)")
+    p.add_argument("--limit", type=int, default=5, help="Max rows to return for name search")
+    args = p.parse_args()
+
+    r = TickerResolver(db_path=args.db_path)
+    rows = r.resolve(args.query, limit=args.limit)
+    print(json.dumps([row.__dict__ for row in rows], indent=2))
