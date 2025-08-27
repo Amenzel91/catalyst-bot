@@ -11,3 +11,15 @@ Thumbs.db
 # Data and output directories (created at runtime)
 data/
 out/
+
+# Ignore generated databases anywhere
+*.db
+*.sqlite*
+*.sqlite3
+
+# Ignore data by default, then selectively allow certain files
+data/
+!data/
+!data/.gitkeep
+!data/README.md
+!data/sec/**
