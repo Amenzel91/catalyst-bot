@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import atexit
 import json
-import logging
 import os
 import sys
 import time
@@ -38,14 +37,14 @@ try:
     # Prefer project logger if available
     from catalyst_bot.logging_utils import get_logger  # type: ignore
 except Exception:  # pragma: no cover - fallback
-    import logging as _py_logging  # noqa: F401
+    import logging  # noqa: F401
 
     def get_logger(name: str):
-        _py_logging.basicConfig(
+        logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
-        return _py_logging.getLogger(name)
+        return logging.getLogger(name)  # type: ignore
 
 
 log = get_logger("site_hooks")
@@ -62,21 +61,15 @@ def _int(name: str, default: int) -> int:
         return default
 
 
-def _safe_emit_json(level: str, event: str, **fields) -> None:
+def _emit_raw_json(event: str, **fields) -> None:
     """
-    Best-effort emit for atexit: try logging; if handlers are closed,
-    fall back to sys.__stderr__ without raising.
+    Atexit-safe: write a minimal JSON line to stderr without using logging.
+    This avoids 'I/O operation on closed file' from closed logging handlers.
     """
-    try:
-        getattr(log, level.lower(), log.info)(event, extra=fields)
-        return
-    except Exception:
-        pass
-
     try:
         payload = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "level": level.upper(),
+            "level": "INFO",
             "name": "site_hooks",
             "msg": event,
         }
@@ -93,22 +86,22 @@ def _safe_emit_json(level: str, event: str, **fields) -> None:
 if not _flag("FEATURE_SITE_HOOKS", "true"):
     log.info("site_hooks_disabled")
 else:
-    # ---------- throttled counters ----------
+    # Throttled counters (resolver + sanitization)
     _fallback_hits = 0
     _fallback_log_every = max(1, _int("HOOK_FALLBACK_LOG_EVERY_N", 100))
 
     _sanitized_hits = 0
     _sanitized_log_every = max(1, _int("HOOK_SANITIZED_LOG_EVERY_N", 50))
 
-    def _log_fallback_hit(**extra_fields) -> None:
-        """Emit an INFO message every N resolver fallback hits."""
+    def _log_fallback_hit(**extra_fields):
+        """Emit an INFO message every N hits; retain total for exit summary."""
         global _fallback_hits
         _fallback_hits += 1
         if _fallback_hits % _fallback_log_every == 0:
             log.info("ticker_resolver_fallback_hit", extra=extra_fields)
 
-    def _log_sanitized_drop(**extra_fields) -> None:
-        """Emit an INFO message every N sanitized drops (throttled)."""
+    def _log_sanitized_drop(**extra_fields):
+        """Emit an INFO message every N sanitized drops to reduce log noise."""
         global _sanitized_hits
         _sanitized_hits += 1
         if _sanitized_hits % _sanitized_log_every == 0:
@@ -116,13 +109,11 @@ else:
 
     @atexit.register
     def _exit_summary() -> None:
-        # Use safe emitter so we don't touch closed handlers
+        # Do NOT use logging here; handlers may be closed.
         if _fallback_hits:
-            _safe_emit_json(
-                "info", "ticker_resolver_fallback_summary", hits=_fallback_hits
-            )
+            _emit_raw_json("ticker_resolver_fallback_summary", hits=_fallback_hits)
         if _sanitized_hits:
-            _safe_emit_json("info", "ticker_sanitized_summary", drops=_sanitized_hits)
+            _emit_raw_json("ticker_sanitized_summary", drops=_sanitized_hits)
 
     # ---------------------------------------------------------------
     # Hook 1: alerts.send_alert_safe -> persistent 'seen' suppression
@@ -154,7 +145,8 @@ else:
 
                 alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
                 log.info(
-                    "site_hooks_alerts_patched", extra={"target": "send_alert_safe"}
+                    "site_hooks_alerts_patched",
+                    extra={"target": "send_alert_safe"},
                 )
             else:
                 log.debug(
@@ -184,7 +176,10 @@ else:
                     try:
                         orig = _orig_extract(*args, **kwargs)
                     except Exception as e:
-                        log.debug("extract_ticker_orig_error", extra={"error": str(e)})
+                        log.debug(
+                            "extract_ticker_orig_error",
+                            extra={"error": str(e)},
+                        )
                         orig = None
 
                     title = kwargs.get("title")
@@ -270,7 +265,8 @@ else:
                 log.info("site_hooks_alerts_limiter_patched", extra={"target": "post"})
             else:
                 log.debug(
-                    "site_hooks_alerts_limiter_noop", extra={"reason": "post_missing"}
+                    "site_hooks_alerts_limiter_noop",
+                    extra={"reason": "post_missing"},
                 )
         except Exception as e:  # pragma: no cover
             log.debug("site_hooks_alerts_limiter_failed", extra={"error": str(e)})
