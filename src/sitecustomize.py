@@ -82,6 +82,16 @@ def _emit_raw_json(event: str, **fields) -> None:
         pass
 
 
+# ---- Lazy import helper to avoid early import of the module being run with -m ----
+def _resolve_from_source(*args, **kwargs):
+    """
+    Lazily import the resolver at call time to prevent Python's -m runtime warning:
+    "'catalyst_bot.ticker_resolver' found in sys.modules after import of package..."
+    """
+    from catalyst_bot.ticker_resolver import resolve_from_source as _rfs  # type: ignore
+    return _rfs(*args, **kwargs)
+
+
 # Be a good citizen: allow disabling entirely
 if not _flag("FEATURE_SITE_HOOKS", "true"):
     log.info("site_hooks_disabled")
@@ -164,7 +174,6 @@ else:
     if _flag("HOOK_TICKER_RESOLVER", "true") or _flag("HOOK_TICKER_SANITY", "true"):
         try:
             from catalyst_bot import feeds  # type: ignore
-            from catalyst_bot.ticker_resolver import resolve_from_source
             from catalyst_bot.ticker_sanity import sanitize_ticker
 
             fn = getattr(feeds, "extract_ticker", None)
@@ -194,10 +203,10 @@ else:
                     res = orig
                     if not res and _flag("HOOK_TICKER_RESOLVER", "true"):
                         try:
-                            r = resolve_from_source(title or "", link, source_host)
-                            if r.ticker:
+                            r = _resolve_from_source(title or "", link, source_host)
+                            if getattr(r, "ticker", None):
                                 _log_fallback_hit(
-                                    method=r.method,
+                                    method=getattr(r, "method", None),
                                     title=(title or "")[:80],
                                     link=(link or "")[:120],
                                 )
