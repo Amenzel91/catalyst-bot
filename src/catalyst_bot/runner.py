@@ -142,28 +142,30 @@ def _load_dynamic_weights_with_fallback(
 
 def _cycle(log, settings) -> None:
     """One ingest→dedupe→classify→alert pass with clean skip behavior."""
+    # Ingest + dedupe
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
 
-    # Load analyzer weights (with fallback) and track path existence for metrics
-    dyn_weights, dyn_loaded, dyn_path, dyn_path_exists = (
+    # Dynamic keyword weights (with on-disk fallback)
+    dyn_weights, dyn_loaded, dyn_path_str, dyn_path_exists = (
         _load_dynamic_weights_with_fallback(log)
     )
 
+    # Optional price ceiling (float > 0)
     price_ceiling_env = (os.getenv("PRICE_CEILING") or "").strip()
     price_ceiling = None
     try:
         if price_ceiling_env:
-            price_ceiling = float(price_ceiling_env)
-            if price_ceiling <= 0:
-                price_ceiling = None
+            val = float(price_ceiling_env)
+            if val > 0:
+                price_ceiling = val
     except Exception:
         price_ceiling = None
 
+    # Quick metrics
     tickers_present = sum(1 for it in deduped if (it.get("ticker") or "").strip())
     tickers_missing = len(deduped) - tickers_present
 
-    # Metrics for quiet skipping
     skipped_no_ticker = 0
     skipped_price_gate = 0
     alerted = 0
@@ -172,22 +174,16 @@ def _cycle(log, settings) -> None:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
-        # NEW: hard guard — do not classify items without a ticker
+        # Do not classify when there's no ticker
         if not ticker:
             skipped_no_ticker += 1
-            continue
-
-        # Prepare item object (can raise if feed dict is malformed)
-        try:
-            item_obj = market.NewsItem.from_feed_dict(it)  # type: ignore[attr-defined]
-        except Exception:
             log.info("item_parse_skip source=%s ticker=%s", source, ticker)
             continue
 
-        # Classify (lightweight; uses analyzer weights if present)
+        # Classify (uses analyzer weights if present)
         try:
             scored = classify(
-                item=item_obj,
+                item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
                 keyword_weights=dyn_weights,
             )
         except Exception:
@@ -201,18 +197,18 @@ def _cycle(log, settings) -> None:
         try:
             last_px, last_chg = market.get_last_price_change(ticker)
         except Exception:
-            # Price failed; if ceiling is set, skip. Otherwise, allow px=n/a
+            # If ceiling is set and price lookup failed, skip (can't enforce)
             if price_ceiling is not None:
                 skipped_price_gate += 1
                 continue
 
-        # If ceiling is active and we have a price, enforce it.
+        # Enforce price ceiling if active and we have a price
         if price_ceiling is not None and last_px is not None:
             if float(last_px) > float(price_ceiling):
                 skipped_price_gate += 1
                 continue
 
-        # Send alert
+        # Send (or record-only) alert
         ok = send_alert_safe(
             item_dict=it,
             scored=scored,
@@ -227,18 +223,21 @@ def _cycle(log, settings) -> None:
             # Downgrade to info to avoid spammy warnings for legitimate skips
             log.info("alert_skip source=%s ticker=%s", source, ticker)
 
+    # Final cycle metrics (now with deduped + alerted + correct dyn flags)
     log.info(
-        "cycle_metrics items=%s tickers_present=%s tickers_missing=%s "
+        "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' skipped_no_ticker=%s "
-        "skipped_price_gate=%s",
+        "skipped_price_gate=%s alerted=%s",
         len(items),
+        len(deduped),
         tickers_present,
         tickers_missing,
         "yes" if dyn_loaded else "no",
         "yes" if dyn_path_exists else "no",
-        dyn_path,
+        dyn_path_str,
         skipped_no_ticker,
         skipped_price_gate,
+        alerted,
     )
 
     # Analyzer: run at the scheduled UTC time (no-op if not time)
