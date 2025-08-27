@@ -1,8 +1,7 @@
-"""Top level package for the catalyst bot repository.
-
-This file marks the repository root as a Python package and allows
-relative imports within the project. It currently exposes no public
-symbols.
-"""
-
-__all__: list[str] = []
+# src/catalyst_bot/__init__.py
+__all__ = []
+# Keep this file lean. Avoid importing submodules at import time.
+# If you need names for type hints:
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .ticker_resolver import resolve  # or whatever symbols you reference in type hints
