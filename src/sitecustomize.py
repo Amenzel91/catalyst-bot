@@ -19,7 +19,7 @@ Toggle with env flags:
 - HOOK_TICKER_SANITY            (default: "true")
 - HOOK_ALERTS_RATE_LIMIT        (default: "false")  # opt-in
 - HOOK_FALLBACK_LOG_EVERY_N     (default: "100")    # throttle INFO logs
-- HOOK_SANITIZED_LOG_EVERY_N    (default: "50")     # throttle sanitized drops
+- HOOK_SANITIZED_LOG_EVERY_N    (default: "50")     # throttle INFO logs
 - ALERTS_RATE_WINDOW_SECS       (default: "60")     # if limiter on
 - ALERTS_RATE_MAX               (default: "4")      # if limiter on
 """
@@ -38,14 +38,14 @@ try:
     # Prefer project logger if available
     from catalyst_bot.logging_utils import get_logger  # type: ignore
 except Exception:  # pragma: no cover - fallback
-    import logging as _logging
+    import logging as _py_logging  # noqa: F401
 
     def get_logger(name: str):
-        _logging.basicConfig(
-            level=_logging.INFO,
+        _py_logging.basicConfig(
+            level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
-        return _logging.getLogger(name)
+        return _py_logging.getLogger(name)
 
 
 log = get_logger("site_hooks")
@@ -62,87 +62,67 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _safe_emit_json(level: str, event: str, **fields) -> None:
+    """
+    Best-effort emit for atexit: try logging; if handlers are closed,
+    fall back to sys.__stderr__ without raising.
+    """
+    try:
+        getattr(log, level.lower(), log.info)(event, extra=fields)
+        return
+    except Exception:
+        pass
+
+    try:
+        payload = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "level": level.upper(),
+            "name": "site_hooks",
+            "msg": event,
+        }
+        if fields:
+            payload.update(fields)
+        sys.__stderr__.write(json.dumps(payload) + "\n")
+        sys.__stderr__.flush()
+    except Exception:
+        # Last resort: swallow
+        pass
+
+
+# Be a good citizen: allow disabling entirely
 if not _flag("FEATURE_SITE_HOOKS", "true"):
     log.info("site_hooks_disabled")
 else:
-    # Throttled counters
+    # ---------- throttled counters ----------
     _fallback_hits = 0
     _fallback_log_every = max(1, _int("HOOK_FALLBACK_LOG_EVERY_N", 100))
 
     _sanitized_hits = 0
     _sanitized_log_every = max(1, _int("HOOK_SANITIZED_LOG_EVERY_N", 50))
 
-    def _log_fallback_hit(**extra_fields):
-        """Emit an INFO message every N resolver fallbacks; keep total for exit summary."""
+    def _log_fallback_hit(**extra_fields) -> None:
+        """Emit an INFO message every N resolver fallback hits."""
         global _fallback_hits
         _fallback_hits += 1
         if _fallback_hits % _fallback_log_every == 0:
-            try:
-                log.info("ticker_resolver_fallback_hit", extra=extra_fields)
-            except Exception:
-                # Logging may be unavailable late in shutdown; swallow.
-                pass
+            log.info("ticker_resolver_fallback_hit", extra=extra_fields)
 
-    def _log_sanitized_drop(**extra_fields):
-        """Emit an INFO message every N sanitized drops to reduce log noise."""
+    def _log_sanitized_drop(**extra_fields) -> None:
+        """Emit an INFO message every N sanitized drops (throttled)."""
         global _sanitized_hits
         _sanitized_hits += 1
         if _sanitized_hits % _sanitized_log_every == 0:
-            try:
-                log.info("ticker_sanitized_drop", extra=extra_fields)
-            except Exception:
-                pass
+            log.info("ticker_sanitized_drop", extra=extra_fields)
 
     @atexit.register
     def _exit_summary() -> None:
-        """Emit a summary at process exit without crashing if logging streams are closed."""
-        # Try normal logging; if it fails (e.g., under pytest capture), fall back to __stderr__
+        # Use safe emitter so we don't touch closed handlers
         if _fallback_hits:
-            try:
-                log.info(
-                    "ticker_resolver_fallback_summary",
-                    extra={"hits": int(_fallback_hits)},
-                )
-            except Exception:
-                try:
-                    payload = {
-                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "level": "INFO",
-                        "name": "site_hooks",
-                        "msg": "ticker_resolver_fallback_summary",
-                        "hits": int(_fallback_hits),
-                    }
-                    stream = getattr(sys, "__stderr__", None) or getattr(
-                        sys, "stderr", None
-                    )
-                    if stream:
-                        stream.write(json.dumps(payload) + "\n")
-                        stream.flush()
-                except Exception:
-                    pass
-
+            _safe_emit_json(
+                "info", "ticker_resolver_fallback_summary", hits=_fallback_hits
+            )
         if _sanitized_hits:
-            try:
-                log.info(
-                    "ticker_sanitized_summary", extra={"drops": int(_sanitized_hits)}
-                )
-            except Exception:
-                try:
-                    payload = {
-                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "level": "INFO",
-                        "name": "site_hooks",
-                        "msg": "ticker_sanitized_summary",
-                        "drops": int(_sanitized_hits),
-                    }
-                    stream = getattr(sys, "__stderr__", None) or getattr(
-                        sys, "stderr", None
-                    )
-                    if stream:
-                        stream.write(json.dumps(payload) + "\n")
-                        stream.flush()
-                except Exception:
-                    pass
+            _safe_emit_json("info", "ticker_sanitized_summary", drops=_sanitized_hits)
 
     # ---------------------------------------------------------------
     # Hook 1: alerts.send_alert_safe -> persistent 'seen' suppression
@@ -152,7 +132,6 @@ else:
             from catalyst_bot import alerts  # type: ignore
             from catalyst_bot.alert_guard import build_alert_id
 
-            # `seen_store` is optional but recommended
             try:
                 from catalyst_bot.seen_store import should_filter  # type: ignore
             except Exception:  # pragma: no cover
@@ -170,7 +149,7 @@ else:
                             log.info("alert_suppressed_seen", extra={"id": item_id})
                             return {"status": "suppressed_seen", "id": item_id}
                     except Exception as e:  # non-fatal
-                        log.warning("alert_seen_guard_error", extra={"error": str(e)})
+                        log.debug("alert_seen_guard_error", extra={"error": str(e)})
                     return _orig_send(payload, *args, **kwargs)
 
                 alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
@@ -178,12 +157,13 @@ else:
                     "site_hooks_alerts_patched", extra={"target": "send_alert_safe"}
                 )
             else:
-                log.info(
+                log.debug(
                     "site_hooks_alerts_noop",
                     extra={"reason": "send_alert_safe_missing"},
                 )
         except Exception as e:  # pragma: no cover
-            log.warning("site_hooks_alerts_failed", extra={"error": str(e)})
+            # Be quiet in tool contexts (black/flake8/pre-commit)
+            log.debug("site_hooks_alerts_failed", extra={"error": str(e)})
 
     # ----------------------------------------------------------------
     # Hook 2: feeds.extract_ticker -> ticker_resolver as a safe fallback
@@ -204,22 +184,17 @@ else:
                     try:
                         orig = _orig_extract(*args, **kwargs)
                     except Exception as e:
-                        log.warning(
-                            "extract_ticker_orig_error", extra={"error": str(e)}
-                        )
+                        log.debug("extract_ticker_orig_error", extra={"error": str(e)})
                         orig = None
 
-                    title = None
-                    link = None
-                    source_host = None
-                    if args:
+                    title = kwargs.get("title")
+                    link = kwargs.get("link")
+                    source_host = kwargs.get("source_host")
+                    if not title and args:
                         try:
                             title = args[0]
                         except Exception:
-                            pass
-                    title = kwargs.get("title", title)
-                    link = kwargs.get("link", link)
-                    source_host = kwargs.get("source_host", source_host)
+                            title = None
 
                     res = orig
                     if not res and _flag("HOOK_TICKER_RESOLVER", "true"):
@@ -233,7 +208,7 @@ else:
                                 )
                                 res = r.ticker
                         except Exception as e:  # non-fatal
-                            log.warning(
+                            log.debug(
                                 "ticker_resolver_fallback_error",
                                 extra={"error": str(e)},
                             )
@@ -248,13 +223,10 @@ else:
                             )
                             return None
                         if cleaned != res:
-                            try:
-                                log.info(
-                                    "ticker_sanitized_adjust",
-                                    extra={"raw": str(res), "cleaned": cleaned},
-                                )
-                            except Exception:
-                                pass
+                            log.info(
+                                "ticker_sanitized_adjust",
+                                extra={"raw": str(res), "cleaned": cleaned},
+                            )
                         return cleaned
 
                     return res
@@ -262,11 +234,12 @@ else:
                 setattr(feeds, "extract_ticker", _wrapped_extract_ticker)
                 log.info("site_hooks_feeds_patched", extra={"target": "extract_ticker"})
             else:
-                log.info(
-                    "site_hooks_feeds_noop", extra={"reason": "extract_ticker_missing"}
+                log.debug(
+                    "site_hooks_feeds_noop",
+                    extra={"reason": "extract_ticker_missing"},
                 )
         except Exception as e:  # pragma: no cover
-            log.warning("site_hooks_feeds_failed", extra={"error": str(e)})
+            log.debug("site_hooks_feeds_failed", extra={"error": str(e)})
 
     # ---------------------------------------------------------------
     # Hook 4 (optional): Alerts rate limiter (per ticker/channel)
@@ -290,14 +263,14 @@ else:
                             log.info("alert_rate_limited", extra={"key": key})
                             return {"status": "rate_limited", "key": key}
                     except Exception as e:
-                        log.warning("alert_rate_limit_error", extra={"error": str(e)})
+                        log.debug("alert_rate_limit_error", extra={"error": str(e)})
                     return _orig_post(payload, *args, **kwargs)
 
                 alerts.post_discord_json = _wrapped_post_discord_json  # type: ignore
                 log.info("site_hooks_alerts_limiter_patched", extra={"target": "post"})
             else:
-                log.info(
+                log.debug(
                     "site_hooks_alerts_limiter_noop", extra={"reason": "post_missing"}
                 )
         except Exception as e:  # pragma: no cover
-            log.warning("site_hooks_alerts_limiter_failed", extra={"error": str(e)})
+            log.debug("site_hooks_alerts_limiter_failed", extra={"error": str(e)})
