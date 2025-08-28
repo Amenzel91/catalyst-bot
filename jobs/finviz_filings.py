@@ -5,6 +5,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 
+from catalyst_bot import alerts
 from catalyst_bot.finviz_elite import export_latest_filings
 from catalyst_bot.logging_utils import get_logger
 
@@ -30,34 +31,51 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_filings_key
 
 
 def _is_recent(ymd: str, cutoff: datetime) -> bool:
-    fmt_try = ("%m/%d/%Y", "%Y-%m-%d")  # Finviz shows 1/26/2015 or sometimes ISO
-    for fmt in fmt_try:
+    """Finviz commonly shows 1/26/2015; sometimes ISO. Accept either."""
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
         try:
             d = datetime.strptime(ymd, fmt)
             return d >= cutoff
         except ValueError:
             continue
-    # if parse fails, drop it (prefer being conservative for alerts)
     return False
 
 
-def _maybe_alert(row: dict):
-    # Wire this into your real alert pipeline later
-    # For now we’ll just log to console for visibility.
-    print(
-        "[ALERT]",
-        {
-            "channel": "filings",
-            "ticker": row.get("ticker"),
-            "title": row.get("title"),
-            "url": row.get("url"),
-            "form": row.get("filing_type"),
-            "when": row.get("filing_date"),
-        },
-    )
+def _normalize_date(ymd: str) -> str | None:
+    """Return ISO-8601 YYYY-MM-DD if parseable; else None."""
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(ymd, fmt)
+            return d.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
-def main():
+def _maybe_alert(row: dict) -> None:
+    """Send a single, unified alert through alerts.send_alert_safe()."""
+    ticker = (row.get("ticker") or "").upper()
+    form = row.get("filing_type") or row.get("form") or ""
+    link = row.get("url")
+    fdate_raw = row.get("filing_date") or ""
+    fdate_iso = _normalize_date(fdate_raw) or fdate_raw  # keep original if unknown
+
+    if not ticker or not form:
+        # Not enough to alert; quietly skip.
+        return
+
+    payload = {
+        "channel": "filings",
+        "ticker": ticker,
+        "title": f"{ticker} filed {form}",
+        "url": link,
+        "form": form,
+        "when": fdate_iso,
+    }
+    alerts.send_alert_safe(payload)
+
+
+def main() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -65,18 +83,18 @@ def main():
 
     cutoff = datetime.utcnow() - timedelta(days=RECENT_DAYS)
 
-    # Pull by major tickers, or empty (which returns general stream).
-    # You can loop a watchlist here; for now do general + a couple of big names.
+    # Pull by major tickers, or None (general stream)
     tickers = [None, "AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "GOOGL", "META"]
 
     for tk in tickers:
         rows = export_latest_filings(ticker=tk)
         log.info("ingested_filings")
+
         # keep only recent
         rows = [
             r
             for r in rows
-            if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)
+            if r.get("filing_date") and _is_recent(str(r["filing_date"]), cutoff)
         ]
 
         with conn:
@@ -88,14 +106,14 @@ def main():
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (
-                        r.get("ticker"),
+                        (r.get("ticker") or "").upper(),
                         r.get("filing_type"),
                         r.get("filing_date"),
                         r.get("title"),
                         r.get("url"),
                     ),
                 )
-                if cur.rowcount:  # new
+                if cur.rowcount:  # new insert (not ignored)
                     _maybe_alert(r)
 
     log.info("filings_complete")
