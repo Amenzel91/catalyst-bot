@@ -1,7 +1,21 @@
 # src/catalyst_bot/__init__.py
-__all__ = []
-# Keep this file lean. Avoid importing submodules at import time.
-# If you need names for type hints:
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .ticker_resolver import resolve  # or whatever symbols you reference in type hints
+from __future__ import annotations
+
+__all__ = ["resolve", "resolve_many", "TickerHit"]
+
+
+def __getattr__(name: str):
+    """
+    Lazy export to avoid import side effects at package import time.
+    This prevents runpy RuntimeWarning when using `python -m catalyst_bot.ticker_resolver`.
+    """
+    if name in {"resolve", "resolve_many", "TickerHit"}:
+        from .ticker_resolver import TickerHit, resolve, resolve_many
+
+        mapping = {
+            "resolve": resolve,
+            "resolve_many": resolve_many,
+            "TickerHit": TickerHit,
+        }
+        return mapping[name]
+    raise AttributeError(name)
