@@ -1,0 +1,10 @@
+﻿
+src\catalyst_bot\alerts.py:1:# src/catalyst_bot/alerts.py
+src\catalyst_bot\alerts_rate_limit.py:7:time window. The hook in sitecustomize wraps alerts.post_discord_json when
+src\sitecustomize.py:10:1) Hook alerts.send_alert_safe(...)  -> suppress re-alerts via SeenStore (TTL)
+src\sitecustomize.py:130:    # Hook 1: alerts.send_alert_safe -> persistent 'seen' suppression
+src\sitecustomize.py:145:                _orig_send = alerts.send_alert_safe
+src\sitecustomize.py:157:                alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
+src\sitecustomize.py:274:                alerts.post_discord_json = _wrapped_post_discord_json  # type: ignore
+
+

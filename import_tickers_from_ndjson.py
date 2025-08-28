@@ -1,10 +1,16 @@
 # import_tickers_from_ndjson.py
 from __future__ import annotations
 
-import json, os, sqlite3, sys, pathlib
+import json
+import os
+import pathlib
+import sqlite3
+import sys
+
 
 def ensure_dir(p: str):
     pathlib.Path(os.path.dirname(p) or ".").mkdir(parents=True, exist_ok=True)
+
 
 def iter_records(input_path: str):
     # NDJSON (one JSON obj per line)
@@ -23,9 +29,12 @@ def iter_records(input_path: str):
     for obj in rows:
         yield obj
 
+
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python import_tickers_from_ndjson.py <input.ndjson|.json> <output.db>")
+        print(
+            "Usage: python import_tickers_from_ndjson.py <input.ndjson|.json> <output.db>"
+        )
         sys.exit(2)
 
     in_path = sys.argv[1]
@@ -39,13 +48,15 @@ def main():
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS tickers (
               ticker   TEXT PRIMARY KEY,
               cik      INTEGER NOT NULL,
               name     TEXT NOT NULL
             );
-        """)
+        """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tickers_name ON tickers(name);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tickers_cik ON tickers(cik);")
 
@@ -54,13 +65,16 @@ def main():
             cik = int(obj["cik_str"])
             ticker = obj["ticker"].upper().strip()
             name = obj["title"].strip()
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO tickers(ticker,cik,name)
                 VALUES (?, ?, ?)
                 ON CONFLICT(ticker) DO UPDATE SET
                   cik=excluded.cik,
                   name=excluded.name
-            """, (ticker, cik, name))
+            """,
+                (ticker, cik, name),
+            )
         conn.commit()
 
         total = conn.execute("SELECT COUNT(*) FROM tickers;").fetchone()[0]
@@ -68,6 +82,7 @@ def main():
         print(f"Total rows now in tickers: {total}")
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     main()

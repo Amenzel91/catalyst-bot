@@ -1,15 +1,16 @@
 # src/catalyst_bot/ticker_resolver.py
 from __future__ import annotations
 
+import logging
 import os
+import pathlib
 import re
 import sqlite3
-import logging
-import pathlib
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
 
 # Resolve the default database path:
 # repo_root / data / tickers.db  (or override with env TICKERS_DB_PATH)
@@ -127,7 +128,8 @@ class TickerResolver:
         # 4) compact form (BRKB) against stored ticker with dashes removed
         compact = q.replace("-", "").replace(".", "")
         row = self._one(
-            "SELECT cik,ticker,name FROM tickers WHERE REPLACE(REPLACE(ticker,'-',''),'.','') = ? COLLATE NOCASE",
+            "SELECT cik, ticker, name FROM tickers "
+            "WHERE REPLACE(REPLACE(ticker,'-',''),'.','') = ? COLLATE NOCASE",
             (compact,),
         )
         if row:
@@ -146,7 +148,7 @@ class TickerResolver:
             return []
 
         # Build WHERE: name LIKE ? AND name LIKE ? ...
-        wheres = " AND ".join(["name LIKE ?"] * len(tokens))
+        " AND ".join(["name LIKE ?"] * len(tokens))
         params: List[str] = [f"%{t}%" for t in tokens]
 
         # Ranking:
@@ -162,7 +164,10 @@ class TickerResolver:
         """
         params.extend([f"{first}%".upper(), limit])
 
-        sql = f"SELECT cik,ticker,name FROM tickers WHERE {wheres} {order}"
+        sql = (
+            "SELECT cik, ticker, name FROM tickers "
+            "WHERE " + " AND ".join(["name LIKE ?"] * len(tokens)) + " " + order
+        )
         rows = list(self._all(sql, tuple(params)))
         return [_row_to_rec(r) for r in rows]
 
@@ -184,11 +189,13 @@ class TickerResolver:
 # --------------------------
 _PUNCT_RE = re.compile(r"[\s\$\#\@\!\?\,\;\:\(\)\[\]\{\}]+")
 
+
 def _clean(q: str) -> str:
     # trim, normalize spaces/punct, uppercase
     q = q.strip()
     q = _PUNCT_RE.sub(" ", q)
     return q.upper().strip()
+
 
 def _looks_like_ticker(q: str) -> bool:
     # Heuristics: short, mostly A-Z0-9, allows . or - for share classes
@@ -199,12 +206,27 @@ def _looks_like_ticker(q: str) -> bool:
         return True
     return False
 
-_STOPWORDS = {"INC", "CORP", "PLC", "LLC", "CO", "COMPANY", "SA", "NV", "LP", "LTD", "GROUP"}
+
+_STOPWORDS = {
+    "INC",
+    "CORP",
+    "PLC",
+    "LLC",
+    "CO",
+    "COMPANY",
+    "SA",
+    "NV",
+    "LP",
+    "LTD",
+    "GROUP",
+}
+
 
 def _name_tokens(q: str) -> List[str]:
     # keep alnum words; drop common suffixes
     words = re.findall(r"[A-Z0-9]+", q.upper())
     return [w for w in words if w not in _STOPWORDS and len(w) > 1]
+
 
 def _row_to_rec(r: sqlite3.Row) -> TickerRecord:
     return TickerRecord(cik=int(r["cik"]), ticker=str(r["ticker"]), name=str(r["name"]))
@@ -214,13 +236,21 @@ def _row_to_rec(r: sqlite3.Row) -> TickerRecord:
 # CLI (handy for quick tests)
 # --------------------------
 if __name__ == "__main__":
-    import argparse, json
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    import argparse
+    import json
+
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
 
     p = argparse.ArgumentParser(description="Resolve tickers/company names via SQLite.")
     p.add_argument("query", help="Ticker or company name to resolve")
-    p.add_argument("--db", dest="db_path", default=None, help="Path to tickers.db (optional)")
-    p.add_argument("--limit", type=int, default=5, help="Max rows to return for name search")
+    p.add_argument(
+        "--db", dest="db_path", default=None, help="Path to tickers.db (optional)"
+    )
+    p.add_argument(
+        "--limit", type=int, default=5, help="Max rows to return for name search"
+    )
     args = p.parse_args()
 
     r = TickerResolver(db_path=args.db_path)
