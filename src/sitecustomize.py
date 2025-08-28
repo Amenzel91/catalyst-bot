@@ -89,6 +89,7 @@ def _resolve_from_source(*args, **kwargs):
     "'catalyst_bot.ticker_resolver' found in sys.modules after import of package..."
     """
     from catalyst_bot.ticker_resolver import resolve_from_source as _rfs  # type: ignore
+
     return _rfs(*args, **kwargs)
 
 

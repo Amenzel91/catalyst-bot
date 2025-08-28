@@ -1,9 +1,9 @@
 # jobs/finviz_filings.py
 from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Optional
 
 from catalyst_bot.finviz_elite import export_latest_filings
 from catalyst_bot.logging_utils import get_logger
@@ -28,6 +28,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_filings_key
   ON finviz_filings(ticker, COALESCE(filing_type,''), COALESCE(filing_date,''), COALESCE(title,''));
 """
 
+
 def _is_recent(ymd: str, cutoff: datetime) -> bool:
     fmt_try = ("%m/%d/%Y", "%Y-%m-%d")  # Finviz shows 1/26/2015 or sometimes ISO
     for fmt in fmt_try:
@@ -39,17 +40,22 @@ def _is_recent(ymd: str, cutoff: datetime) -> bool:
     # if parse fails, drop it (prefer being conservative for alerts)
     return False
 
+
 def _maybe_alert(row: dict):
     # Wire this into your real alert pipeline later
     # For now we’ll just log to console for visibility.
-    print("[ALERT]", {
-        "channel": "filings",
-        "ticker": row.get("ticker"),
-        "title": row.get("title"),
-        "url": row.get("url"),
-        "form": row.get("filing_type"),
-        "when": row.get("filing_date"),
-    })
+    print(
+        "[ALERT]",
+        {
+            "channel": "filings",
+            "ticker": row.get("ticker"),
+            "title": row.get("title"),
+            "url": row.get("url"),
+            "form": row.get("filing_type"),
+            "when": row.get("filing_date"),
+        },
+    )
+
 
 def main():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -67,7 +73,11 @@ def main():
         rows = export_latest_filings(ticker=tk)
         log.info("ingested_filings")
         # keep only recent
-        rows = [r for r in rows if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)]
+        rows = [
+            r
+            for r in rows
+            if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)
+        ]
 
         with conn:
             for r in rows:
@@ -89,6 +99,7 @@ def main():
                     _maybe_alert(r)
 
     log.info("filings_complete")
+
 
 if __name__ == "__main__":  # pragma: no cover
     main()
