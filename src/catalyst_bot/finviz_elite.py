@@ -1,166 +1,200 @@
 # src/catalyst_bot/finviz_elite.py
 from __future__ import annotations
-import os, io, csv, logging, typing as T, argparse, json
+
+import csv
+import io
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional
 import requests
-from urllib.parse import urlencode
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# --- Optional: auto-load .env if present ---
-try:  # no hard dependency; only if installed
-    from dotenv import load_dotenv  # type: ignore
-    load_dotenv()  # loads .env from cwd/upwards
-except Exception:
-    pass
+try:
+    from catalyst_bot.logging_utils import get_logger  # type: ignore
+except Exception:  # pragma: no cover
+    import logging
+    def get_logger(name: str):
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+        return logging.getLogger(name)  # type: ignore
 
-log = logging.getLogger(__name__)
+log = get_logger("catalyst_bot.finviz_elite")
 
-FINVIZ_ELITE_BASE = "https://elite.finviz.com"
+FINVIZ_BASE = "https://finviz.com"
+PATH_SCREENER_EXPORT = "/export.ashx"
+PATH_NEWS_FILINGS = "/news.ashx"
 
-def _get_auth_token() -> str:
-    """
-    Resolve the Finviz token from multiple places:
-      1) FINVIZ_ELITE_AUTH
-      2) FINVIZ_ELITE_TOKEN (alias)
-      3) FINVIZ_AUTH (alias)
-      4) data/finviz_token.txt (if present; first line)
-    """
-    candidates = [
-        os.getenv("FINVIZ_ELITE_AUTH", "").strip(),
-        os.getenv("FINVIZ_ELITE_TOKEN", "").strip(),
-        os.getenv("FINVIZ_AUTH", "").strip(),
-    ]
-    for tok in candidates:
-        if tok:
-            return tok
+def _require_auth() -> str:
+    tok = os.getenv("FINVIZ_ELITE_AUTH", "").strip()
+    if not tok:
+        raise RuntimeError("FINVIZ_ELITE_AUTH is not set.")
+    return tok
 
-    # fallback file (kept out of git)
-    token_file = os.path.join("data", "finviz_token.txt")
+def _finviz_get(path: str, params: Dict[str, Any], auth: Optional[str] = None) -> requests.Response:
+    token = auth or _require_auth()
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Cookie": f"elite={token}",
+        "Accept": "*/*",
+    }
+    url = FINVIZ_BASE + path
+    resp = requests.get(url, params=params, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return resp
+
+# ---- CSV parsing & normalization ----
+
+# Loose mapper for common simple headers; everything else uses heuristics.
+_BASE_MAP = {
+    "ticker": "ticker",
+    "company": "company",
+    "sector": "sector",
+    "industry": "industry",
+    "country": "country",
+    "price": "price",
+    "change": "change",
+    "market cap": "marketcap",
+    "avg volume": "avgvol",
+    "avg. volume": "avgvol",
+    "volume": "volume",
+    "volatility w": "vol_w",
+    "volatility m": "vol_m",
+    "perf day": "perf_day",
+    "perf week": "perf_week",
+    "perf month": "perf_month",
+    "perf quarter": "perf_quarter",
+    "perf half y": "perf_halfy",
+    "perf year": "perf_year",
+}
+
+def _norm_key(k: str) -> str:
+    raw = (k or "").strip()
+    s = raw.lower().replace("\xa0", " ")
+    s = re.sub(r"[.\u200b]+", "", s).strip()
+
+    # direct map first
+    if s in _BASE_MAP:
+        return _BASE_MAP[s]
+
+    # heuristic catch-alls
+    if "rel volume" in s or "relative volume" in s:
+        return "relvolume"
+    if "avg" in s and "volume" in s:
+        return "avgvol"
+
+    # fallback: snake-case
+    return re.sub(r"\s+", "_", s)
+
+def _to_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s in {"-", "—"}:
+        return None
+    s = s.replace(",", "").replace("%", "")
     try:
-        if os.path.exists(token_file):
-            with open(token_file, "r", encoding="utf-8-sig") as f:
-                first = (f.readline() or "").strip()
-                if first:
-                    return first
+        return float(s)
+    except Exception:
+        return None
+
+def _to_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s in {"-", "—"}:
+        return None
+    try:
+        return int(s.replace(",", ""))
+    except Exception:
+        return None
+
+def _parse_csv_rows(text: str) -> List[Dict[str, Any]]:
+    f = io.StringIO(text)
+    reader = csv.reader(f)
+    rows = list(reader)
+    if not rows:
+        return []
+
+    headers_raw = rows[0]
+    headers = [_norm_key(h) for h in headers_raw]
+    log.info("finviz_screener_rows", extra={"headers": headers_raw})
+
+    out: List[Dict[str, Any]] = []
+    for r in rows[1:]:
+        d = dict(zip(headers, r))
+
+        # normalize common numerics if present
+        if "price" in d:
+            d["price"] = _to_float(d.get("price"))
+        if "change" in d:
+            d["change"] = _to_float(d.get("change"))
+        if "relvolume" in d:
+            d["relvolume"] = _to_float(d.get("relvolume"))
+        if "volume" in d:
+            d["volume"] = _to_int(d.get("volume"))
+        if "avgvol" in d:
+            d["avgvol"] = _to_int(d.get("avgvol"))
+
+        out.append(d)
+    return out
+
+# ---- Public helpers ----
+
+def export_screener(filters: str, auth: Optional[str] = None, view: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Returns normalized rows from screener export.
+    - filters: Finviz filter string (e.g., "f=sh_avgvol_o300,sh_relvol_o1.5")
+    - view: override with FINVIZ_SCREENER_VIEW (try 152 for broader columns)
+    """
+    view = view or os.getenv("FINVIZ_SCREENER_VIEW", "152").strip()  # default to 152 for richer set
+    params = {"v": view, "f": filters}
+    resp = _finviz_get(PATH_SCREENER_EXPORT, params, auth=auth)
+    return _parse_csv_rows(resp.text)
+
+def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = None) -> List[Dict[str, Any]]:
+    params = {"type": "filings"}
+    if ticker:
+        params["q"] = ticker.upper().strip()
+
+    resp = _finviz_get(PATH_NEWS_FILINGS, params, auth=auth)
+    html = resp.text
+
+    rows: List[Dict[str, Any]] = []
+    try:
+        import re
+        from html import unescape
+        tr_pat = re.compile(r"<tr[^>]*>(.*?)</tr>", re.I | re.S)
+        td_pat = re.compile(r"<td[^>]*>(.*?)</td>", re.I | re.S)
+        href_pat = re.compile(r'href="([^"]+)"', re.I)
+
+        for tr_html in tr_pat.findall(html):
+            tds = td_pat.findall(tr_html)
+            if len(tds) < 3:
+                continue
+            cols = [unescape(re.sub(r"<[^>]+>", "", td)).strip() for td in tds]
+            date_str = cols[0]
+            tk = cols[1].split()[0].upper().strip() if cols[1] else None
+            title = cols[2]
+            link_m = href_pat.search(tds[2])
+            url = (FINVIZ_BASE + link_m.group(1)) if link_m else None
+
+            form = None
+            for piece in cols[2:]:
+                m = re.search(r"\b(8-K|10-K|10-Q|S-1|6-K|20-F|SC 13G|SC 13D)\b", piece, re.I)
+                if m:
+                    form = m.group(1).upper()
+                    break
+
+            if not tk:
+                continue
+            rows.append(
+                {"filing_date": date_str, "ticker": tk, "title": title, "url": url, "filing_type": form}
+            )
     except Exception:
         pass
 
-    # final: explain how to fix
-    raise RuntimeError(
-        "FINVIZ_ELITE_AUTH is not set. Set it in your shell, .env, or put the token in data/finviz_token.txt.\n"
-        "Examples:\n"
-        "  PowerShell (this session):  $env:FINVIZ_ELITE_AUTH = \"<token>\"\n"
-        "  Persist for user:           [Environment]::SetEnvironmentVariable(\"FINVIZ_ELITE_AUTH\",\"<token>\",\"User\")\n"
-        "  .env file:                  FINVIZ_ELITE_AUTH=<token>\n"
-        "  File fallback:              echo <token> > data\\finviz_token.txt"
-    )
-
-def _session(timeout: float = 15.0) -> requests.Session:
-    s = requests.Session()
-    retry = Retry(
-        total=4, read=4, connect=4, backoff_factor=0.5,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=("GET",),
-    )
-    s.mount("https://", HTTPAdapter(max_retries=retry))
-    s.mount("http://", HTTPAdapter(max_retries=retry))
-    s.request = T.cast(T.Callable[..., requests.Response], _with_timeout(s.request, timeout))  # type: ignore
-    return s
-
-def _with_timeout(fn, timeout):
-    def wrapped(method, url, **kw):
-        kw.setdefault("timeout", timeout)
-        return fn(method, url, **kw)
-    return wrapped
-
-def _read_csv_bytes(b: bytes) -> list[dict[str, str]]:
-    txt = b.decode("utf-8", errors="replace").lstrip("\ufeff")
-    txt = "\n".join(line for line in txt.splitlines() if line.strip())
-    if not txt or "," not in txt:
-        return []
-    reader = csv.DictReader(io.StringIO(txt))
-    return [dict(row) for row in reader]
-
-# -------- Public API --------
-
-def export_screener(*, filters: str, auth: str | None = None) -> list[dict[str, str]]:
-    """
-    Finviz Elite Screener CSV export.
-    `filters` is the Finviz query string (e.g. v=111&f=...&c=ticker,price,change)
-    """
-    token = (auth or _get_auth_token()).strip()
-    url = f"{FINVIZ_ELITE_BASE}/export.ashx?{filters}&auth={token}" if filters else f"{FINVIZ_ELITE_BASE}/export.ashx?auth={token}"
-    s = _session()
-    resp = s.get(url)
-    resp.raise_for_status()
-    rows = _read_csv_bytes(resp.content)
-    log.info("finviz_screener_rows", extra={"rows": len(rows)})
+    log.info("finviz_filings_rows")
     return rows
 
-def export_latest_filings(*, ticker: str, order_by: str = "filingDate", extra_params: dict[str, str] | None = None, auth: str | None = None) -> list[dict[str, str]]:
-    """
-    Latest Filings CSV export for a single ticker.
-    /export/latest-filings?t=<T>&o=<ORDER>&auth=<TOKEN>
-    """
-    token = (auth or _get_auth_token()).strip()
-    q = {"t": ticker.upper(), "o": order_by, "auth": token}
-    if extra_params:
-        q.update(extra_params)
-    url = f"{FINVIZ_ELITE_BASE}/export/latest-filings?{urlencode(q)}"
-    s = _session()
-    resp = s.get(url)
-    resp.raise_for_status()
-    rows = _read_csv_bytes(resp.content)
-    log.info("finviz_filings_rows", extra={"ticker": ticker.upper(), "rows": len(rows)})
-    return rows
-
-# Convenience presets
-def screener_unusual_volume(min_price: float = 5.0, min_relvol: float = 2.0) -> list[dict[str, str]]:
-    f = [
-        "v=111",
-        f"f=sh_price_o{int(min_price)},ta_relvolume_o{min_relvol}",
-    ]
-    cols = "ticker,company,sector,industry,price,change,volume,relvolume,avgvol"
-    filters = "&".join(f) + f"&c={cols}"
+def screener_unusual_volume(min_avg_vol: int = 300_000, min_relvol: float = 1.5) -> List[Dict[str, Any]]:
+    filters = f"sh_avgvol_o{min_avg_vol},sh_relvol_o{min_relvol}"
     return export_screener(filters=filters)
-
-def screener_breakouts_largecap_nasdaq() -> list[dict[str, str]]:
-    filters = (
-        "v=111"
-        "&f=cap_largeover,exch_nasd,ta_sma200_pb,ta_sma50_pb,ta_highlow52w_nh"
-        "&c=ticker,company,sector,industry,price,change,volume,relvolume,avgvol,rsit"
-    )
-    return export_screener(filters=filters)
-
-# -------- CLI --------
-
-def _main_cli():
-    ap = argparse.ArgumentParser(description="Finviz Elite CLI")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    ap_scr = sub.add_parser("screen", help="Run a screener export")
-    ap_scr.add_argument("--filters", help="Finviz query string (v=...&f=...&c=...)", required=False)
-    ap_scr.add_argument("--preset", choices=["unusual_volume", "breakouts"], help="Use a built-in preset")
-    ap_scr.add_argument("--auth", help="Override auth token", required=False)
-
-    ap_fil = sub.add_parser("filings", help="Fetch latest filings for a ticker")
-    ap_fil.add_argument("ticker")
-    ap_fil.add_argument("--auth", help="Override auth token", required=False)
-
-    args = ap.parse_args()
-    if args.cmd == "screen":
-        if args.preset == "unusual_volume":
-            rows = screener_unusual_volume()
-        elif args.preset == "breakouts":
-            rows = screener_breakouts_largecap_nasdaq()
-        else:
-            if not args.filters:
-                raise SystemExit("--filters or --preset is required")
-            rows = export_screener(filters=args.filters, auth=args.auth)
-        print(json.dumps(rows, indent=2))
-    elif args.cmd == "filings":
-        rows = export_latest_filings(ticker=args.ticker, auth=args.auth)
-        print(json.dumps(rows, indent=2))
-
-if __name__ == "__main__":
-    _main_cli()

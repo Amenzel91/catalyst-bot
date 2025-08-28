@@ -1,51 +1,94 @@
 # jobs/finviz_filings.py
 from __future__ import annotations
-import logging, os
-from typing import Iterable
+import os
+import sqlite3
+from datetime import datetime, timedelta
+from typing import Optional
+
 from catalyst_bot.finviz_elite import export_latest_filings
-from catalyst_bot.storage import connect, migrate, insert_filings
+from catalyst_bot.logging_utils import get_logger
 
-# Optional alert hook
-try:
-    from catalyst_bot.alerts import post_discord_json  # type: ignore
-except Exception:
-    def post_discord_json(payload: dict):
-        print("[ALERT]", payload)
-        return {"status": "printed"}
+log = get_logger("finviz_filings")
 
-log = logging.getLogger("finviz_filings")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+DB_PATH = os.getenv("MARKET_DB_PATH", os.path.join("data", "market.db"))
+RECENT_DAYS = int(os.getenv("FILINGS_RECENT_DAYS", "7"))
 
-def iter_watchlist() -> Iterable[str]:
-    # Replace with your watchlist source if you have one; this is a sensible default.
-    return ["AAPL", "MSFT", "NVDA", "META", "AMZN", "GOOGL"]
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS finviz_filings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  filing_type TEXT,
+  filing_date TEXT,   -- keep as text (original format)
+  title TEXT,
+  url TEXT
+);
 
-IMPORTANT_FORMS = {"8-K", "13D", "13G", "SC 13D", "SC 13G", "S-1", "424B", "144"}
+CREATE INDEX IF NOT EXISTS idx_filings_ticker ON finviz_filings(ticker);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_filings_key
+  ON finviz_filings(ticker, COALESCE(filing_type,''), COALESCE(filing_date,''), COALESCE(title,''));
+"""
 
-def run_once():
-    conn = connect()
-    migrate(conn)
-    total_new = 0
-    for t in iter_watchlist():
-        rows = export_latest_filings(ticker=t)
-        new = insert_filings(conn, t, rows)
-        log.info("ingested_filings", extra={"ticker": t, "added": new, "seen": len(rows)})
-        total_new += new
-        # lightweight alert rule
-        for r in rows[:3]:  # only preview a few to avoid noise
-            form = (r.get("Form") or r.get("Type") or "").upper()
-            if form in IMPORTANT_FORMS:
-                post_discord_json({
-                    "channel": "filings",
-                    "ticker": t,
-                    "title": f"{t} filed {form}",
-                    "url": r.get("Link") or r.get("link"),
-                    "form": form,
-                    "when": r.get("Filing Date") or r.get("Date"),
-                })
-    log.info("filings_complete", extra={"new_records": total_new})
+def _is_recent(ymd: str, cutoff: datetime) -> bool:
+    fmt_try = ("%m/%d/%Y", "%Y-%m-%d")  # Finviz shows 1/26/2015 or sometimes ISO
+    for fmt in fmt_try:
+        try:
+            d = datetime.strptime(ymd, fmt)
+            return d >= cutoff
+        except ValueError:
+            continue
+    # if parse fails, drop it (prefer being conservative for alerts)
+    return False
 
-if __name__ == "__main__":
-    if not os.getenv("FINVIZ_ELITE_AUTH"):
-        raise SystemExit("Set FINVIZ_ELITE_AUTH first.")
-    run_once()
+def _maybe_alert(row: dict):
+    # Wire this into your real alert pipeline later
+    # For now we’ll just log to console for visibility.
+    print("[ALERT]", {
+        "channel": "filings",
+        "ticker": row.get("ticker"),
+        "title": row.get("title"),
+        "url": row.get("url"),
+        "form": row.get("filing_type"),
+        "when": row.get("filing_date"),
+    })
+
+def main():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.executescript(SCHEMA)
+
+    cutoff = datetime.utcnow() - timedelta(days=RECENT_DAYS)
+
+    # Pull by major tickers, or empty (which returns general stream).
+    # You can loop a watchlist here; for now do general + a couple of big names.
+    tickers = [None, "AAPL", "MSFT", "AMZN", "NVDA", "TSLA", "GOOGL", "META"]
+
+    for tk in tickers:
+        rows = export_latest_filings(ticker=tk)
+        log.info("ingested_filings")
+        # keep only recent
+        rows = [r for r in rows if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)]
+
+        with conn:
+            for r in rows:
+                cur = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO finviz_filings
+                      (ticker, filing_type, filing_date, title, url)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r.get("ticker"),
+                        r.get("filing_type"),
+                        r.get("filing_date"),
+                        r.get("title"),
+                        r.get("url"),
+                    ),
+                )
+                if cur.rowcount:  # new
+                    _maybe_alert(r)
+
+    log.info("filings_complete")
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
