@@ -17,6 +17,8 @@ from .analyzer import run_analyzer_once_if_scheduled
 from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .logging_utils import get_logger, setup_logging
+from catalyst_bot.ticker_map import load_cik_to_ticker, cik_from_text
+from catalyst_bot.title_ticker import ticker_from_title
 
 try:
     import yfinance as yf  # type: ignore
@@ -139,6 +141,32 @@ def _load_dynamic_weights_with_fallback(
     loaded = bool(weights)
     return weights, loaded, str(path), path_exists
 
+_CIK_MAP = None
+
+def ensure_cik_map():
+    global _CIK_MAP
+    if _CIK_MAP is None:
+        _CIK_MAP = load_cik_to_ticker()   # uses TICKERS_DB_PATH or data/tickers.db
+
+def enrich_ticker(entry: dict, item: dict):
+    """Try to populate item['ticker'] from SEC link/id/summary or PR title."""
+    ensure_cik_map()
+
+    # 1) SEC feeds → prefer CIK → ticker
+    if item.get("source", "").startswith("sec_"):
+        for field in ("link", "id", "summary"):
+            cik = cik_from_text(entry.get(field))
+            if cik:
+                t = _CIK_MAP.get(cik) or _CIK_MAP.get(str(cik).zfill(10))
+                if t:
+                    item["ticker"] = t
+                    return
+
+    # 2) Press releases → parse from title patterns
+    if item.get("source") == "globenewswire_public":
+        t = ticker_from_title(item.get("title") or "")
+        if t:
+            item["ticker"] = t
 
 def _cycle(log, settings) -> None:
     """One ingest→dedupe→classify→alert pass with clean skip behavior."""
@@ -342,6 +370,16 @@ def main(once: bool | None = None, loop: bool | None = None) -> int:
         return runner_main(once=args.once, loop=args.loop)
     return runner_main(once=bool(once), loop=bool(loop))
 
+if __name__ == "__main__":
+    p=argparse.ArgumentParser()
+    p.add_argument("--loop", action="store_true")
+    p.add_argument("--once", action="store_true")
+    args=p.parse_args()
+    from catalyst_bot.runner_impl import run_once  # or your cycle func
+    if args.once:
+        run_once(); sys.exit(0)
+    while args.loop:
+        run_once(); time.sleep(int(os.getenv("LOOP_SECONDS","60")))
 
 if __name__ == "__main__":
     sys.exit(main())
