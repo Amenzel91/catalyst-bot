@@ -1,15 +1,34 @@
+# -*- coding: utf-8 -*-
+"""Catalyst Bot runner."""
+
 from __future__ import annotations
+
+# Load .env early so config is available to subsequent imports.
+try:
+    from dotenv import load_dotenv  # type: ignore
+except Exception:  # if python-dotenv isn't installed, just continue
+    load_dotenv = None
+else:
+    load_dotenv()
 
 import argparse
 import json
 import logging
 import os
 import signal
-import subprocess
 import sys
 import time
-from datetime import datetime, timezone
 from typing import Dict, List, Tuple
+
+# Make console output immediate and UTF-8 (helps on Windows)
+try:
+    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
+except Exception:
+    pass
+
+from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
+from catalyst_bot.title_ticker import ticker_from_title
 
 from . import feeds, market
 from .alerts import send_alert_safe
@@ -17,8 +36,6 @@ from .analyzer import run_analyzer_once_if_scheduled
 from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .logging_utils import get_logger, setup_logging
-from catalyst_bot.ticker_map import load_cik_to_ticker, cik_from_text
-from catalyst_bot.title_ticker import ticker_from_title
 
 try:
     import yfinance as yf  # type: ignore
@@ -33,6 +50,7 @@ _PX_CACHE: Dict[str, Tuple[float, float]] = {}
 
 
 def _sig_handler(signum, frame):
+    # graceful exit on Ctrl+C / SIGTERM
     global STOP
     STOP = True
 
@@ -141,38 +159,49 @@ def _load_dynamic_weights_with_fallback(
     loaded = bool(weights)
     return weights, loaded, str(path), path_exists
 
+
 _CIK_MAP = None
+
 
 def ensure_cik_map():
     global _CIK_MAP
     if _CIK_MAP is None:
-        _CIK_MAP = load_cik_to_ticker()   # uses TICKERS_DB_PATH or data/tickers.db
+        _CIK_MAP = load_cik_to_ticker()  # uses TICKERS_DB_PATH or data/tickers.db
+
 
 def enrich_ticker(entry: dict, item: dict):
-    """Try to populate item['ticker'] from SEC link/id/summary or PR title."""
+    """Populate item['ticker'] from SEC link/id/summary or PR title/summary when missing."""
     ensure_cik_map()
 
-    # 1) SEC feeds → prefer CIK → ticker
-    if item.get("source", "").startswith("sec_"):
-        for field in ("link", "id", "summary"):
-            cik = cik_from_text(entry.get(field))
-            if cik:
-                t = _CIK_MAP.get(cik) or _CIK_MAP.get(str(cik).zfill(10))
+    if not item.get("ticker"):
+        # SEC: derive from CIK in link/id/summary
+        if item.get("source", "").startswith("sec_"):
+            for field in ("link", "id", "summary"):
+                cik = cik_from_text((entry or {}).get(field))
+                if cik:
+                    t = _CIK_MAP.get(cik) or _CIK_MAP.get(str(cik).zfill(10))
+                    if t:
+                        item["ticker"] = t
+                        return
+
+        # PR: parse ticker from title or summary patterns
+        if item.get("source") == "globenewswire_public":
+            for field in ("title", "summary"):
+                t = ticker_from_title(item.get(field) or "")
                 if t:
                     item["ticker"] = t
                     return
 
-    # 2) Press releases → parse from title patterns
-    if item.get("source") == "globenewswire_public":
-        t = ticker_from_title(item.get("title") or "")
-        if t:
-            item["ticker"] = t
 
 def _cycle(log, settings) -> None:
-    """One ingest→dedupe→classify→alert pass with clean skip behavior."""
+    """One ingest→dedupe→enrich→classify→alert pass with clean skip behavior."""
     # Ingest + dedupe
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
+
+    # Enrich tickers where missing
+    for it in deduped:
+        enrich_ticker(it, it)
 
     # Dynamic keyword weights (with on-disk fallback)
     dyn_weights, dyn_loaded, dyn_path_str, dyn_path_exists = (
@@ -190,6 +219,9 @@ def _cycle(log, settings) -> None:
     except Exception:
         price_ceiling = None
 
+    ignore_instr = os.getenv("IGNORE_INSTRUMENT_TICKERS", "0") == "1"
+    skipped_instr = 0
+
     # Quick metrics
     tickers_present = sum(1 for it in deduped if (it.get("ticker") or "").strip())
     tickers_missing = len(deduped) - tickers_present
@@ -202,6 +234,16 @@ def _cycle(log, settings) -> None:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
+        if ignore_instr and ticker:
+            if any(sep in ticker for sep in ("-", ".", "^")) or ticker.endswith(
+                ("W", "WS", "WT")
+            ):
+                skipped_instr += 1
+                log.info(
+                    "skip_instrument_like_ticker source=%s ticker=%s", source, ticker
+                )
+                continue
+
         # Do not classify when there's no ticker
         if not ticker:
             skipped_no_ticker += 1
@@ -209,15 +251,41 @@ def _cycle(log, settings) -> None:
             continue
 
         # Classify (uses analyzer weights if present)
+        # Classify (uses analyzer weights if present)
         try:
             scored = classify(
                 item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
                 keyword_weights=dyn_weights,
             )
-        except Exception:
-            # Keep running even if classification hiccups
-            log.warning("classify_error source=%s ticker=%s", source, ticker)
-            continue
+        except Exception as err:
+            # Rich debug so we can see *why* it's failing
+            log.warning(
+                "classify_error source=%s ticker=%s err=%s item=%s",
+                source,
+                ticker,
+                err.__class__.__name__,
+                json.dumps(
+                    {
+                        k: it.get(k)
+                        for k in ("source", "title", "link", "id", "summary", "ticker")
+                    },
+                    ensure_ascii=False,
+                ),
+                exc_info=True,
+            )
+            # Soft fallback so the pipeline keeps flowing
+            try:
+                scored = _fallback_classify(
+                    title=it.get("title", "") or it.get("summary", ""),
+                    keyword_categories=getattr(settings, "keyword_categories", {}),
+                    default_weight=float(
+                        getattr(settings, "default_keyword_weight", 1.0)
+                    ),
+                    dynamic_weights=dyn_weights,
+                )
+            except Exception:
+                # If even fallback breaks, skip this one
+                continue
 
         # Optional price gating
         last_px = None
@@ -251,7 +319,7 @@ def _cycle(log, settings) -> None:
             # Downgrade to info to avoid spammy warnings for legitimate skips
             log.info("alert_skip source=%s ticker=%s", source, ticker)
 
-    # Final cycle metrics (now with deduped + alerted + correct dyn flags)
+    # Final cycle metrics
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' skipped_no_ticker=%s "
@@ -265,6 +333,7 @@ def _cycle(log, settings) -> None:
         dyn_path_str,
         skipped_no_ticker,
         skipped_price_gate,
+        skipped_instr,
         alerted,
     )
 
@@ -275,53 +344,9 @@ def _cycle(log, settings) -> None:
         log.warning("analyzer_schedule error=1")
 
 
-def _maybe_run_analyzer(log, settings) -> None:
-    """Run analyzer once per UTC day after (hour, minute)."""
-    try:
-        now = datetime.now(timezone.utc)
-        target_h = int(os.getenv("ANALYZER_UTC_HOUR", settings.analyzer_utc_hour))
-        target_m = int(os.getenv("ANALYZER_UTC_MINUTE", settings.analyzer_utc_minute))
-
-        # Only run once per day; store stamp in data/analyzer/last_run.json
-        stamp_dir = settings.data_dir / "analyzer"
-        stamp_dir.mkdir(parents=True, exist_ok=True)
-        stamp_path = stamp_dir / "last_run.json"
-
-        last_day = None
-        if stamp_path.exists():
-            try:
-                last = json.loads(stamp_path.read_text())
-                last_day = last.get("utc_date")
-            except Exception:
-                last_day = None
-
-        today = now.strftime("%Y-%m-%d")
-        after_time = (now.hour, now.minute) >= (target_h, target_m)
-
-        if (last_day != today) and after_time:
-            log.info(
-                "analyzer_schedule trigger date=%s time=%02d:%02dZ",
-                today,
-                target_h,
-                target_m,
-            )
-            # Run analyzer (prior trading day default; analyzer handles empty)
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "catalyst_bot.analyzer"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-            finally:
-                # Write stamp regardless to avoid tight retry loops
-                stamp_path.write_text(json.dumps({"utc_date": today}))
-    except Exception:
-        # Never crash the runner for scheduler issues
-        log.warning("analyzer_schedule_error")
-
-
-def runner_main(once: bool = False, loop: bool = False) -> int:
+def runner_main(
+    once: bool = False, loop: bool = False, sleep_s: float | None = None
+) -> int:
     settings = get_settings()
     setup_logging(settings.log_level)
     log = get_logger("runner")
@@ -342,44 +367,48 @@ def runner_main(once: bool = False, loop: bool = False) -> int:
         finviz_status,
     )
 
-    signal.signal(signal.SIGINT, _sig_handler)
-    signal.signal(signal.SIGTERM, _sig_handler)
+    # signals
+    try:
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
+    except Exception:
+        pass  # Windows quirks shouldn't crash startup
 
     do_loop = loop or (not once)
+    sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
+
     while True:
-        t0 = time.time()
-        _cycle(log, settings)  # pass settings
-        _maybe_run_analyzer(log, settings)
-        log.info("CYCLE_DONE took=%.2fs", time.time() - t0)
-        if not do_loop:
+        if STOP:
             break
-        time.sleep(settings.loop_seconds)
+        t0 = time.time()
+        _cycle(log, settings)
+        log.info("CYCLE_DONE took=%.2fs", time.time() - t0)
+        if not do_loop or STOP:
+            break
+        # sleep between cycles, but wake early if STOP flips
+        end = time.time() + sleep_interval
+        while time.time() < end:
+            if STOP:
+                break
+            time.sleep(0.2)
 
     log.info("boot_end")
     return 0
 
 
-def main(once: bool | None = None, loop: bool | None = None) -> int:
-    if once is None and loop is None:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--once", action="store_true", help="run a single cycle")
-        parser.add_argument(
-            "--loop", action="store_true", help="run forever with sleep between cycles"
-        )
-        args = parser.parse_args()
-        return runner_main(once=args.once, loop=args.loop)
-    return runner_main(once=bool(once), loop=bool(loop))
+def main(argv: List[str] | None = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--once", action="store_true", help="Run a single cycle and exit")
+    ap.add_argument("--loop", action="store_true", help="Run continuously")
+    ap.add_argument(
+        "--sleep",
+        type=float,
+        default=None,
+        help="Seconds between cycles when looping (default: settings.loop_seconds)",
+    )
+    args = ap.parse_args(argv)
+    return runner_main(once=args.once, loop=args.loop, sleep_s=args.sleep)
 
-if __name__ == "__main__":
-    p=argparse.ArgumentParser()
-    p.add_argument("--loop", action="store_true")
-    p.add_argument("--once", action="store_true")
-    args=p.parse_args()
-    from catalyst_bot.runner_impl import run_once  # or your cycle func
-    if args.once:
-        run_once(); sys.exit(0)
-    while args.loop:
-        run_once(); time.sleep(int(os.getenv("LOOP_SECONDS","60")))
 
 if __name__ == "__main__":
     sys.exit(main())
