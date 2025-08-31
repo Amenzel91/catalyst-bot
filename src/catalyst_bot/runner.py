@@ -323,7 +323,7 @@ def _cycle(log, settings) -> None:
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' skipped_no_ticker=%s "
-        "skipped_price_gate=%s alerted=%s",
+        "skipped_price_gate=%s skipped_instr=%s alerted=%s",
         len(items),
         len(deduped),
         tickers_present,
