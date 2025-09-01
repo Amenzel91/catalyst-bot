@@ -197,38 +197,38 @@ def _already_ran_marker_path(analyzer_dir: Path) -> Path:
     return analyzer_dir / "last_run_marker.txt"
 
 
-def run_analyzer_once_if_scheduled(now_utc: Optional[datetime] = None) -> None:
-    """Run analyzer once at ANALYZER_UTC_HOUR:ANALYZER_UTC_MINUTE (UTC).
-
-    Uses a simple marker file to ensure a given minute only runs once.
-    If the env vars are not set, this is a no-op.
+def run_analyzer_once_if_scheduled(settings) -> bool:
     """
-    hour_s = os.getenv("ANALYZER_UTC_HOUR")
-    minute_s = os.getenv("ANALYZER_UTC_MINUTE")
-    if not hour_s or not minute_s:
-        return
+    Run the analyzer once when the current UTC clock matches the configured schedule.
+    Returns True if it ran, False otherwise.
+    """
+    from datetime import datetime, timezone
+
+    # Allow both config properties and env fallbacks
+    hour = getattr(settings, "analyzer_run_utc_hour", None)
+    minute = getattr(settings, "analyzer_run_utc_minute", None)
 
     try:
-        hour = int(hour_s)
-        minute = int(minute_s)
+        if hour is None:
+            hour = int(os.getenv("ANALYZER_UTC_HOUR", "1"))
+        if minute is None:
+            minute = int(os.getenv("ANALYZER_UTC_MINUTE", "0"))
     except Exception:
-        return
+        hour, minute = 1, 0  # safe default 01:00 UTC
 
-    now = now_utc or datetime.now(timezone.utc)
-    if now.hour != hour or now.minute != minute:
-        return
+    now_dt = datetime.now(timezone.utc)
+    if now_dt.hour != int(hour) or now_dt.minute != int(minute):
+        return False
 
-    _, _, analyzer_dir = _paths()
-    marker_path = _already_ran_marker_path(analyzer_dir)
-    token = _scheduled_minute_token(now, hour, minute)
-
+    # Import here to avoid circulars
     try:
-        prev = ""
-        if marker_path.exists():
-            prev = marker_path.read_text(encoding="utf-8").strip()
-        if prev == token:
-            return
-        analyze_once(now.date())
-        marker_path.write_text(token, encoding="utf-8")
+        # If you have a dedicated "run once" entrypoint, use it:
+        run_once = globals().get("run_analyzer_once")
+        if callable(run_once):
+            run_once(settings)
+            return True
     except Exception:
-        log.exception("analyzer_scheduled_run_failed")
+        # Bubble up to runner for traceback logging
+        raise
+
+    return False

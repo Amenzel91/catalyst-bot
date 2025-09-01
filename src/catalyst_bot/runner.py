@@ -3,14 +3,7 @@
 
 from __future__ import annotations
 
-# Load .env early so config is available to subsequent imports.
-try:
-    from dotenv import load_dotenv  # type: ignore
-except Exception:  # if python-dotenv isn't installed, just continue
-    load_dotenv = None
-else:
-    load_dotenv()
-
+# stdlib
 import argparse
 import json
 import logging
@@ -18,14 +11,20 @@ import os
 import signal
 import sys
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Iterable, Any
 
-# Make console output immediate and UTF-8 (helps on Windows)
+# Load .env early so config is available to subsequent imports.
 try:
-    sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
-    sys.stderr.reconfigure(encoding="utf-8", line_buffering=True)
+    from dotenv import load_dotenv  # type: ignore
 except Exception:
-    pass
+    load_dotenv = None
+else:
+    # If DOTENV_FILE is set, load that; otherwise default to .env
+    env_file = os.getenv("DOTENV_FILE")
+    if env_file:
+        load_dotenv(env_file)  # set DOTENV_FILE=.env.staging
+    else:
+        load_dotenv()
 
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.title_ticker import ticker_from_title
@@ -193,6 +192,75 @@ def enrich_ticker(entry: dict, item: dict):
                     return
 
 
+# ---------------- Instrument-like detection (refined) ----------------
+def _is_instrument_like(t: str) -> bool:
+    """
+    Heuristic to drop warrants/units/series/etc without nuking legit tickers like DNOW.
+    Rules:
+      - Any of '-', '.', '^'  -> drop
+      - Length >= 5 and endswith one of {'W','WW','WS','WT','U','PU','PD'} -> drop
+    """
+    if not t:
+        return False
+    u = t.strip().upper().replace(" ", "")
+    if any(sep in u for sep in ("-", ".", "^")):
+        return True
+    if len(u) >= 5:
+        if u.endswith(("WW", "WS", "WT", "PU", "PD", "U")):
+            return True
+        if u.endswith("W"):
+            return True
+    return False
+
+
+# ---------------- Scored object helpers (robust to different shapes) -------------
+def _get(obj: Any, key: str, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    # namedtuple / pydantic / simple objects
+    return getattr(obj, key, default)
+
+
+def _as_list(x: Any) -> List[str]:
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple, set)):
+        return [str(v) for v in x]
+    return [str(x)]
+
+
+def _score_of(scored: Any) -> float:
+    for name in ("total_score", "score", "relevance", "value"):
+        v = _get(scored, name, None)
+        if v is not None:
+            try:
+                return float(v)
+            except Exception:
+                pass
+    return 0.0
+
+
+def _sentiment_of(scored: Any) -> float:
+    for name in ("sentiment", "sentiment_score", "compound"):
+        v = _get(scored, name, None)
+        if v is not None:
+            try:
+                return float(v)
+            except Exception:
+                pass
+    return 0.0
+
+
+def _keywords_of(scored: Any) -> List[str]:
+    for name in ("keywords", "tags", "categories"):
+        ks = _get(scored, name, None)
+        if ks:
+            return _as_list(ks)
+    return []
+
+
 def _cycle(log, settings) -> None:
     """One ingest→dedupe→enrich→classify→alert pass with clean skip behavior."""
     # Ingest + dedupe
@@ -219,8 +287,26 @@ def _cycle(log, settings) -> None:
     except Exception:
         price_ceiling = None
 
-    ignore_instr = os.getenv("IGNORE_INSTRUMENT_TICKERS", "0") == "1"
-    skipped_instr = 0
+    # Optional: source-level skip (CSV)
+    skip_sources_env = (os.getenv("SKIP_SOURCES") or "").strip()
+    skip_sources = {s.strip() for s in skip_sources_env.split(",") if s.strip()}
+
+    # Optional: classifier gates (all optional; default off)
+    def _fparse(name: str) -> float | None:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except Exception:
+            return None
+
+    min_score = _fparse("MIN_SCORE")      # e.g. 1.0
+    min_sent_abs = _fparse("MIN_SENT_ABS")  # e.g. 0.10
+    cats_allow_env = (os.getenv("CATEGORIES_ALLOW") or "").strip()
+    cats_allow = {c.strip().lower() for c in cats_allow_env.split(",") if c.strip()}
+
+    ignore_instr = os.getenv("IGNORE_INSTRUMENT_TICKERS", "1") == "1"
 
     # Quick metrics
     tickers_present = sum(1 for it in deduped if (it.get("ticker") or "").strip())
@@ -228,21 +314,21 @@ def _cycle(log, settings) -> None:
 
     skipped_no_ticker = 0
     skipped_price_gate = 0
+    skipped_instr = 0
+    skipped_by_source = 0
+    skipped_low_score = 0
+    skipped_sent_gate = 0
+    skipped_cat_gate = 0
     alerted = 0
 
     for it in deduped:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
-        if ignore_instr and ticker:
-            if any(sep in ticker for sep in ("-", ".", "^")) or ticker.endswith(
-                ("W", "WS", "WT")
-            ):
-                skipped_instr += 1
-                log.info(
-                    "skip_instrument_like_ticker source=%s ticker=%s", source, ticker
-                )
-                continue
+        # Skip whole sources if configured
+        if skip_sources and source in skip_sources:
+            skipped_by_source += 1
+            continue
 
         # Do not classify when there's no ticker
         if not ticker:
@@ -250,15 +336,19 @@ def _cycle(log, settings) -> None:
             log.info("item_parse_skip source=%s ticker=%s", source, ticker)
             continue
 
-        # Classify (uses analyzer weights if present)
-        # Classify (uses analyzer weights if present)
+        # Drop warrants/units/etc (refined)
+        if ignore_instr and _is_instrument_like(ticker):
+            skipped_instr += 1
+            log.info("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
+            continue
+
+        # Classify (uses analyzer weights if present); fallback if needed
         try:
             scored = classify(
                 item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
                 keyword_weights=dyn_weights,
             )
         except Exception as err:
-            # Rich debug so we can see *why* it's failing
             log.warning(
                 "classify_error source=%s ticker=%s err=%s item=%s",
                 source,
@@ -273,7 +363,6 @@ def _cycle(log, settings) -> None:
                 ),
                 exc_info=True,
             )
-            # Soft fallback so the pipeline keeps flowing
             try:
                 scored = _fallback_classify(
                     title=it.get("title", "") or it.get("summary", ""),
@@ -304,15 +393,57 @@ def _cycle(log, settings) -> None:
                 skipped_price_gate += 1
                 continue
 
-        # Send (or record-only) alert
-        ok = send_alert_safe(
-            item_dict=it,
-            scored=scored,
-            last_price=last_px,
-            last_change_pct=last_chg,
-            record_only=settings.feature_record_only,
-            webhook_url=settings.discord_webhook_url,
-        )
+        # -------- Classifier gating (score / sentiment / category) ----------
+        scr = _score_of(scored)
+        if (min_score is not None) and (scr < min_score):
+            skipped_low_score += 1
+            continue
+
+        snt = _sentiment_of(scored)
+        if (min_sent_abs is not None) and (abs(snt) < min_sent_abs):
+            skipped_sent_gate += 1
+            continue
+
+        if cats_allow:
+            kwords = {k.lower() for k in _keywords_of(scored)}
+            if not (kwords & cats_allow):
+                skipped_cat_gate += 1
+                continue
+
+        # Build a payload the new alerts API understands
+        alert_payload = {
+            "item": it,
+            "scored": (
+                scored._asdict() if hasattr(scored, "_asdict")
+                else (scored.dict() if hasattr(scored, "dict") else scored)
+            ),
+            "last_price": last_px,
+            "last_change_pct": last_chg,
+            "record_only": settings.feature_record_only,
+            "webhook_url": settings.discord_webhook_url,
+        }
+
+        # Send (or record-only) alert with compatibility shim
+        try:
+            # Prefer the new signature: send_alert_safe(payload)
+            ok = send_alert_safe(alert_payload)
+        except TypeError:
+            # Fall back to the legacy keyword-args signature
+            ok = send_alert_safe(
+                item_dict=it,
+                scored=scored,
+                last_price=last_px,
+                last_change_pct=last_chg,
+                record_only=settings.feature_record_only,
+                webhook_url=settings.discord_webhook_url,
+            )
+        except Exception as err:
+            log.warning(
+                "alert_error source=%s ticker=%s err=%s",
+                source, ticker, err.__class__.__name__, exc_info=True
+            )
+            ok = False
+
         if ok:
             alerted += 1
         else:
@@ -322,8 +453,9 @@ def _cycle(log, settings) -> None:
     # Final cycle metrics
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
-        "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' skipped_no_ticker=%s "
-        "skipped_price_gate=%s skipped_instr=%s alerted=%s",
+        "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' price_ceiling=%s "
+        "skipped_no_ticker=%s skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
+        "skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s alerted=%s",
         len(items),
         len(deduped),
         tickers_present,
@@ -331,17 +463,23 @@ def _cycle(log, settings) -> None:
         "yes" if dyn_loaded else "no",
         "yes" if dyn_path_exists else "no",
         dyn_path_str,
+        price_ceiling,
         skipped_no_ticker,
         skipped_price_gate,
         skipped_instr,
+        skipped_by_source,
+        skipped_low_score,
+        skipped_sent_gate,
+        skipped_cat_gate,
         alerted,
     )
 
     # Analyzer: run at the scheduled UTC time (no-op if not time)
     try:
         run_analyzer_once_if_scheduled(get_settings())
-    except Exception:
-        log.warning("analyzer_schedule error=1")
+    except Exception as err:
+        # keep the traceback so we can fix root cause
+        log.warning("analyzer_schedule error=%s", err.__class__.__name__, exc_info=True)
 
 
 def runner_main(
