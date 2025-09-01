@@ -7,7 +7,8 @@ Python automatically imports `sitecustomize` if present on sys.path.
 We use this to *safely* and *reversibly* attach integrations without modifying
 your existing modules:
 
-1) Hook alerts.send_alert_safe(...)  -> suppress re-alerts via SeenStore (TTL)
+1) Hook alerts.send_alert_safe(...)  -> compatibility (new payload vs legacy kwargs)
+   + persistent re-alert suppression via SeenStore (TTL)
 2) Hook feeds.extract_ticker(...)    -> fallback to ticker_resolver on None
 3) Sanitize tickers before classify  -> drop obvious junk tickers
 4) (Optional) Rate-limit Discord posts to prevent bursts
@@ -33,8 +34,9 @@ import sys
 import time
 import types
 
+
+# Prefer project logger if available; fall back to stdlib logging
 try:
-    # Prefer project logger if available
     from catalyst_bot.logging_utils import get_logger  # type: ignore
 except Exception:  # pragma: no cover - fallback
     import logging  # noqa: F401
@@ -78,17 +80,17 @@ def _emit_raw_json(event: str, **fields) -> None:
         sys.__stderr__.write(json.dumps(payload) + "\n")
         sys.__stderr__.flush()
     except Exception:
-        # Last resort: swallow
-        pass
+        pass  # last resort: swallow
 
 
-# ---- Lazy import helper to avoid early import of the module being run with -m ----
+# ---- Lazy import helper to avoid early import of the resolver module ----------
 def _resolve_from_source(*args, **kwargs):
     """
     Lazily import the resolver at call time to prevent Python's -m runtime warning:
     "'catalyst_bot.ticker_resolver' found in sys.modules after import of package..."
     """
     from catalyst_bot.ticker_resolver import resolve_from_source as _rfs  # type: ignore
+
     return _rfs(*args, **kwargs)
 
 
@@ -105,14 +107,14 @@ else:
 
     def _log_fallback_hit(**extra_fields):
         """Emit an INFO message every N hits; retain total for exit summary."""
-        global _fallback_hits
+        nonlocal _fallback_hits  # type: ignore
         _fallback_hits += 1
         if _fallback_hits % _fallback_log_every == 0:
             log.info("ticker_resolver_fallback_hit", extra=extra_fields)
 
     def _log_sanitized_drop(**extra_fields):
         """Emit an INFO message every N sanitized drops to reduce log noise."""
-        global _sanitized_hits
+        nonlocal _sanitized_hits  # type: ignore
         _sanitized_hits += 1
         if _sanitized_hits % _sanitized_log_every == 0:
             log.info("ticker_sanitized_drop", extra=extra_fields)
@@ -126,12 +128,14 @@ else:
             _emit_raw_json("ticker_sanitized_summary", drops=_sanitized_hits)
 
     # ---------------------------------------------------------------
-    # Hook 1: alerts.send_alert_safe -> persistent 'seen' suppression
+    # Hook 1: alerts.send_alert_safe
+    #  - Compatibility shim (payload-first vs legacy kwargs)
+    #  - SeenStore suppression to avoid duplicate alerts
     # ---------------------------------------------------------------
     if _flag("HOOK_SEEN_ALERTS", "true"):
         try:
-            from catalyst_bot import alerts  # type: ignore
-            from catalyst_bot.alert_guard import build_alert_id
+            import catalyst_bot.alerts as _alerts  # type: ignore
+            from catalyst_bot.alert_guard import build_alert_id  # type: ignore
 
             try:
                 from catalyst_bot.seen_store import should_filter  # type: ignore
@@ -140,24 +144,89 @@ else:
                 def should_filter(_id: str) -> bool:
                     return False
 
-            if isinstance(getattr(alerts, "send_alert_safe", None), types.FunctionType):
-                _orig_send = alerts.send_alert_safe
+            fn = getattr(_alerts, "send_alert_safe", None)
+            if isinstance(fn, types.FunctionType):
+                _orig_send = fn
 
-                def _wrapped_send_alert_safe(payload, *args, **kwargs):
+                def _coerce_payload(args, kwargs):
+                    """
+                    Return (payload_dict | None, legacy_kwargs | None).
+                    If payload is present, we also return a normalized dict for
+                    building alert IDs and rate limiting.
+                    """
+                    # New-style: positional dict or kw 'payload'
+                    if args and isinstance(args[0], dict) and not kwargs:
+                        return args[0], None
+                    if "payload" in kwargs and isinstance(kwargs["payload"], dict):
+                        return kwargs["payload"], None
+
+                    # Legacy kwargs -> condense to one payload dict
+                    if kwargs:
+                        payload = {
+                            "item": kwargs.get("item_dict") or kwargs.get("item"),
+                            "scored": kwargs.get("scored"),
+                            "last_price": kwargs.get("last_price"),
+                            "last_change_pct": kwargs.get("last_change_pct"),
+                            "record_only": kwargs.get("record_only", False),
+                            "webhook_url": kwargs.get("webhook_url"),
+                        }
+                        return payload, kwargs
+
+                    return None, None
+
+                def _wrapped_send_alert_safe(*args, **kwargs):
+                    """
+                    Accept either:
+                      - send_alert_safe(payload_dict)
+                      - send_alert_safe(item_dict=..., scored=..., last_price=..., last_change_pct=...,
+                                        record_only=..., webhook_url=...)
+                    Apply seen-filter suppression, then forward using whichever
+                    signature the underlying implements.
+                    """
+                    payload, legacy_kwargs = _coerce_payload(args, kwargs)
+                    if payload is None and legacy_kwargs is None:
+                        raise TypeError("send_alert_safe: no usable arguments")
+
+                    # Seen-filter suppression
+                    suppressed = False
                     try:
-                        item_id = build_alert_id(payload)
-                        if item_id and should_filter(item_id):
-                            log.info("alert_suppressed_seen", extra={"id": item_id})
-                            return {"status": "suppressed_seen", "id": item_id}
-                    except Exception as e:  # non-fatal
-                        log.debug("alert_seen_guard_error", extra={"error": str(e)})
-                    return _orig_send(payload, *args, **kwargs)
+                        alert_id = build_alert_id(payload)
+                        if alert_id and should_filter(alert_id):
+                            log.info("alert_suppressed_seen", extra={"alert_id": alert_id})
+                            suppressed = True
+                    except Exception as e:
+                        log.debug("alert_seen_filter_error", extra={"error": str(e)})
 
-                alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
-                log.info(
-                    "site_hooks_alerts_patched",
-                    extra={"target": "send_alert_safe"},
-                )
+                    if suppressed:
+                        # Keep runner semantics: return False to indicate "skip"
+                        return False
+
+                    # Call underlying with the right signature
+                    if legacy_kwargs is None:
+                        # Prefer new-style first
+                        try:
+                            return _orig_send(payload)
+                        except TypeError:
+                            # Underlying is legacy: expand to kwargs
+                            return _orig_send(
+                                item_dict=payload.get("item"),
+                                scored=payload.get("scored"),
+                                last_price=payload.get("last_price"),
+                                last_change_pct=payload.get("last_change_pct"),
+                                record_only=payload.get("record_only", False),
+                                webhook_url=payload.get("webhook_url"),
+                            )
+                    else:
+                        # We received legacy-style kwargs; try legacy first
+                        try:
+                            return _orig_send(**legacy_kwargs)
+                        except TypeError:
+                            # Underlying is new-style: condense to payload
+                            return _orig_send(payload)
+
+                # Apply the patch
+                _alerts.send_alert_safe = _wrapped_send_alert_safe  # type: ignore
+                log.info("site_hooks_alerts_patched", extra={"target": "send_alert_safe"})
             else:
                 log.debug(
                     "site_hooks_alerts_noop",
@@ -174,7 +243,7 @@ else:
     if _flag("HOOK_TICKER_RESOLVER", "true") or _flag("HOOK_TICKER_SANITY", "true"):
         try:
             from catalyst_bot import feeds  # type: ignore
-            from catalyst_bot.ticker_sanity import sanitize_ticker
+            from catalyst_bot.ticker_sanity import sanitize_ticker  # type: ignore
 
             fn = getattr(feeds, "extract_ticker", None)
             if isinstance(fn, types.FunctionType):
@@ -185,10 +254,7 @@ else:
                     try:
                         orig = _orig_extract(*args, **kwargs)
                     except Exception as e:
-                        log.debug(
-                            "extract_ticker_orig_error",
-                            extra={"error": str(e)},
-                        )
+                        log.debug("extract_ticker_orig_error", extra={"error": str(e)})
                         orig = None
 
                     title = kwargs.get("title")
@@ -251,7 +317,7 @@ else:
     if _flag("HOOK_ALERTS_RATE_LIMIT", "false"):
         try:
             from catalyst_bot import alerts  # type: ignore
-            from catalyst_bot.alerts_rate_limit import (
+            from catalyst_bot.alerts_rate_limit import (  # type: ignore
                 limiter_allow,
                 limiter_key_from_payload,
             )

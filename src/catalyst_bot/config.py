@@ -3,6 +3,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
+# --- add near the top of config.py (after imports) ---
+from typing import Optional
+import os
+
+def _env_float_opt(name: str) -> Optional[float]:
+    """
+    Read an optional float from env. Returns None if unset, blank, or non-numeric.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if raw == "" or raw.lower() in {"none", "null"} or raw.startswith("#"):
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
 
 def _b(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {
@@ -22,7 +40,7 @@ class Settings:
     discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
 
     # Behavior / thresholds
-    price_ceiling: float = float(os.getenv("PRICE_CEILING", "10"))
+    price_ceiling: Optional[float] = _env_float_opt("PRICE_CEILING")
     loop_seconds: int = int(os.getenv("LOOP_SECONDS", "60"))
 
     # Feature flags

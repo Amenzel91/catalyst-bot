@@ -105,6 +105,19 @@ def classify(
     # Total score: simple combination that is deterministic and monotonic
     total_score = relevance + sentiment
 
-    # Build ScoredItem using positional args to match current dataclass signature:
-    # (relevance, sentiment, tags, source_weight, total_score)
-    return ScoredItem(relevance, sentiment, hits, source_weight, total_score)
+    # Build ScoredItem using positional args (max compatibility across versions)
+    try:
+        return ScoredItem(relevance, sentiment, hits, total_score)
+    except TypeError:
+        # Older builds may not accept score as an arg; try 3-arg form
+        try:
+            return ScoredItem(relevance, sentiment, hits)
+        except Exception:
+            # Last resort so pipeline doesn’t die; downstream runner handles dicts too
+            return {
+                "relevance": relevance,
+                "sentiment": sentiment,
+                "keywords": hits,
+                "score": total_score,
+        }
+        
