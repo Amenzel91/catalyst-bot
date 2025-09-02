@@ -47,12 +47,10 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 STOP = False
 _PX_CACHE: Dict[str, Tuple[float, float]] = {}
 
-
 def _sig_handler(signum, frame):
     # graceful exit on Ctrl+C / SIGTERM
     global STOP
     STOP = True
-
 
 def _px_cache_get(ticker: str) -> float | None:
     if not ticker:
@@ -66,10 +64,38 @@ def _px_cache_get(ticker: str) -> float | None:
         _PX_CACHE.pop(ticker, None)
     return None
 
+def _resolve_main_webhook(settings) -> str:
+    """
+    Return the primary Discord webhook from (in order):
+      - settings.discord_webhook_url
+      - settings.discord_webhook
+      - env DISCORD_WEBHOOK_URL
+    Empty string if none.
+    """
+    return (
+        getattr(settings, "discord_webhook_url", None)
+        or getattr(settings, "discord_webhook", None)
+        or os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    )
+
+def _mask_webhook(url: str) -> str:
+    """
+    Return a masked fingerprint for a Discord webhook URL like:
+      https://discord.com/api/webhooks/{id}/{token}
+    Example: id=...123456 token=abcdef...
+    """
+    try:
+        parts = url.strip().split("/")
+        wid = parts[-2] if len(parts) >= 2 else ""
+        tok = parts[-1] if parts else ""
+        wid_tail = wid[-6:] if wid else ""
+        tok_head = tok[:6] if tok else ""
+        return f"id=...{wid_tail} token={tok_head}..."
+    except Exception:
+        return "unparsable"
 
 def _px_cache_put(ticker: str, price: float, ttl: int = 60) -> None:
     _PX_CACHE[ticker] = (price, time.time() + ttl)
-
 
 def price_snapshot(ticker: str) -> float | None:
     if not ticker or yf is None:
@@ -87,6 +113,100 @@ def price_snapshot(ticker: str) -> float | None:
     except Exception:
         return None
 
+def _send_heartbeat(log, settings, reason: str = "boot") -> None:
+    """
+    Post a lightweight heartbeat to Discord so we can verify connectivity,
+    even when record_only=True (controlled via FEATURE_HEARTBEAT).
+    Falls back to direct webhook POST if alerts.post_discord_json is absent.
+    """
+    if str(os.getenv("FEATURE_HEARTBEAT", "1")).strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    # Prefer an explicit admin/dev webhook (env) if provided,
+    # else fall back to the normal alerts webhook from settings/env via resolver.
+    admin_url = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
+    main_url = _resolve_main_webhook(settings)
+    target_url = admin_url or main_url
+    if not target_url:
+        return
+
+    content = (
+        f"🤖 Catalyst-Bot heartbeat ({reason}) "
+        f"| record_only={settings.feature_record_only} "
+        f"| skip_sources={os.getenv('SKIP_SOURCES','')} "
+        f"| min_score={os.getenv('MIN_SCORE','')} "
+        f"| min_sent_abs={os.getenv('MIN_SENT_ABS','')}"
+    )
+    payload = {"content": content}
+
+    # If an admin webhook is set, post directly to it (don’t disturb alerts pipeline).
+    if admin_url:
+        try:
+            import json
+            from urllib.request import Request, urlopen
+            req = Request(
+                target_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)"
+                },
+                method="POST",
+            )
+            with urlopen(req, timeout=10) as resp:
+                code = getattr(resp, "status", getattr(resp, "code", None))
+            log.info(
+                "heartbeat_sent reason=%s mode=direct_http status=%s target=admin hook=%s",
+                reason, code, _mask_webhook(target_url)
+            )
+            return
+        except Exception as e:
+            log.warning(
+                "heartbeat_error err=%s target=admin hook=%s",
+                e.__class__.__name__, _mask_webhook(target_url), exc_info=True
+            )
+            return
+
+    # 1) Try alerts.post_discord_json if it exists (normal path / main webhook)
+    try:
+        import catalyst_bot.alerts as _alerts  # type: ignore
+        post_fn = getattr(_alerts, "post_discord_json", None)
+        if callable(post_fn):
+            post_fn(payload)
+            log.info(
+                "heartbeat_sent reason=%s mode=alerts_fn target=main hook=%s",
+                reason, _mask_webhook(main_url)
+            )
+            return
+    except Exception as e:
+        # fall back to direct webhook below
+        log.debug("heartbeat_alerts_fn_error %s", getattr(e, "__class__", type("E",(object,),{})).__name__)
+ 
+
+    # 2) Fallback: direct HTTP POST to the webhook (no requests dep required)
+    try:
+        import json
+        from urllib.request import Request, urlopen
+        req = Request(
+            target_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)"
+            },
+            method="POST",
+        )
+        with urlopen(req, timeout=10) as resp:
+            # Discord returns 204 No Content for success. Any 2xx we consider OK.
+            code = getattr(resp, "status", getattr(resp, "code", None))
+        log.info(
+            "heartbeat_sent reason=%s mode=direct_http status=%s target=main hook=%s",
+            reason, code, _mask_webhook(target_url)
+        )
+    except Exception as e:
+        log.warning(
+            "heartbeat_error err=%s target=%s hook=%s",
+            e.__class__.__name__, "main", _mask_webhook(target_url), exc_info=True
+        )
 
 def _fallback_classify(
     title: str,
@@ -420,7 +540,7 @@ def _cycle(log, settings) -> None:
             "last_price": last_px,
             "last_change_pct": last_chg,
             "record_only": settings.feature_record_only,
-            "webhook_url": settings.discord_webhook_url,
+            "webhook_url": _resolve_main_webhook(settings),
         }
 
         # Send (or record-only) alert with compatibility shim
@@ -435,7 +555,7 @@ def _cycle(log, settings) -> None:
                 last_price=last_px,
                 last_change_pct=last_chg,
                 record_only=settings.feature_record_only,
-                webhook_url=settings.discord_webhook_url,
+                webhook_url=_resolve_main_webhook(settings),
             )
         except Exception as err:
             log.warning(
@@ -497,13 +617,29 @@ def runner_main(
     else:
         finviz_status = "missing"
 
+    main_webhook = _resolve_main_webhook(settings)
     log.info(
         "boot_start alerts_enabled=%s webhook=%s record_only=%s finviz_token=%s",
         settings.feature_alerts,
-        "set" if settings.discord_webhook_url else "missing",
+        "set" if main_webhook else "missing",
         settings.feature_record_only,
         finviz_status,
     )
+    # extra boot context (safe, masked)
+    admin_env = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
+    target = "admin" if admin_env else ("main" if main_webhook else "none")
+    chosen = admin_env or main_webhook or ""
+    log.info(
+        "boot_ctx target=%s hook=%s skip_sources=%s min_score=%s min_sent_abs=%s",
+        target,
+        _mask_webhook(chosen),
+        os.getenv("SKIP_SOURCES", ""),
+        os.getenv("MIN_SCORE", ""),
+        os.getenv("MIN_SENT_ABS", ""),
+    )
+
+    # Send a simple “I’m alive” message to Discord (even in record-only), controlled by FEATURE_HEARTBEAT
+    _send_heartbeat(log, settings, reason="boot")
 
     # signals
     try:
@@ -514,6 +650,13 @@ def runner_main(
 
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
+
+    heartbeat_interval_min_env = os.getenv("HEARTBEAT_INTERVAL_MIN", "").strip()
+    try:
+        HEARTBEAT_INTERVAL_S = int(heartbeat_interval_min_env) * 60 if heartbeat_interval_min_env else 0
+    except Exception:
+        HEARTBEAT_INTERVAL_S = 0
+    next_heartbeat_ts = time.time() + HEARTBEAT_INTERVAL_S if HEARTBEAT_INTERVAL_S > 0 else None
 
     while True:
         if STOP:
@@ -529,6 +672,10 @@ def runner_main(
             if STOP:
                 break
             time.sleep(0.2)
+            # periodic heartbeat (loop mode only)
+            if next_heartbeat_ts and time.time() >= next_heartbeat_ts:
+                _send_heartbeat(log, settings, reason="interval")
+                next_heartbeat_ts = time.time() + HEARTBEAT_INTERVAL_S
 
     log.info("boot_end")
     return 0

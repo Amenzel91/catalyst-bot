@@ -2,10 +2,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
-
-# --- add near the top of config.py (after imports) ---
 from typing import Optional
-import os
 
 def _env_float_opt(name: str) -> Optional[float]:
     """
@@ -37,7 +34,16 @@ class Settings:
     # Keys / tokens
     alphavantage_api_key: str = os.getenv("ALPHAVANTAGE_API_KEY", "")
     finviz_auth_token: str = os.getenv("FINVIZ_AUTH_TOKEN", "")
-    discord_webhook_url: str = os.getenv("DISCORD_WEBHOOK_URL", "")
+    
+    # Primary Discord webhook (existing behavior).
+    webhook_url: str = os.getenv("DISCORD_WEBHOOK", "")
+
+    # Optional: separate admin/dev channel webhook for ops traffic (e.g., heartbeat).
+    # If unset, heartbeat falls back to webhook_url.
+    admin_webhook_url: Optional[str] = os.getenv("DISCORD_ADMIN_WEBHOOK") or None
+
+    # Feature flags
+    feature_heartbeat: bool = bool(int(os.getenv("FEATURE_HEARTBEAT", "1")))
 
     # Behavior / thresholds
     price_ceiling: Optional[float] = _env_float_opt("PRICE_CEILING")
