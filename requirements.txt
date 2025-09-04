@@ -1,19 +1,27 @@
 # Core runtime dependencies for the catalyst bot
-#
-# Avoid hard pinning to specific patch versions unless strictly
-# required. Allow for forward‑compatible minor updates within
-# reasonable bounds to avoid dependency hell.
+# Keep loose upper-bounds to avoid dependency pin-lock.
 
 requests>=2.31,<3
 python-dotenv[cli]>=1.0,<2
-pandas>=2.2,<2.3          # or <3 if you want newer minors
+
+# Data stack (used by analyzer and helpers)
+pandas>=2.2,<2.3
 numpy>=1.26,<2
+
+# Feeds / parsing
 feedparser>=6,<7
-sgmllib3k>=1.0,<2         # optional explicit dep for feedparser
+sgmllib3k>=1.0,<2          # optional explicit dep for feedparser
 beautifulsoup4>=4.12,<5
 lxml>=5,<6
+
+# NLP / sentiment
 vaderSentiment>=3.3,<4
+
+# Utilities
 tqdm>=4.66,<5
 python-dateutil>=2.9,<3
 tzdata>=2024.1
 tenacity>=8.2,<9
+
+# Optional: price lookups (runner handles absence gracefully)
+yfinance>=0.2.40,<0.3
