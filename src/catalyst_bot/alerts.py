@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 import requests
 
 from .logging_utils import get_logger
+from .discord_transport import post_discord_with_backoff
+from .alerts_rate_limit import limiter_key_from_payload, limiter_allow
 import threading
 
 log = get_logger("alerts")
@@ -263,6 +265,24 @@ def send_alert_safe(*args, **kwargs) -> bool:
         return True
     if not webhook_url:
         return False
+    
+    # --- Optional per-key (ticker/title/link) rate limiting (opt-in) ---
+    # Enable with: ALERTS_KEY_RATE_LIMIT=1 (or legacy HOOK_ALERTS_RATE_LIMIT=1)
+    _truthy = {"1", "true", "yes", "on"}
+    key_rl_enabled = (
+        (os.getenv("ALERTS_KEY_RATE_LIMIT", "0").strip().lower() in _truthy)
+        or (os.getenv("HOOK_ALERTS_RATE_LIMIT", "0").strip().lower() in _truthy)
+    )
+    if key_rl_enabled:
+        rl_key = limiter_key_from_payload({
+            "ticker": ticker,
+            "title": item_dict.get("title"),
+            "canonical_link": item_dict.get("link") or item_dict.get("url"),
+        })
+        if not limiter_allow(rl_key):
+            # Treat as a benign skip; don't warn or hit the network
+            log.info("alert_skip rate_limited key=%s source=%s ticker=%s", rl_key, source, ticker)
+            return True
 
     content = _format_discord_content(item_dict, last_price, last_change_pct, scored)
     # Post via the shared primitive with polite retries
