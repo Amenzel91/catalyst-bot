@@ -3,14 +3,131 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 
 from .logging_utils import get_logger
+import threading
 
 log = get_logger("alerts")
 
+# --- Simple per-webhook rate limiter state ---
+_RL_LOCK = threading.Lock()
+_RL_STATE: Dict[str, Dict[str, float]] = {}
+_DEFAULT_MIN_INTERVAL = 0.45  # seconds between posts as a courtesy buffer
+# Debug switch to surface limiter decisions
+_RL_DEBUG = os.getenv("ALERTS_RL_DEBUG", "0").strip().lower() in {"1","true","yes","on"}
+# Make the courtesy spacing configurable (milliseconds) via env ALERTS_MIN_INTERVAL_MS
+try:
+    _ms = float(os.getenv("ALERTS_MIN_INTERVAL_MS", "") or 0.0)
+    if _ms > 0:
+        _DEFAULT_MIN_INTERVAL = _ms / 1000.0
+except Exception:
+    pass
+
+def _rl_should_wait(url: str) -> float:
+    """
+    Return seconds to wait before next post to this webhook (0 if safe to send).
+    Uses 'next_ok_at' timestamp and a small default spacing to avoid 429s.
+    """
+    now = time.time()
+    with _RL_LOCK:
+        st = _RL_STATE.get(url) or {}
+        next_ok_at = float(st.get("next_ok_at", 0.0))
+        wait = max(0.0, next_ok_at - now)
+        if wait == 0.0:
+            # schedule a small spacing even if no header-based limit is active
+            st["next_ok_at"] = now + _DEFAULT_MIN_INTERVAL
+            _RL_STATE[url] = st
+    if _RL_DEBUG and wait > 0:
+        log.debug("alerts_rl prewait_s=%.3f url=%s", wait, url[:60])
+    return wait
+
+def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
+    """
+    Update limiter window using Discord headers.
+    - On 429: always wait for Reset-After / Retry-After.
+    - On 2xx: *optionally* pace when the bucket is empty (Remaining <= 0),
+      controlled by ALERTS_RESPECT_RL_ON_SUCCESS (default ON).
+    """
+    try:
+        reset_after = headers.get("X-RateLimit-Reset-After")
+        if reset_after is None and is_429:
+            reset_after = headers.get("Retry-After")
+        if reset_after is None:
+            return
+
+        # Decide if we should pace on success
+        should_pace = bool(is_429)
+        if not should_pace:
+            if os.getenv("ALERTS_RESPECT_RL_ON_SUCCESS", "1").strip().lower() in {"1","true","yes","on"}:
+                rem = headers.get("X-RateLimit-Remaining")
+                try:
+                    if rem is not None and float(rem) <= 0:
+                        should_pace = True
+                except Exception:
+                    # If the header is malformed, ignore.
+                    pass
+        if not should_pace:
+            return
+
+        wait_s = float(reset_after)
+        # Some proxies send ms — scale down if value looks like milliseconds.
+        if wait_s > 1000:
+            wait_s = wait_s / 1000.0
+
+        with _RL_LOCK:
+            st = _RL_STATE.get(url) or {}
+            st["next_ok_at"] = max(float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05)
+            _RL_STATE[url] = st
+        if _RL_DEBUG:
+            try:
+                rem = headers.get("X-RateLimit-Remaining")
+            except Exception:
+                rem = None
+            log.debug(
+                "alerts_rl window set is_429=%s remaining=%s reset_after=%.3fs url=%s",
+                bool(is_429),
+                rem,
+                wait_s,
+                url[:60],
+            )
+    except Exception:
+        return
+
+def _post_discord_with_backoff(url: str, payload: dict, session=None) -> Tuple[bool, int|None]:
+    """
+    Synchronous post with soft pre-wait, header-aware backoff, and one retry.
+    Return (ok, status_code).
+    """
+    # 0) pre-wait if a previous call asked us to
+    wait = _rl_should_wait(url)
+    if wait > 0:
+        time.sleep(wait)
+
+    def _do_post():
+        resp = (session or requests).post(url, json=payload, timeout=10)
+        _rl_note_headers(url, resp.headers, is_429=(resp.status_code == 429))
+        return resp
+
+    resp = _do_post()
+    if 200 <= resp.status_code < 300:
+        return True, resp.status_code
+    if resp.status_code == 429:
+        # sleep based on headers then retry once
+        wait = float(
+            resp.headers.get("X-RateLimit-Reset-After")
+            or resp.headers.get("Retry-After")
+            or 1.0
+        )
+        # If a proxy gave milliseconds, scale to seconds
+        if wait > 1000:
+            wait = wait / 1000.0
+        time.sleep(min(max(wait, 0.5), 5.0))
+        resp2 = _do_post()
+        return (200 <= resp2.status_code < 300), resp2.status_code
+    return False, getattr(resp, "status_code", None)
 
 def _fmt_change(change: Optional[float]) -> str:
     if change is None:
@@ -75,66 +192,36 @@ def _format_discord_content(
 
 
 def post_discord_json(
-    payload: Dict[str, Any],
-    webhook_url: Optional[str] = None,
+    payload: dict,
+    webhook_url: str | None = None,
+    *,
     max_retries: int = 2,
 ) -> bool:
     """
     Minimal, reusable Discord poster with polite retry/backoff.
     - Uses webhook_url if provided, else payload.get('_webhook_url'),
       else env DISCORD_WEBHOOK_URL.
-    - Retries on 429 and 5xx with headers-based or exponential backoff.
+    - Retries on 429 and 5xx with headers-based / exponential backoff.
     """
-    url = (
-        webhook_url
-        or payload.pop("_webhook_url", None)
-        or os.getenv("DISCORD_WEBHOOK_URL")
-    )
+    url = (webhook_url
+           or payload.pop("_webhook_url", None)
+           or os.getenv("DISCORD_WEBHOOK_URL", "").strip())
     if not url:
         return False
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            resp = requests.post(url, json=payload, timeout=10)
-            # 204 is the common success for Discord webhooks, accept any 2xx.
-            if 200 <= resp.status_code < 300:
-                return True
-            # Handle rate limits / transient errors
-            if resp.status_code == 429 or 500 <= resp.status_code < 600:
-                if attempt > max_retries:
-                    log.warning(
-                        "alert_error http_status=%s retries_exhausted", resp.status_code
-                    )
-                    return False
-                # Respect headers if present
-                retry_after_hdr = resp.headers.get("Retry-After") or resp.headers.get(
-                    "X-RateLimit-Reset-After"
-                )
-                try:
-                    # Discord sometimes sends Retry-After in ms; be lenient
-                    sleep_s = (
-                        float(retry_after_hdr) if retry_after_hdr else 0.5 * attempt
-                    )
-                    # If the header looks like milliseconds, scale down
-                    if sleep_s > 60 and sleep_s > 1000:
-                        sleep_s = sleep_s / 1000.0
-                except Exception:
-                    sleep_s = 0.5 * attempt
-                time.sleep(min(max(sleep_s, 0.2), 10.0))
-                continue
-            log.warning("alert_error http_status=%s", resp.status_code)
-            return False
-        except Exception as e:
-            if attempt > max_retries:
-                log.warning(
-                    "alert_error err=%s retries_exhausted",
-                    e.__class__.__name__,
-                    exc_info=True,
-                )
-                return False
-            time.sleep(0.5 * attempt)
+    status: int | None = None
+    for attempt in range(1, max_retries + 1):
+        ok, status = _post_discord_with_backoff(url, payload)
+        if ok:
+            return True
+        # Retry on rate-limit or transient 5xx; small exponential backoff.
+        if status is None or status == 429 or (500 <= status < 600):
+            time.sleep(min(0.5 * attempt, 3.0))
             continue
+        # Non-retryable error (4xx other than 429)
+        log.warning("alert_error http_status=%s", status)
+        return False
+    log.warning("alert_error http_status=%s retries_exhausted", status)
+    return False
 
 
 def send_alert_safe(*args, **kwargs) -> bool:
