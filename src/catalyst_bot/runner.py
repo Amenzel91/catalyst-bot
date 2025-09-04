@@ -11,7 +11,9 @@ import os
 import signal
 import sys
 import time
+import random
 from typing import Dict, List, Tuple, Iterable, Any
+import re
 
 # Load .env early so config is available to subsequent imports.
 try:
@@ -317,13 +319,20 @@ def _is_instrument_like(t: str) -> bool:
     """
     Heuristic to drop warrants/units/series/etc without nuking legit tickers like DNOW.
     Rules:
-      - Any of '-', '.', '^'  -> drop
+      - Hyphen '-' or caret '^' -> drop
+      - A dot '.' is OK **only** for class shares like BRK.A / BF.B
       - Length >= 5 and endswith one of {'W','WW','WS','WT','U','PU','PD'} -> drop
     """
     if not t:
         return False
     u = t.strip().upper().replace(" ", "")
-    if any(sep in u for sep in ("-", ".", "^")):
+    # Hard drop on explicit instrument separators
+    if "-" in u or "^" in u:
+        return True
+    # Allow legit class-share pattern (e.g., BRK.A, BF.B). Anything else with '.' is likely an instrument-ish variant.
+    if "." in u:
+        if re.fullmatch(r"[A-Z]{1,4}\.[A-Z]$", u):
+            return False
         return True
     if len(u) >= 5:
         if u.endswith(("WW", "WS", "WT", "PU", "PD", "U")):
@@ -427,6 +436,16 @@ def _cycle(log, settings) -> None:
     cats_allow = {c.strip().lower() for c in cats_allow_env.split(",") if c.strip()}
 
     ignore_instr = os.getenv("IGNORE_INSTRUMENT_TICKERS", "1") == "1"
+
+    # Flow control: optional hard cap and jitter to smooth bursts
+    try:
+        max_alerts_per_cycle = int((os.getenv("MAX_ALERTS_PER_CYCLE") or "0").strip() or "0")
+    except Exception:
+        max_alerts_per_cycle = 0
+    try:
+        jitter_ms = int((os.getenv("ALERTS_JITTER_MS") or "0").strip() or "0")
+    except Exception:
+        jitter_ms = 0
 
     # Quick metrics
     tickers_present = sum(1 for it in deduped if (it.get("ticker") or "").strip())
@@ -566,6 +585,14 @@ def _cycle(log, settings) -> None:
 
         if ok:
             alerted += 1
+            # Optional: tiny jitter after success to avoid draining the bucket at once
+            if jitter_ms > 0:
+                time.sleep(max(0.0, min(jitter_ms, 1000)) / 1000.0 * random.random())
+
+            # Optional: stop early if we hit the cap
+            if max_alerts_per_cycle > 0 and alerted >= max_alerts_per_cycle:
+                log.info("alert_cap_reached cap=%s", max_alerts_per_cycle)
+                break
         else:
             # Downgrade to info to avoid spammy warnings for legitimate skips
             log.info("alert_skip source=%s ticker=%s", source, ticker)
@@ -600,7 +627,6 @@ def _cycle(log, settings) -> None:
     except Exception as err:
         # keep the traceback so we can fix root cause
         log.warning("analyzer_schedule error=%s", err.__class__.__name__, exc_info=True)
-
 
 def runner_main(
     once: bool = False, loop: bool = False, sleep_s: float | None = None
