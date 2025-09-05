@@ -6,6 +6,8 @@ import os
 import random
 import re
 import time
+import csv
+from io import StringIO
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -17,6 +19,14 @@ from dateutil import parser as dtparse
 from .logging_utils import get_logger
 
 log = get_logger("feeds")
+
+# --- small helpers -----------------------------------------------------------
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)).strip())
+    except Exception:
+        return default
+
 
 USER_AGENT = "CatalystBot/1.0 (+https://example.local)"
 
@@ -311,6 +321,38 @@ def fetch_pr_feeds() -> List[Dict]:
     summary = {"sources": len(FEEDS), "items": 0, "t_ms": 0.0, "by_source": {}}
     t0 = time.time()
 
+    # ---------------- Finviz Elite: news_export.ashx (opt-in) ----------------
+    if str(os.getenv("FEATURE_FINVIZ_NEWS", "1")).strip().lower() in {"1", "true", "yes", "on"}:
+        st = time.time()
+        try:
+            # Prebuild seen sets to avoid dupes across sources (by id/link).
+            _seen_ids   = {i.get("id")   for i in all_items if i.get("id")}
+            _seen_links = {i.get("link") for i in all_items if i.get("link")}
+            finviz_items = _fetch_finviz_news_from_env()
+            finviz_unique = [
+                it for it in finviz_items
+                if ( (it.get("id")   not in _seen_ids) and
+                     (it.get("link") not in _seen_links) )
+            ]
+            all_items.extend(finviz_unique)
+            summary["by_source"]["finviz_news"] = {
+                "ok": 1,
+                "http4": 0,
+                "http5": 0,
+                "errors": 0,
+                # count what we actually added after cross-source uniq
+                "entries": len(finviz_unique),
+                "t_ms": round((time.time() - st) * 1000.0, 1),
+            }
+        except Exception as e:
+            summary.setdefault("by_source", {})
+            summary["by_source"]["finviz_news"] = {
+                "ok": 0, "http4": 0, "http5": 0, "errors": 1, "entries": 0,
+                "t_ms": round((time.time() - st) * 1000.0, 1),
+            }
+            log.warning("finviz_news_error err=%s", e.__class__.__name__, exc_info=True)
+
+
     for src, url_list in FEEDS.items():
         # Optional single-URL override via env
         if ENV_URL_OVERRIDES.get(src):
@@ -354,6 +396,9 @@ def fetch_pr_feeds() -> List[Dict]:
         s["t_ms"] = round((time.time() - st) * 1000.0, 1)
         summary["by_source"][src] = s
 
+    # De-duplicate across sources (Finviz vs wires, syndication, etc.)
+    all_items = dedupe(all_items)
+
     # If EVERYTHING failed and user wants to validate alerts, inject demo
     if not all_items and os.getenv("DEMO_IF_EMPTY", "").lower() in ("1", "true", "yes"):
         now = datetime.now(timezone.utc).isoformat()
@@ -373,6 +418,130 @@ def fetch_pr_feeds() -> List[Dict]:
     log.info("%s", {"feeds_summary": summary})
     return all_items
 
+# ===================== Finviz Elite news helpers =====================
+
+def _finviz_build_news_url(
+    token: str,
+    *,
+    kind: str = "stocks",          # market|stocks|etfs|crypto
+    tickers: list[str] | None = None,
+    include_blogs: bool = False,
+    extra_params: str | None = None,
+) -> str:
+    """
+    Compose a Finviz Elite export URL. See screenshots/docs you shared.
+    """
+    # Allow overriding the export base via env (useful for testing/mocks).
+    # Default must include .ashx to avoid 404s on Elite.
+    base = (os.getenv("FINVIZ_NEWS_BASE") or "https://elite.finviz.com/news_export.ashx")
+    kind = (kind or "stocks").strip().lower()
+    v_map = {"market": "1", "stocks": "3", "etfs": "4", "crypto": "5"}
+    v = v_map.get(kind, "3")
+    # News-only by default (exclude blogs), unless include_blogs=True
+    c_part = "" if include_blogs else "&c=1"
+    t_part = ""
+    if tickers:
+        tickers = [t.strip().upper() for t in tickers if t and t.strip()]
+        if tickers:
+            t_part = "&t=" + ",".join(tickers)
+    extra = (extra_params or "")
+    # FINVIZ_NEWS_LIMIT: ask server to cap rows (default 100; clamp 10..500).
+    try:
+        _limit_env = os.getenv("FINVIZ_NEWS_LIMIT") or os.getenv("FINVIZ_NEWS_MAX")
+        _limit = int(_limit_env) if _limit_env else 100
+    except Exception:
+        _limit = 100
+    _limit = max(10, min(_limit, 500))
+    if "limit=" not in extra:
+        extra += f"&limit={_limit}"
+    return f"{base}?v={v}{c_part}{t_part}{extra}&auth={token}"
+
+
+def _fetch_finviz_news_from_env() -> list[dict]:
+    """
+    Pull Finviz Elite news using env-config. Returns a list of normalized items:
+        {'source','title','summary','link','id','ts','ticker','tickers'}
+    Env:
+      FINVIZ_AUTH_TOKEN           (required)
+      FINVIZ_NEWS_KIND            market|stocks|etfs|crypto  (default: stocks)
+      FINVIZ_NEWS_TICKERS         CSV of symbols to filter (optional)
+      FINVIZ_NEWS_INCLUDE_BLOGS   0/1 (default: 0)
+      FINVIZ_NEWS_PARAMS          raw extra query params (optional)
+      FINVIZ_NEWS_MAX             cap item count (default: 200)
+      FINVIZ_NEWS_TIMEOUT         seconds (default: 10)
+    """
+    token = (os.getenv("FINVIZ_AUTH_TOKEN") or "").strip()
+    if not token:
+        return []
+    kind = (os.getenv("FINVIZ_NEWS_KIND") or "stocks").strip().lower()
+    tickers_env = (os.getenv("FINVIZ_NEWS_TICKERS") or "").strip()
+    tickers = [t.strip().upper() for t in tickers_env.split(",") if t.strip()] if tickers_env else None
+    include_blogs = str(os.getenv("FINVIZ_NEWS_INCLUDE_BLOGS", "0")).strip().lower() in {"1","true","yes","on"}
+    extra_params = (os.getenv("FINVIZ_NEWS_PARAMS") or "").strip() or None
+    max_items = max(1, int(os.getenv("FINVIZ_NEWS_MAX", "200")))
+    timeout = float(os.getenv("FINVIZ_NEWS_TIMEOUT", "10"))
+
+    url = _finviz_build_news_url(
+        token,
+        kind=kind,
+        tickers=tickers,
+        include_blogs=include_blogs,
+        extra_params=extra_params,
+    )
+    # Be polite and explicit with headers; some setups are picky about UA.
+    def _do(u: str):
+        return requests.get(u, timeout=timeout, headers={"User-Agent": USER_AGENT})
+
+    resp = _do(url)
+    if resp.status_code == 404:
+        # Retry once by toggling .ashx on/off in case the base path was wrong.
+        if "news_export.ashx" in url:
+            alt = url.replace("news_export.ashx", "news_export")
+        else:
+            alt = url.replace("news_export", "news_export.ashx")
+        resp = _do(alt)
+    # Finviz returns 200 with CSV body on success
+    if resp.status_code == 401 or resp.status_code == 403:
+        raise RuntimeError(f"finviz_auth_failed status={resp.status_code}")
+    if resp.status_code >= 500:
+        raise RuntimeError(f"finviz_server_error status={resp.status_code}")
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise RuntimeError(f"finviz_http status={resp.status_code}")
+
+    text = resp.content.decode("utf-8-sig", errors="replace")
+    # CSV with header row; use DictReader for robustness
+    rdr = csv.DictReader(StringIO(text))
+    out: list[dict] = []
+    for row in rdr:
+        # Case-insensitive header access
+        low = {k.lower(): v for k, v in row.items()}
+        title = (low.get("title") or low.get("headline") or "").strip()
+        link = (low.get("url") or low.get("link") or low.get("href") or "").strip()
+        source = (low.get("source") or "finviz").strip()
+        ts_raw = (low.get("time") or low.get("datetime") or low.get("date") or "").strip()
+        # Symbols may come in various keys
+        syms_raw = (low.get("ticker") or low.get("tickers") or low.get("symbol") or low.get("symbols") or "").strip()
+        syms = [s.strip().upper() for s in syms_raw.replace(";", ",").split(",") if s.strip()] if syms_raw else []
+        # first symbol as primary ticker (runner’s pipeline expects .get('ticker'))
+        primary = syms[0] if syms else ""
+
+        if not (title and link):
+            continue
+
+        item = {
+            "source": "finviz_news",
+            "title": title,
+            "summary": "",
+            "link": link,
+            "id": _stable_id("finviz_news", link, None),
+            "ts": _to_utc_iso(ts_raw),
+            "ticker": primary,
+            "tickers": syms,    # keep all if needed in the future
+        }
+        out.append(item)
+        if len(out) >= max_items:
+            break
+    return out
 
 def dedupe(items: List[Dict]) -> List[Dict]:
     """
