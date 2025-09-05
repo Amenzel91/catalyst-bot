@@ -7,6 +7,7 @@ from typing import Optional
 
 from catalyst_bot.finviz_elite import export_latest_filings
 from catalyst_bot.logging_utils import get_logger
+from catalyst_bot.alerts import send_alert_safe
 
 log = get_logger("finviz_filings")
 
@@ -40,16 +41,23 @@ def _is_recent(ymd: str, cutoff: datetime) -> bool:
     return False
 
 def _maybe_alert(row: dict):
-    # Wire this into your real alert pipeline later
-    # For now we’ll just log to console for visibility.
-    print("[ALERT]", {
-        "channel": "filings",
-        "ticker": row.get("ticker"),
-        "title": row.get("title"),
-        "url": row.get("url"),
-        "form": row.get("filing_type"),
-        "when": row.get("filing_date"),
-    })
+    """
+    Send a compact Discord alert for a new filing, reusing our alerts pipeline.
+    Uses DISCORD_WEBHOOK_URL or DISCORD_ADMIN_WEBHOOK if present.
+    """
+    webhook = os.getenv("DISCORD_WEBHOOK_URL") or os.getenv("DISCORD_ADMIN_WEBHOOK")
+    if not webhook:
+        return
+    item = {
+        "source": "finviz_filings",
+        "ticker": (row.get("ticker") or "").upper(),
+        "title": f"{row.get('filing_type','?')} — {row.get('title','')}",
+        "link": row.get("url"),
+        "ts": row.get("filing_date") or "",
+    }
+    # Use our resilient sender with rate-limit handling
+    send_alert_safe(item_dict=item, last_price=None, last_change_pct=None,
+                    scored=None, record_only=False, webhook_url=webhook)
 
 def main():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)

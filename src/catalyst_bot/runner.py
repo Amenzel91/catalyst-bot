@@ -31,7 +31,30 @@ else:
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.title_ticker import ticker_from_title
 
-from . import feeds, market
+# Be nice to operators: give a clear error when a runtime dep is missing,
+# instead of a scary "<frozen runpy>" stacktrace.
+try:
+    from . import feeds, market
+except ModuleNotFoundError as e:
+    missing = getattr(e, "name", None) or "a required module"
+    sys.stderr.write(
+        "\n[Startup dependency check] Missing Python package: "
+        f"{missing}\n"
+        "Fix (PowerShell):  py -3.12 -m pip install -r requirements.txt\n"
+        "If you're in a venv, make sure it’s activated before installing.\n\n"
+    )
+    sys.exit(2)
+except ImportError as e:
+    sys.stderr.write(
+        "\n[Startup import error] "
+        f"{e.__class__.__name__}: {e}\n"
+        "Common fixes (PowerShell):\n"
+        "  1) Ensure venv is active:   .\\.venv\\Scripts\\Activate.ps1\n"
+        "  2) Install deps:            py -3.12 -m pip install -r requirements.txt\n"
+        "  3) Run as a module:         python -m catalyst_bot.runner --once\n\n"
+    )
+    sys.exit(2)
+
 from .alerts import send_alert_safe
 from .analyzer import run_analyzer_once_if_scheduled
 from .classify import classify, load_dynamic_keyword_weights
