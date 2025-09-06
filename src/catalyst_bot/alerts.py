@@ -1,16 +1,15 @@
-# src/catalyst_bot/alerts.py
+﻿# src/catalyst_bot/alerts.py
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 import requests
 
+from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
 from .logging_utils import get_logger
-from .discord_transport import post_discord_with_backoff
-from .alerts_rate_limit import limiter_key_from_payload, limiter_allow
-import threading
 
 log = get_logger("alerts")
 
@@ -19,7 +18,12 @@ _RL_LOCK = threading.Lock()
 _RL_STATE: Dict[str, Dict[str, float]] = {}
 _DEFAULT_MIN_INTERVAL = 0.45  # seconds between posts as a courtesy buffer
 # Debug switch to surface limiter decisions
-_RL_DEBUG = os.getenv("ALERTS_RL_DEBUG", "0").strip().lower() in {"1","true","yes","on"}
+_RL_DEBUG = os.getenv("ALERTS_RL_DEBUG", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 # Make the courtesy spacing configurable (milliseconds) via env ALERTS_MIN_INTERVAL_MS
 try:
     _ms = float(os.getenv("ALERTS_MIN_INTERVAL_MS", "") or 0.0)
@@ -27,6 +31,7 @@ try:
         _DEFAULT_MIN_INTERVAL = _ms / 1000.0
 except Exception:
     pass
+
 
 def _rl_should_wait(url: str) -> float:
     """
@@ -46,6 +51,7 @@ def _rl_should_wait(url: str) -> float:
         log.debug("alerts_rl prewait_s=%.3f url=%s", wait, url[:60])
     return wait
 
+
 def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
     """
     Update limiter window using Discord headers.
@@ -63,7 +69,12 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
         # Decide if we should pace on success
         should_pace = bool(is_429)
         if not should_pace:
-            if os.getenv("ALERTS_RESPECT_RL_ON_SUCCESS", "1").strip().lower() in {"1","true","yes","on"}:
+            if os.getenv("ALERTS_RESPECT_RL_ON_SUCCESS", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
                 rem = headers.get("X-RateLimit-Remaining")
                 try:
                     if rem is not None and float(rem) <= 0:
@@ -75,13 +86,15 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
             return
 
         wait_s = float(reset_after)
-        # Some proxies send ms — scale down if value looks like milliseconds.
+        # Some proxies send ms â€” scale down if value looks like milliseconds.
         if wait_s > 1000:
             wait_s = wait_s / 1000.0
 
         with _RL_LOCK:
             st = _RL_STATE.get(url) or {}
-            st["next_ok_at"] = max(float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05)
+            st["next_ok_at"] = max(
+                float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05
+            )
             _RL_STATE[url] = st
         if _RL_DEBUG:
             try:
@@ -98,7 +111,10 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
     except Exception:
         return
 
-def _post_discord_with_backoff(url: str, payload: dict, session=None) -> Tuple[bool, int|None]:
+
+def _post_discord_with_backoff(
+    url: str, payload: dict, session=None
+) -> Tuple[bool, int | None]:
     """
     Synchronous post with soft pre-wait, header-aware backoff, and one retry.
     Return (ok, status_code).
@@ -131,6 +147,7 @@ def _post_discord_with_backoff(url: str, payload: dict, session=None) -> Tuple[b
         return (200 <= resp2.status_code < 300), resp2.status_code
     return False, getattr(resp, "status_code", None)
 
+
 def _fmt_change(change: Optional[float]) -> str:
     if change is None:
         return "n/a"
@@ -138,6 +155,33 @@ def _fmt_change(change: Optional[float]) -> str:
         return f"{change:+.2f}%"
     except Exception:
         return "n/a"
+
+
+# --- Mentions safety: avoid accidental pings -------------------------------
+# DISABLE_MENTIONS_STRICT=1 (default) will also neutralize bare @word tokens.
+_STRICT_DEPING = os.getenv("DISABLE_MENTIONS_STRICT", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _deping(text: Any) -> str:
+    """Neutralize @everyone/@here and user/role mentions to avoid pings."""
+    if text is None:
+        return ""
+    s = str(text)
+    # cheap/safe: break @everyone / @here
+    s = s.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+    # also break <@...> and <@&...> forms
+    s = s.replace("<@", "<@\u200b")
+    if _STRICT_DEPING:
+        import re
+
+        # break bare @User (but leave emails like foo@bar.com alone)
+        s = re.sub(r"(?<!\w)@(?=[A-Za-z])", "@\u200b", s)
+    return s
 
 
 def _format_discord_content(
@@ -148,13 +192,15 @@ def _format_discord_content(
 ) -> str:
     """Compose a compact, readable Discord message body."""
     ticker = (item.get("ticker") or "n/a").upper()
-    title = item.get("title") or "(no title)"
+    title = _deping(item.get("title") or "(no title)")
     source = item.get("source") or "unknown"
     ts = item.get("ts") or ""
-    link = item.get("link") or ""
+    link = _deping(item.get("link") or "")
 
     px = "n/a" if last_price is None else f"{float(last_price):.2f}"
     chg = _fmt_change(last_change_pct)
+    # Prefer ASCII separators for Windows consoles
+    sep = " | "
 
     # Show a couple of high-signal tags if available
     def _coerce_tags(obj: Any) -> Iterable[str]:
@@ -179,17 +225,17 @@ def _format_discord_content(
             return []
 
     tags = list(_coerce_tags(scored))[:3]
-    tags_part = f" • tags: {', '.join(map(str, tags))}" if tags else ""
+    tags_part = f" | tags: {', '.join(map(str, tags))}" if tags else ""
 
-    line1 = f"[{ticker}] {title}"
-    line2 = f"{source} • {ts} • px={px} ({chg}){tags_part}"
-    line3 = link
+    line1 = _deping(f"[{ticker}] {title}")
+    line2 = _deping(f"{source}{sep}{ts}{sep}px={px} ({chg}){tags_part}")
+    line3 = _deping(link)
 
     # Keep under Discord's limits; three short lines is plenty.
-    body = f"{line1}\n{line2}\n{line3}".strip()
+    body = f"{line1}\n{line2}\n{line3}".strip().strip()
     # Discord hard limit: 2000 chars (be safe at ~1900)
     if len(body) > 1900:
-        body = body[:1870] + "\n… (truncated)"
+        body = body[:1870] + "\n... (truncated)"
     return body
 
 
@@ -205,9 +251,11 @@ def post_discord_json(
       else env DISCORD_WEBHOOK_URL.
     - Retries on 429 and 5xx with headers-based / exponential backoff.
     """
-    url = (webhook_url
-           or payload.pop("_webhook_url", None)
-           or os.getenv("DISCORD_WEBHOOK_URL", "").strip())
+    url = (
+        webhook_url
+        or payload.pop("_webhook_url", None)
+        or os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    )
     if not url:
         return False
     status: int | None = None
@@ -263,31 +311,117 @@ def send_alert_safe(*args, **kwargs) -> bool:
     if record_only:
         log.info("alert_record_only source=%s ticker=%s", source, ticker)
         return True
-    if not webhook_url:
+    # Allow env fallback: only bail if neither an explicit webhook nor the
+    # DISCORD_WEBHOOK_URL env var is available.
+    if not (webhook_url or os.getenv("DISCORD_WEBHOOK_URL", "").strip()):
         return False
-    
+
     # --- Optional per-key (ticker/title/link) rate limiting (opt-in) ---
     # Enable with: ALERTS_KEY_RATE_LIMIT=1 (or legacy HOOK_ALERTS_RATE_LIMIT=1)
     _truthy = {"1", "true", "yes", "on"}
     key_rl_enabled = (
-        (os.getenv("ALERTS_KEY_RATE_LIMIT", "0").strip().lower() in _truthy)
-        or (os.getenv("HOOK_ALERTS_RATE_LIMIT", "0").strip().lower() in _truthy)
-    )
+        os.getenv("ALERTS_KEY_RATE_LIMIT", "0").strip().lower() in _truthy
+    ) or (os.getenv("HOOK_ALERTS_RATE_LIMIT", "0").strip().lower() in _truthy)
     if key_rl_enabled:
-        rl_key = limiter_key_from_payload({
-            "ticker": ticker,
-            "title": item_dict.get("title"),
-            "canonical_link": item_dict.get("link") or item_dict.get("url"),
-        })
+        rl_key = limiter_key_from_payload(
+            {
+                "ticker": ticker,
+                "title": item_dict.get("title"),
+                "canonical_link": item_dict.get("link") or item_dict.get("url"),
+            }
+        )
         if not limiter_allow(rl_key):
             # Treat as a benign skip; don't warn or hit the network
-            log.info("alert_skip rate_limited key=%s source=%s ticker=%s", rl_key, source, ticker)
+            log.info(
+                "alert_skip rate_limited key=%s source=%s ticker=%s",
+                rl_key,
+                source,
+                ticker,
+            )
             return True
 
     content = _format_discord_content(item_dict, last_price, last_change_pct, scored)
+    payload = {"content": content, "allowed_mentions": {"parse": []}}
+    try:
+        _use = str(os.getenv("FEATURE_RICH_ALERTS", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if _use:
+            payload["embeds"] = [
+                _build_discord_embed(
+                    item_dict=item_dict,
+                    scored=scored,
+                    last_price=last_price,
+                    last_change_pct=last_change_pct,
+                )
+            ]
+    except Exception:
+        pass
     # Post via the shared primitive with polite retries
-    ok = post_discord_json({"content": content}, webhook_url=webhook_url, max_retries=2)
+    ok = post_discord_json(payload, webhook_url=webhook_url, max_retries=2)
     if not ok:
         # Add source/ticker context on failure to aid triage
         log.warning("alert_error source=%s ticker=%s", source, ticker)
     return ok
+
+
+def _build_discord_embed(
+    *, item_dict: dict, scored: dict | None, last_price, last_change_pct
+):
+    """Build a compact, actionable Discord embed for an alert."""
+    title = _deping((item_dict.get("title") or "").strip()[:240])
+    link = _deping((item_dict.get("link") or "").strip())
+    ts = item_dict.get("ts") or None
+    src = (item_dict.get("source") or "").strip()
+
+    # Tickers
+    tkr = (item_dict.get("ticker") or "").strip().upper()
+    tickers = item_dict.get("tickers") or ([tkr] if tkr else [])
+    primary = tkr or (tickers[0] if tickers else "")
+
+    # Price / change
+    if isinstance(last_price, (int, float)):
+        price_str = f"${last_price:0.2f}"
+    else:
+        price_str = str(last_price) if last_price is not None else "n/a"
+    chg_str = last_change_pct or ""
+
+    # Score / sentiment (best-effort)
+    sc = (scored or {}) if isinstance(scored, dict) else {}
+    sent = (sc.get("sentiment") or sc.get("sent") or "") or "n/a"
+    score = sc.get("score", sc.get("raw_score", None))
+    if isinstance(score, (int, float)):
+        score_str = f"{score:.2f}"
+    else:
+        score_str = "n/a" if score is None else str(score)
+
+    # Color: green for up, red for down; fallback to Discord blurple
+    color = 0x5865F2
+    try:
+        v = str(chg_str).replace("%", "").replace("+", "").strip()
+        if v:
+            color = 0x2ECC71 if float(v) >= 0 else 0xE74C3C
+    except Exception:
+        pass
+
+    tval = ", ".join(tickers) if tickers else (primary or "-")
+    tval = _deping(tval)
+    embed = {
+        "title": _deping(f"[{primary or '?'}] {title}")[:256],
+        "url": link,
+        "color": color,
+        "timestamp": ts,  # ISO-8601 preferred
+        "fields": [
+            {"name": "Price", "value": price_str or "n/a", "inline": True},
+            {"name": "Change", "value": chg_str or "n/a", "inline": True},
+            {"name": "Sentiment", "value": sent, "inline": True},
+            {"name": "Score", "value": score_str, "inline": True},
+            {"name": "Source", "value": src or "-", "inline": True},
+            {"name": "Tickers", "value": tval, "inline": False},
+        ],
+        "footer": {"text": "Catalyst-Bot"},
+    }
+    return embed
