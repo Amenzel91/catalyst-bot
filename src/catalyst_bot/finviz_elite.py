@@ -3,19 +3,23 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import os
 import re
 from typing import Any, Dict, List, Optional
+
 import requests
 
 try:
     from catalyst_bot.logging_utils import get_logger  # type: ignore
 except Exception:  # pragma: no cover
     import logging
+
     def get_logger(name: str):
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+        )
         return logging.getLogger(name)  # type: ignore
+
 
 log = get_logger("catalyst_bot.finviz_elite")
 
@@ -23,13 +27,22 @@ FINVIZ_BASE = "https://finviz.com"
 PATH_SCREENER_EXPORT = "/export.ashx"
 PATH_NEWS_FILINGS = "/news.ashx"
 
+
 def _require_auth() -> str:
-    tok = os.getenv("FINVIZ_ELITE_AUTH", "").strip()
+    """
+    Prefer explicit argument; else FINVIZ_ELITE_AUTH, then FINVIZ_AUTH_TOKEN.
+    """
+    tok = (
+        os.getenv("FINVIZ_ELITE_AUTH", "") or os.getenv("FINVIZ_AUTH_TOKEN", "")
+    ).strip()
     if not tok:
-        raise RuntimeError("FINVIZ_ELITE_AUTH is not set.")
+        raise RuntimeError("FINVIZ_ELITE_AUTH/FINVIZ_AUTH_TOKEN is not set.")
     return tok
 
-def _finviz_get(path: str, params: Dict[str, Any], auth: Optional[str] = None) -> requests.Response:
+
+def _finviz_get(
+    path: str, params: Dict[str, Any], auth: Optional[str] = None
+) -> requests.Response:
     token = auth or _require_auth()
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -40,6 +53,7 @@ def _finviz_get(path: str, params: Dict[str, Any], auth: Optional[str] = None) -
     resp = requests.get(url, params=params, headers=headers, timeout=30)
     resp.raise_for_status()
     return resp
+
 
 # ---- CSV parsing & normalization ----
 
@@ -66,6 +80,7 @@ _BASE_MAP = {
     "perf year": "perf_year",
 }
 
+
 def _norm_key(k: str) -> str:
     raw = (k or "").strip()
     s = raw.lower().replace("\xa0", " ")
@@ -84,6 +99,7 @@ def _norm_key(k: str) -> str:
     # fallback: snake-case
     return re.sub(r"\s+", "_", s)
 
+
 def _to_float(v: Any) -> Optional[float]:
     if v is None:
         return None
@@ -96,6 +112,7 @@ def _to_float(v: Any) -> Optional[float]:
     except Exception:
         return None
 
+
 def _to_int(v: Any) -> Optional[int]:
     if v is None:
         return None
@@ -106,6 +123,7 @@ def _to_int(v: Any) -> Optional[int]:
         return int(s.replace(",", ""))
     except Exception:
         return None
+
 
 def _parse_csv_rows(text: str) -> List[Dict[str, Any]]:
     f = io.StringIO(text)
@@ -137,20 +155,29 @@ def _parse_csv_rows(text: str) -> List[Dict[str, Any]]:
         out.append(d)
     return out
 
+
 # ---- Public helpers ----
 
-def export_screener(filters: str, auth: Optional[str] = None, view: Optional[str] = None) -> List[Dict[str, Any]]:
+
+def export_screener(
+    filters: str, auth: Optional[str] = None, view: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     Returns normalized rows from screener export.
     - filters: Finviz filter string (e.g., "f=sh_avgvol_o300,sh_relvol_o1.5")
     - view: override with FINVIZ_SCREENER_VIEW (try 152 for broader columns)
     """
-    view = view or os.getenv("FINVIZ_SCREENER_VIEW", "152").strip()  # default to 152 for richer set
+    view = (
+        view or os.getenv("FINVIZ_SCREENER_VIEW", "152").strip()
+    )  # default to 152 for richer set
     params = {"v": view, "f": filters}
     resp = _finviz_get(PATH_SCREENER_EXPORT, params, auth=auth)
     return _parse_csv_rows(resp.text)
 
-def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = None) -> List[Dict[str, Any]]:
+
+def export_latest_filings(
+    ticker: Optional[str] = None, auth: Optional[str] = None
+) -> List[Dict[str, Any]]:
     params = {"type": "filings"}
     if ticker:
         params["q"] = ticker.upper().strip()
@@ -162,6 +189,7 @@ def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = No
     try:
         import re
         from html import unescape
+
         tr_pat = re.compile(r"<tr[^>]*>(.*?)</tr>", re.I | re.S)
         td_pat = re.compile(r"<td[^>]*>(.*?)</td>", re.I | re.S)
         href_pat = re.compile(r'href="([^"]+)"', re.I)
@@ -179,7 +207,9 @@ def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = No
 
             form = None
             for piece in cols[2:]:
-                m = re.search(r"\b(8-K|10-K|10-Q|S-1|6-K|20-F|SC 13G|SC 13D)\b", piece, re.I)
+                m = re.search(
+                    r"\b(8-K|10-K|10-Q|S-1|6-K|20-F|SC 13G|SC 13D)\b", piece, re.I
+                )
                 if m:
                     form = m.group(1).upper()
                     break
@@ -187,7 +217,13 @@ def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = No
             if not tk:
                 continue
             rows.append(
-                {"filing_date": date_str, "ticker": tk, "title": title, "url": url, "filing_type": form}
+                {
+                    "filing_date": date_str,
+                    "ticker": tk,
+                    "title": title,
+                    "url": url,
+                    "filing_type": form,
+                }
             )
     except Exception:
         pass
@@ -195,6 +231,9 @@ def export_latest_filings(ticker: Optional[str] = None, auth: Optional[str] = No
     log.info("finviz_filings_rows")
     return rows
 
-def screener_unusual_volume(min_avg_vol: int = 300_000, min_relvol: float = 1.5) -> List[Dict[str, Any]]:
+
+def screener_unusual_volume(
+    min_avg_vol: int = 300_000, min_relvol: float = 1.5
+) -> List[Dict[str, Any]]:
     filters = f"sh_avgvol_o{min_avg_vol},sh_relvol_o{min_relvol}"
     return export_screener(filters=filters)
