@@ -365,7 +365,8 @@ def fetch_pr_feeds() -> List[Dict]:
                 "http4": 0,
                 "http5": 0,
                 "errors": 0,
-                # count what we actually added after cross-source uniq
+                # telemetry: raw parsed vs added after x-source de-dupe
+                "entries_raw": len(finviz_items),
                 "entries": len(finviz_unique),
                 "t_ms": round((time.time() - st) * 1000.0, 1),
             }
@@ -376,6 +377,7 @@ def fetch_pr_feeds() -> List[Dict]:
                 "http4": 0,
                 "http5": 0,
                 "errors": 1,
+                "entries_raw": 0,
                 "entries": 0,
                 "t_ms": round((time.time() - st) * 1000.0, 1),
             }
@@ -565,6 +567,33 @@ def _fetch_finviz_news_from_env() -> list[dict]:
             extra_params=extra_params,
             limit=max_items,
         )
+        # Debug only: show the resolved export URL without the auth token
+        if str(os.getenv("FEATURE_VERBOSE_LOGGING", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            try:
+                sp = urlparse(url)
+                q = [
+                    (k, v)
+                    for (k, v) in parse_qsl(sp.query, keep_blank_values=True)
+                    if k != "auth"
+                ]
+                redacted = urlunparse(
+                    (
+                        sp.scheme,
+                        sp.netloc,
+                        sp.path,
+                        "",
+                        urlencode(q, doseq=True, safe=","),
+                        "",
+                    )
+                )
+                log.debug("finviz_export_url %s", redacted)
+            except Exception:
+                pass
         last_exc = None
         for attempt in range(3):
             try:
