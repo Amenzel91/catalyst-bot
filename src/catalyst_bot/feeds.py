@@ -1,14 +1,14 @@
-# src/catalyst_bot/feeds.py
+﻿# src/catalyst_bot/feeds.py
 from __future__ import annotations
 
+import csv
 import hashlib
 import os
 import random
 import re
 import time
-import csv
-from io import StringIO
 from datetime import datetime, timezone
+from io import StringIO
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -19,6 +19,7 @@ from dateutil import parser as dtparse
 from .logging_utils import get_logger
 
 log = get_logger("feeds")
+
 
 # --- small helpers -----------------------------------------------------------
 def _env_int(name: str, default: int) -> int:
@@ -86,10 +87,11 @@ FEEDS: Dict[str, List[str]] = {
 # Optional per-source override via env var (pick the first non-empty)
 ENV_URL_OVERRIDES = {
     "businesswire": os.getenv("BUSINESSWIRE_RSS_URL") or "",
-    "globenewswire": os.getenv("GLOBENEWSWIRE_RSS_URL") or "",
+    # match the FEEDS dict key so overrides actually apply
+    "globenewswire_public": os.getenv("GLOBENEWSWIRE_RSS_URL") or "",
     "accesswire": os.getenv("ACCESSWIRE_RSS_URL") or "",
-    "prnewswire": os.getenv("PRNEWSWIRE_RSS_URL") or "",
-    "prweb": os.getenv("PRWEB_RSS_URL") or "",
+    "prnewswire_all": os.getenv("PRNEWSWIRE_RSS_URL") or "",
+    "prweb_all": os.getenv("PRWEB_RSS_URL") or "",
     "sec_8k": os.getenv("SEC_8K_RSS_URL") or "",
 }
 
@@ -220,7 +222,7 @@ def extract_ticker(title: str) -> Optional[str]:
         "NASDAQ CAPITAL MARKET",
     )
     for ex in exchanges:
-        for sep in (": ", ":", ") ", ")-", ") – "):
+        for sep in (": ", ":", ") ", ")-", ") â€“ "):
             k1 = f"({ex}{sep}"
             if k1 in t:
                 idx = t.find(k1) + len(k1)
@@ -308,6 +310,21 @@ def _normalize_entry(source: str, e) -> Optional[Dict]:
     }
 
 
+# --- helpers used by the Finviz block ---------------------------------------
+def _hash_id(s: str) -> str:
+    """Stable sha1 for building ids from links/keys."""
+    try:
+        return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    except Exception:
+        # extremely defensive fallback
+        return hashlib.sha1(repr(s).encode("utf-8", "ignore")).hexdigest()
+
+
+def _parse_finviz_ts(ts: str) -> str:
+    """Normalize Finviz timestamp strings to UTC ISO."""
+    return _to_utc_iso(ts)
+
+
 # -------------------------- Public API --------------------------------------
 
 
@@ -322,17 +339,25 @@ def fetch_pr_feeds() -> List[Dict]:
     t0 = time.time()
 
     # ---------------- Finviz Elite: news_export.ashx (opt-in) ----------------
-    if str(os.getenv("FEATURE_FINVIZ_NEWS", "1")).strip().lower() in {"1", "true", "yes", "on"}:
+    if str(os.getenv("FEATURE_FINVIZ_NEWS", "1")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         st = time.time()
         try:
             # Prebuild seen sets to avoid dupes across sources (by id/link).
-            _seen_ids   = {i.get("id")   for i in all_items if i.get("id")}
+            _seen_ids = {i.get("id") for i in all_items if i.get("id")}
             _seen_links = {i.get("link") for i in all_items if i.get("link")}
             finviz_items = _fetch_finviz_news_from_env()
             finviz_unique = [
-                it for it in finviz_items
-                if ( (it.get("id")   not in _seen_ids) and
-                     (it.get("link") not in _seen_links) )
+                it
+                for it in finviz_items
+                if (
+                    (it.get("id") not in _seen_ids)
+                    and (it.get("link") not in _seen_links)
+                )
             ]
             all_items.extend(finviz_unique)
             summary["by_source"]["finviz_news"] = {
@@ -347,11 +372,14 @@ def fetch_pr_feeds() -> List[Dict]:
         except Exception as e:
             summary.setdefault("by_source", {})
             summary["by_source"]["finviz_news"] = {
-                "ok": 0, "http4": 0, "http5": 0, "errors": 1, "entries": 0,
+                "ok": 0,
+                "http4": 0,
+                "http5": 0,
+                "errors": 1,
+                "entries": 0,
                 "t_ms": round((time.time() - st) * 1000.0, 1),
             }
             log.warning("finviz_news_error err=%s", e.__class__.__name__, exc_info=True)
-
 
     for src, url_list in FEEDS.items():
         # Optional single-URL override via env
@@ -418,43 +446,71 @@ def fetch_pr_feeds() -> List[Dict]:
     log.info("%s", {"feeds_summary": summary})
     return all_items
 
+
 # ===================== Finviz Elite news helpers =====================
 
+
 def _finviz_build_news_url(
-    token: str,
+    auth: str,
     *,
-    kind: str = "stocks",          # market|stocks|etfs|crypto
+    kind: str = "stocks",
     tickers: list[str] | None = None,
     include_blogs: bool = False,
     extra_params: str | None = None,
+    limit: int = 200,
 ) -> str:
     """
-    Compose a Finviz Elite export URL. See screenshots/docs you shared.
+    Build a robust Finviz Elite export URL.
+    - Strips URL fragments (#...) from any user-provided pieces
+    - Avoids adding empty/placeholder tickers
+    - Uses urlencode so commas in t= are preserved
     """
-    # Allow overriding the export base via env (useful for testing/mocks).
-    # Default must include .ashx to avoid 404s on Elite.
-    base = (os.getenv("FINVIZ_NEWS_BASE") or "https://elite.finviz.com/news_export.ashx")
-    kind = (kind or "stocks").strip().lower()
-    v_map = {"market": "1", "stocks": "3", "etfs": "4", "crypto": "5"}
-    v = v_map.get(kind, "3")
-    # News-only by default (exclude blogs), unless include_blogs=True
-    c_part = "" if include_blogs else "&c=1"
-    t_part = ""
+    from urllib.parse import urlencode
+
+    def _strip_frag(s: str) -> str:
+        try:
+            return s.split("#", 1)[0]
+        except Exception:
+            return s
+
+    base = (
+        os.getenv("FINVIZ_NEWS_BASE") or "https://elite.finviz.com/news_export.ashx"
+    ).strip()
+    vmap = {"market": "1", "stocks": "3", "etfs": "4", "crypto": "5"}
+    v = vmap.get(str(kind).lower(), "3")
+
+    params: list[tuple[str, str]] = []
+    params.append(("v", v))
+    # c=1 -> News only, c=2 -> Blogs only
+    params.append(("c", "2" if include_blogs else "1"))
+
     if tickers:
-        tickers = [t.strip().upper() for t in tickers if t and t.strip()]
-        if tickers:
-            t_part = "&t=" + ",".join(tickers)
-    extra = (extra_params or "")
-    # FINVIZ_NEWS_LIMIT: ask server to cap rows (default 100; clamp 10..500).
-    try:
-        _limit_env = os.getenv("FINVIZ_NEWS_LIMIT") or os.getenv("FINVIZ_NEWS_MAX")
-        _limit = int(_limit_env) if _limit_env else 100
-    except Exception:
-        _limit = 100
-    _limit = max(10, min(_limit, 500))
-    if "limit=" not in extra:
-        extra += f"&limit={_limit}"
-    return f"{base}?v={v}{c_part}{t_part}{extra}&auth={token}"
+        clean = [
+            t.strip().upper()
+            for t in tickers
+            if t and t.strip() and not t.strip().startswith("#")
+        ]
+        if clean:
+            params.append(("t", ",".join(clean)))
+
+    if extra_params:
+        for kv in _strip_frag(extra_params).strip("&? ").split("&"):
+            if not kv or "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            k = k.strip()
+            v = v.strip()
+            if not k or k in {"auth", "limit"}:
+                continue
+            params.append((k, v))
+
+    # clamp and append limit & auth last
+    limit = max(10, min(int(limit), 500))
+    params.append(("limit", str(limit)))
+    params.append(("auth", auth))
+
+    query = urlencode(params, doseq=True, safe=",")
+    return f"{base}?{query}"
 
 
 def _fetch_finviz_news_from_env() -> list[dict]:
@@ -475,73 +531,124 @@ def _fetch_finviz_news_from_env() -> list[dict]:
         return []
     kind = (os.getenv("FINVIZ_NEWS_KIND") or "stocks").strip().lower()
     tickers_env = (os.getenv("FINVIZ_NEWS_TICKERS") or "").strip()
-    tickers = [t.strip().upper() for t in tickers_env.split(",") if t.strip()] if tickers_env else None
-    include_blogs = str(os.getenv("FINVIZ_NEWS_INCLUDE_BLOGS", "0")).strip().lower() in {"1","true","yes","on"}
+    tickers = (
+        [t.strip().upper() for t in tickers_env.split(",") if t.strip()]
+        if tickers_env
+        else None
+    )
+    include_blogs_flag = str(
+        os.getenv("FINVIZ_NEWS_INCLUDE_BLOGS", "0")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    blog_mode = (
+        (os.getenv("FINVIZ_NEWS_BLOG_MODE") or "").strip().lower()
+    )  # "", "news", "blogs", "both"
+    # decide which c= to fetch
+    modes: list[bool]
+    if blog_mode == "both":
+        modes = [False, True]  # news, then blogs
+    elif blog_mode == "blogs":
+        modes = [True]
+    elif blog_mode == "news":
+        modes = [False]
+    else:
+        modes = [include_blogs_flag]
     extra_params = (os.getenv("FINVIZ_NEWS_PARAMS") or "").strip() or None
     max_items = max(1, int(os.getenv("FINVIZ_NEWS_MAX", "200")))
     timeout = float(os.getenv("FINVIZ_NEWS_TIMEOUT", "10"))
 
-    url = _finviz_build_news_url(
-        token,
-        kind=kind,
-        tickers=tickers,
-        include_blogs=include_blogs,
-        extra_params=extra_params,
-    )
-    # Be polite and explicit with headers; some setups are picky about UA.
-    def _do(u: str):
-        return requests.get(u, timeout=timeout, headers={"User-Agent": USER_AGENT})
+    def _fetch_once(include_blogs: bool) -> str:
+        url = _finviz_build_news_url(
+            token,
+            kind=kind,
+            tickers=tickers,
+            include_blogs=include_blogs,
+            extra_params=extra_params,
+            limit=max_items,
+        )
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(
+                    url, timeout=timeout, headers={"User-Agent": USER_AGENT}
+                )
+                if resp.status_code == 404:
+                    # toggle .ashx on/off once
+                    alt = (
+                        url.replace("news_export.ashx", "news_export")
+                        if "news_export.ashx" in url
+                        else url.replace("news_export", "news_export.ashx")
+                    )
+                    resp = requests.get(
+                        alt, timeout=timeout, headers={"User-Agent": USER_AGENT}
+                    )
+                if resp.status_code in (401, 403):
+                    raise RuntimeError(f"finviz_auth_failed status={resp.status_code}")
+                if resp.status_code >= 500:
+                    raise RuntimeError(f"finviz_server_error status={resp.status_code}")
+                if not (200 <= resp.status_code < 300):
+                    raise RuntimeError(f"finviz_http status={resp.status_code}")
+                text = resp.content.decode("utf-8-sig", errors="replace")
+                pfx = text.lstrip()[:200].lower()
+                if "<!doctype html" in pfx or "<html" in pfx:
+                    raise RuntimeError("finviz_html_response")
+                return text
+            except Exception as e:
+                last_exc = e
+                time.sleep(0.5 * (attempt + 1))
+        raise last_exc if last_exc else RuntimeError("finviz_unknown_error")
 
-    resp = _do(url)
-    if resp.status_code == 404:
-        # Retry once by toggling .ashx on/off in case the base path was wrong.
-        if "news_export.ashx" in url:
-            alt = url.replace("news_export.ashx", "news_export")
-        else:
-            alt = url.replace("news_export", "news_export.ashx")
-        resp = _do(alt)
-    # Finviz returns 200 with CSV body on success
-    if resp.status_code == 401 or resp.status_code == 403:
-        raise RuntimeError(f"finviz_auth_failed status={resp.status_code}")
-    if resp.status_code >= 500:
-        raise RuntimeError(f"finviz_server_error status={resp.status_code}")
-    if resp.status_code < 200 or resp.status_code >= 300:
-        raise RuntimeError(f"finviz_http status={resp.status_code}")
-
-    text = resp.content.decode("utf-8-sig", errors="replace")
-    # CSV with header row; use DictReader for robustness
-    rdr = csv.DictReader(StringIO(text))
     out: list[dict] = []
-    for row in rdr:
-        # Case-insensitive header access
-        low = {k.lower(): v for k, v in row.items()}
-        title = (low.get("title") or low.get("headline") or "").strip()
-        link = (low.get("url") or low.get("link") or low.get("href") or "").strip()
-        source = (low.get("source") or "finviz").strip()
-        ts_raw = (low.get("time") or low.get("datetime") or low.get("date") or "").strip()
-        # Symbols may come in various keys
-        syms_raw = (low.get("ticker") or low.get("tickers") or low.get("symbol") or low.get("symbols") or "").strip()
-        syms = [s.strip().upper() for s in syms_raw.replace(";", ",").split(",") if s.strip()] if syms_raw else []
-        # first symbol as primary ticker (runner’s pipeline expects .get('ticker'))
-        primary = syms[0] if syms else ""
+    seen_links: set[str] = set()
+    for m in modes:
+        text = _fetch_once(include_blogs=m)
+        rdr = csv.DictReader(StringIO(text))
+        for row in rdr:
+            # Normalize row headers defensively and case-insensitively
+            low: dict[str, str] = {}
+            for k, v in (row or {}).items():
+                if k is None:
+                    continue
+                k2 = str(k).lstrip("\ufeff").strip().lower()
+                if not k2:
+                    continue
+                low[k2] = v
 
-        if not (title and link):
-            continue
+            title = (low.get("title") or low.get("headline") or "").strip()
+            link = (low.get("link") or low.get("url") or "").strip()
+            ts = (low.get("date") or low.get("datetime") or "").strip()
+            # Finviz may join multiple symbols with commas (or semicolons).
+            _tkr_raw = (low.get("ticker") or "").strip()
+            _tkr_list = [
+                t.strip().upper()
+                for t in _tkr_raw.replace(";", ",").split(",")
+                if t.strip()
+            ]
+            _primary = _tkr_list[0] if _tkr_list else None
 
-        item = {
-            "source": "finviz_news",
-            "title": title,
-            "summary": "",
-            "link": link,
-            "id": _stable_id("finviz_news", link, None),
-            "ts": _to_utc_iso(ts_raw),
-            "ticker": primary,
-            "tickers": syms,    # keep all if needed in the future
-        }
-        out.append(item)
-        if len(out) >= max_items:
-            break
+            if not title or not link:
+                continue
+            # avoid dupes across modes (news/blogs) by canonical link
+            _link_norm = _canonicalize_link(link)
+            if _link_norm in seen_links:
+                continue
+            seen_links.add(_link_norm)
+
+            item = {
+                "source": "finviz_news",
+                "title": title,
+                "summary": (low.get("summary") or "").strip(),
+                "link": link,
+                "id": _hash_id(f"finviz::{link}"),
+                "ts": _parse_finviz_ts(ts),
+                "ticker": _primary,
+                "tickers": _tkr_list,
+            }
+            out.append(item)
+
+            if len(out) >= max_items:
+                break
     return out
+
 
 def dedupe(items: List[Dict]) -> List[Dict]:
     """
@@ -584,12 +691,19 @@ def validate_finviz_token(cookie: str) -> Tuple[bool, int]:
     if not cookie:
         return False, 0
     try:
-        resp = requests.get(
-            "https://elite.finviz.com/screener.ashx",
-            headers={"Cookie": cookie, "User-Agent": USER_AGENT},
-            timeout=10,
+        # Prefer a tiny CSV probe (auth in query) then fall back to screener page.
+        test_url = (
+            "https://elite.finviz.com/news_export.ashx?v=3&c=1&limit=1&auth=" + cookie
         )
-        ok = resp.status_code == 200
-        return ok, resp.status_code
+        resp = requests.get(test_url, headers={"User-Agent": USER_AGENT}, timeout=10)
+        ok = (resp.status_code == 200) and resp.text.lstrip().startswith('"Title"')
+        if not ok:
+            resp = requests.get(
+                "https://elite.finviz.com/screener.ashx",
+                headers={"Cookie": cookie, "User-Agent": USER_AGENT},
+                timeout=10,
+            )
+            ok = resp.status_code == 200
+        return ok, getattr(resp, "status_code", 0)
     except Exception:
         return False, 0
