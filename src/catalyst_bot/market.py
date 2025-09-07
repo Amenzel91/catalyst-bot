@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Optional, Tuple
+
+import requests
 
 from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem  # re-export for market.NewsItem
@@ -12,6 +15,14 @@ try:
     import yfinance as yf  # type: ignore
 except Exception:  # pragma: no cover
     yf = None  # type: ignore
+
+_AV_KEY = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
+_SKIP_ALPHA = os.getenv("MARKET_SKIP_ALPHA", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _norm_ticker(t: Optional[str]) -> Optional[str]:
@@ -38,25 +49,64 @@ def _fi_get(fi, attr: str) -> Optional[float]:
         return None
 
 
+def _alpha_last_prev(
+    ticker: str, api_key: str, *, timeout: int = 8
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Alpha Vantage GLOBAL_QUOTE: returns (last, previous_close) or (None, None) on failure.
+    Never raises.
+    """
+    try:
+        url = "https://www.alphavantage.co/query"
+        params = {"function": "GLOBAL_QUOTE", "symbol": ticker, "apikey": api_key}
+        r = requests.get(url, params=params, timeout=timeout)
+        if r.status_code != 200:
+            return None, None
+        j = r.json() or {}
+        q = j.get("Global Quote") or j.get("globalQuote") or {}
+        last = q.get("05. price") or q.get("price")
+        prev = q.get("08. previous close") or q.get("previousClose")
+        return (
+            float(last) if last not in (None, "", "0", "0.0") else None,
+            float(prev) if prev not in (None, "", "0", "0.0") else None,
+        )
+    except Exception:
+        return None, None
+
+
 def get_last_price_snapshot(
     ticker: str, retries: int = 2
 ) -> Tuple[Optional[float], Optional[float]]:
     """
-    Best-effort last price and previous close from yfinance.
-
+    Best-effort last price and previous close.
+    Order: Alpha Vantage (if key present) → yfinance fallback.
     Returns (last_price, previous_close); either may be None. Never raises.
     """
     nt = _norm_ticker(ticker)
     if not nt:
         return None, None
-    if yf is None:
-        log.info("yf_missing skip_price_lookup")
-        return None, None
-
-    t = yf.Ticker(nt)
     last: Optional[float] = None
     prev: Optional[float] = None
 
+    # 1) Alpha Vantage primary (if configured)
+    if _AV_KEY and not _SKIP_ALPHA:
+        for attempt in range(retries + 1):
+            a_last, a_prev = _alpha_last_prev(nt, _AV_KEY)
+            # Take what we can get (sometimes prev is missing temporarily)
+            if a_last is not None:
+                last = a_last
+            if a_prev is not None:
+                prev = a_prev
+            if last is not None and prev is not None:
+                return last, prev
+            time.sleep(0.35 * (attempt + 1))
+
+    # 2) yfinance fallback
+    if yf is None:
+        log.info("yf_missing skip_price_lookup")
+        return last, prev
+
+    t = yf.Ticker(nt)
     for attempt in range(retries + 1):
         try:
             # Fast path via fast_info (attribute or dict-like)
@@ -83,13 +133,11 @@ def get_last_price_snapshot(
                                     prev = float(pv)
                                 except Exception:
                                     pass
-
             return last, prev
         except Exception:
             if attempt >= retries:
                 return last, prev
             time.sleep(0.4 * (attempt + 1))
-
     return last, prev
 
 
