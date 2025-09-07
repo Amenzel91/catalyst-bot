@@ -103,7 +103,10 @@ def _resolve_main_webhook(settings) -> str:
     return (
         getattr(settings, "discord_webhook_url", None)
         or getattr(settings, "discord_webhook", None)
+        or getattr(settings, "webhook_url", None)
         or os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        or os.getenv("DISCORD_WEBHOOK", "").strip()
+        or os.getenv("ALERT_WEBHOOK", "").strip()
     )
 
 
@@ -756,7 +759,9 @@ def runner_main(
         finviz_status,
     )
     # extra boot context (safe, masked)
-    admin_env = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
+    admin_env = (
+        os.getenv("DISCORD_ADMIN_WEBHOOK", "") or os.getenv("ADMIN_WEBHOOK", "")
+    ).strip()
     target = "admin" if admin_env else ("main" if main_webhook else "none")
     chosen = admin_env or main_webhook or ""
     log.info(

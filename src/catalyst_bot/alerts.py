@@ -209,7 +209,9 @@ def _format_discord_content(
     ts = item.get("ts") or ""
     link = _deping(item.get("link") or "")
 
-    px = "n/a" if last_price is None else f"{float(last_price):.2f}"
+    # Avoid showing $0.00 when price is unknown/missing
+    _zeroish = {None, "", 0, 0.0, "0", "0.0"}
+    px = "n/a" if last_price in _zeroish else f"{float(last_price):.2f}"
     chg = _fmt_change(last_change_pct)
     # Prefer ASCII separators for Windows consoles
     sep = " | "
@@ -263,10 +265,13 @@ def post_discord_json(
       else env DISCORD_WEBHOOK_URL.
     - Retries on 429 and 5xx with headers-based / exponential backoff.
     """
+    # Resolve webhook with generous aliases
     url = (
         webhook_url
         or payload.pop("_webhook_url", None)
         or os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        or os.getenv("DISCORD_WEBHOOK", "").strip()
+        or os.getenv("ALERT_WEBHOOK", "").strip()
     )
     if not url:
         return False
@@ -408,10 +413,13 @@ def _build_discord_embed(
     primary = tkr or (tickers[0] if tickers else "")
 
     # Price / change
-    if isinstance(last_price, (int, float)):
+    _zeroish = {None, "", 0, 0.0, "0", "0.0"}
+    if last_price in _zeroish:
+        price_str = "n/a"
+    elif isinstance(last_price, (int, float)):
         price_str = f"${last_price:0.2f}"
     else:
-        price_str = str(last_price) if last_price is not None else "n/a"
+        price_str = f"${float(last_price):0.2f}"
     chg_str = last_change_pct or ""
 
     # Score / sentiment (best-effort)
