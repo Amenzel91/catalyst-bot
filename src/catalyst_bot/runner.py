@@ -8,12 +8,12 @@ import argparse
 import json
 import logging
 import os
+import random
+import re
 import signal
 import sys
 import time
-import random
-from typing import Dict, List, Tuple, Iterable, Any
-import re
+from typing import Any, Dict, List, Tuple
 
 # Load .env early so config is available to subsequent imports.
 try:
@@ -72,10 +72,12 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 STOP = False
 _PX_CACHE: Dict[str, Tuple[float, float]] = {}
 
+
 def _sig_handler(signum, frame):
     # graceful exit on Ctrl+C / SIGTERM
     global STOP
     STOP = True
+
 
 def _px_cache_get(ticker: str) -> float | None:
     if not ticker:
@@ -88,6 +90,7 @@ def _px_cache_get(ticker: str) -> float | None:
             return px
         _PX_CACHE.pop(ticker, None)
     return None
+
 
 def _resolve_main_webhook(settings) -> str:
     """
@@ -102,6 +105,7 @@ def _resolve_main_webhook(settings) -> str:
         or getattr(settings, "discord_webhook", None)
         or os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     )
+
 
 def _mask_webhook(url: str) -> str:
     """
@@ -119,8 +123,10 @@ def _mask_webhook(url: str) -> str:
     except Exception:
         return "unparsable"
 
+
 def _px_cache_put(ticker: str, price: float, ttl: int = 60) -> None:
     _PX_CACHE[ticker] = (price, time.time() + ttl)
+
 
 def price_snapshot(ticker: str) -> float | None:
     if not ticker or yf is None:
@@ -138,13 +144,19 @@ def price_snapshot(ticker: str) -> float | None:
     except Exception:
         return None
 
+
 def _send_heartbeat(log, settings, reason: str = "boot") -> None:
     """
     Post a lightweight heartbeat to Discord so we can verify connectivity,
     even when record_only=True (controlled via FEATURE_HEARTBEAT).
     Falls back to direct webhook POST if alerts.post_discord_json is absent.
     """
-    if str(os.getenv("FEATURE_HEARTBEAT", "1")).strip().lower() not in {"1", "true", "yes", "on"}:
+    if str(os.getenv("FEATURE_HEARTBEAT", "1")).strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         return
     # Prefer an explicit admin/dev webhook (env) if provided,
     # else fall back to the normal alerts webhook from settings/env via resolver.
@@ -154,69 +166,123 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
     if not target_url:
         return
 
+    # Compose message + (optional) rich embed
+    rich_on = str(os.getenv("FEATURE_RICH_HEARTBEAT", "1")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     content = (
         f"🤖 Catalyst-Bot heartbeat ({reason}) "
-        f"| record_only={settings.feature_record_only} "
-        f"| skip_sources={os.getenv('SKIP_SOURCES','')} "
-        f"| min_score={os.getenv('MIN_SCORE','')} "
-        f"| min_sent_abs={os.getenv('MIN_SENT_ABS','')}"
+        f"| record_only={settings.feature_record_only}"
+        f"| skip_sources={os.getenv('SKIP_SOURCES', '')}"
+        f"| min_score={os.getenv('MIN_SCORE', '')}"
+        f"| min_sent_abs={os.getenv('MIN_SENT_ABS', '')}"
     )
-    payload = {"content": content}
+    # Common payload; we add an embed when rich_on is true.
+    payload = {
+        "content": content,
+        "allowed_mentions": {
+            "parse": []
+        },  # belt & suspenders: no accidental @here/@everyone
+    }
+    if rich_on:
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).isoformat()
+        skip_sources = os.getenv("SKIP_SOURCES", "") or "—"
+        min_score = os.getenv("MIN_SCORE", "") or "—"
+        min_sent = os.getenv("MIN_SENT_ABS", "") or "—"
+        target_label = "admin" if admin_url else "main"
+        payload["embeds"] = [
+            {
+                "title": f"Catalyst-Bot heartbeat ({reason})",
+                "color": 0x5865F2,  # discord blurple-ish
+                "timestamp": ts,
+                "fields": [
+                    {"name": "Target", "value": target_label, "inline": True},
+                    {
+                        "name": "Record Only",
+                        "value": str(settings.feature_record_only),
+                        "inline": True,
+                    },
+                    {"name": "Skip Sources", "value": skip_sources, "inline": False},
+                    {"name": "Min Score", "value": min_score, "inline": True},
+                    {"name": "Min |sent|", "value": min_sent, "inline": True},
+                ],
+                "footer": {"text": "Catalyst-Bot"},
+            }
+        ]
 
     # If an admin webhook is set, post directly to it (don’t disturb alerts pipeline).
     if admin_url:
         try:
             import json
             from urllib.request import Request, urlopen
+
             req = Request(
                 target_url,
                 data=json.dumps(payload).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)"
+                    "User-Agent": (
+                        "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)"
+                    ),
                 },
                 method="POST",
             )
             with urlopen(req, timeout=10) as resp:
                 code = getattr(resp, "status", getattr(resp, "code", None))
             log.info(
-                "heartbeat_sent reason=%s mode=direct_http status=%s target=admin hook=%s",
-                reason, code, _mask_webhook(target_url)
+                "heartbeat_sent reason=%s mode=direct_http status=%s target=admin rich=%s hook=%s",
+                reason,
+                code,
+                int(rich_on),
+                _mask_webhook(target_url),
             )
             return
         except Exception as e:
             log.warning(
                 "heartbeat_error err=%s target=admin hook=%s",
-                e.__class__.__name__, _mask_webhook(target_url), exc_info=True
+                e.__class__.__name__,
+                _mask_webhook(target_url),
+                exc_info=True,
             )
             return
 
     # 1) Try alerts.post_discord_json if it exists (normal path / main webhook)
     try:
         import catalyst_bot.alerts as _alerts  # type: ignore
+
         post_fn = getattr(_alerts, "post_discord_json", None)
         if callable(post_fn):
             post_fn(payload)
             log.info(
-                "heartbeat_sent reason=%s mode=alerts_fn target=main hook=%s",
-                reason, _mask_webhook(main_url)
+                "heartbeat_sent reason=%s mode=alerts_fn target=main rich=%s hook=%s",
+                reason,
+                int(rich_on),
+                _mask_webhook(main_url),
             )
             return
     except Exception as e:
         # fall back to direct webhook below
-        log.debug("heartbeat_alerts_fn_error %s", getattr(e, "__class__", type("E",(object,),{})).__name__)
- 
+        log.debug(
+            "heartbeat_alerts_fn_error %s",
+            getattr(e, "__class__", type("E", (object,), {})).__name__,
+        )
 
     # 2) Fallback: direct HTTP POST to the webhook (no requests dep required)
     try:
         import json
         from urllib.request import Request, urlopen
+
         req = Request(
             target_url,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "User-Agent": "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)"
+                "User-Agent": "Catalyst-Bot/heartbeat (+https://github.com/Amenzel91/catalyst-bot)",
             },
             method="POST",
         )
@@ -224,14 +290,21 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             # Discord returns 204 No Content for success. Any 2xx we consider OK.
             code = getattr(resp, "status", getattr(resp, "code", None))
         log.info(
-            "heartbeat_sent reason=%s mode=direct_http status=%s target=main hook=%s",
-            reason, code, _mask_webhook(target_url)
+            "heartbeat_sent reason=%s mode=direct_http status=%s target=main rich=%s hook=%s",
+            reason,
+            code,
+            int(rich_on),
+            _mask_webhook(target_url),
         )
     except Exception as e:
         log.warning(
             "heartbeat_error err=%s target=%s hook=%s",
-            e.__class__.__name__, "main", _mask_webhook(target_url), exc_info=True
+            e.__class__.__name__,
+            "main",
+            _mask_webhook(target_url),
+            exc_info=True,
         )
+
 
 def _fallback_classify(
     title: str,
@@ -352,7 +425,8 @@ def _is_instrument_like(t: str) -> bool:
     # Hard drop on explicit instrument separators
     if "-" in u or "^" in u:
         return True
-    # Allow legit class-share pattern (e.g., BRK.A, BF.B). Anything else with '.' is likely an instrument-ish variant.
+    # Allow legit class-share patterns (e.g., BRK.A, BF.B).
+    # Other symbols containing '.' are likely instrument-ish variants.
     if "." in u:
         if re.fullmatch(r"[A-Z]{1,4}\.[A-Z]$", u):
             return False
@@ -453,7 +527,7 @@ def _cycle(log, settings) -> None:
         except Exception:
             return None
 
-    min_score = _fparse("MIN_SCORE")      # e.g. 1.0
+    min_score = _fparse("MIN_SCORE")  # e.g. 1.0
     min_sent_abs = _fparse("MIN_SENT_ABS")  # e.g. 0.10
     cats_allow_env = (os.getenv("CATEGORIES_ALLOW") or "").strip()
     cats_allow = {c.strip().lower() for c in cats_allow_env.split(",") if c.strip()}
@@ -462,7 +536,9 @@ def _cycle(log, settings) -> None:
 
     # Flow control: optional hard cap and jitter to smooth bursts
     try:
-        max_alerts_per_cycle = int((os.getenv("MAX_ALERTS_PER_CYCLE") or "0").strip() or "0")
+        max_alerts_per_cycle = int(
+            (os.getenv("MAX_ALERTS_PER_CYCLE") or "0").strip() or "0"
+        )
     except Exception:
         max_alerts_per_cycle = 0
     try:
@@ -576,7 +652,8 @@ def _cycle(log, settings) -> None:
         alert_payload = {
             "item": it,
             "scored": (
-                scored._asdict() if hasattr(scored, "_asdict")
+                scored._asdict()
+                if hasattr(scored, "_asdict")
                 else (scored.dict() if hasattr(scored, "dict") else scored)
             ),
             "last_price": last_px,
@@ -602,7 +679,10 @@ def _cycle(log, settings) -> None:
         except Exception as err:
             log.warning(
                 "alert_error source=%s ticker=%s err=%s",
-                source, ticker, err.__class__.__name__, exc_info=True
+                source,
+                ticker,
+                err.__class__.__name__,
+                exc_info=True,
             )
             ok = False
 
@@ -651,6 +731,7 @@ def _cycle(log, settings) -> None:
         # keep the traceback so we can fix root cause
         log.warning("analyzer_schedule error=%s", err.__class__.__name__, exc_info=True)
 
+
 def runner_main(
     once: bool = False, loop: bool = False, sleep_s: float | None = None
 ) -> int:
@@ -687,7 +768,8 @@ def runner_main(
         os.getenv("MIN_SENT_ABS", ""),
     )
 
-    # Send a simple “I’m alive” message to Discord (even in record-only), controlled by FEATURE_HEARTBEAT
+    # Send a simple "I'm alive" message to Discord (even in record-only),
+    # controlled by FEATURE_HEARTBEAT
     _send_heartbeat(log, settings, reason="boot")
 
     # signals
@@ -702,10 +784,14 @@ def runner_main(
 
     heartbeat_interval_min_env = os.getenv("HEARTBEAT_INTERVAL_MIN", "").strip()
     try:
-        HEARTBEAT_INTERVAL_S = int(heartbeat_interval_min_env) * 60 if heartbeat_interval_min_env else 0
+        HEARTBEAT_INTERVAL_S = (
+            int(heartbeat_interval_min_env) * 60 if heartbeat_interval_min_env else 0
+        )
     except Exception:
         HEARTBEAT_INTERVAL_S = 0
-    next_heartbeat_ts = time.time() + HEARTBEAT_INTERVAL_S if HEARTBEAT_INTERVAL_S > 0 else None
+    next_heartbeat_ts = (
+        time.time() + HEARTBEAT_INTERVAL_S if HEARTBEAT_INTERVAL_S > 0 else None
+    )
 
     while True:
         if STOP:
