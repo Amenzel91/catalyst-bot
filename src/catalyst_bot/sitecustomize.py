@@ -7,13 +7,34 @@ Runtime shims loaded by Python (sitecustomize):
 """
 
 from __future__ import annotations
+
 import os
 import time
 import types
 
+# --- Early, safe dotenv loading (supports .env and .env.staging) ---
+try:
+    from pathlib import Path
+
+    from dotenv import load_dotenv
+
+    # Load base .env first
+    p = Path(".") / ".env"
+    if p.exists():
+        load_dotenv(p, override=False)
+    # Then optionally overlay .env.staging so it can override base
+    ps = Path(".") / ".env.staging"
+    if ps.exists():
+        load_dotenv(ps, override=True)
+except Exception:
+    # Never crash boot because of dotenv issues
+    pass
+
+
 # ------------------- config helpers -------------------
 def _flag(name: str, default: str = "true") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1","true","yes","on"}
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _int(name: str, default: int) -> int:
     try:
@@ -21,13 +42,16 @@ def _int(name: str, default: int) -> int:
     except Exception:
         return default
 
+
 # ------------------- seen cache (process-local) -------------------
 _SEEN_ENABLED = _flag("HOOK_SEEN_ALERTS", "true")
 _SEEN_TTL = max(60, _int("SEEN_TTL_SECONDS", 900))  # >=60s
 _seen: dict[str, float] = {}  # key -> expiry epoch
 
+
 def _now() -> float:
     return time.time()
+
 
 def _gc_seen() -> None:
     # lazy cleanup when cache grows
@@ -36,6 +60,7 @@ def _gc_seen() -> None:
         for k, exp in list(_seen.items()):
             if exp <= t:
                 _seen.pop(k, None)
+
 
 def _mk_key(payload: dict) -> str:
     # compact key from typical fields (works for both new/legacy forms)
@@ -48,6 +73,7 @@ def _mk_key(payload: dict) -> str:
         # fall back to link/id if no title
         title = (it.get("link") or it.get("id") or "").strip().lower()
     return f"{src}::{tkr}::{title[:160]}"
+
 
 def _seen_check_and_mark(payload: dict) -> bool:
     """Return True if we've seen it recently and should suppress."""
@@ -62,13 +88,16 @@ def _seen_check_and_mark(payload: dict) -> bool:
     _gc_seen()
     return False
 
+
 # ------------------- send_alert_safe wrapper -------------------
 try:
     import catalyst_bot.alerts as _alerts
 except Exception:
     _alerts = None
 
-if _alerts and isinstance(getattr(_alerts, "send_alert_safe", None), types.FunctionType):
+if _alerts and isinstance(
+    getattr(_alerts, "send_alert_safe", None), types.FunctionType
+):
     _orig_send = _alerts.send_alert_safe  # keep the original
 
     def _wrapped_send_alert_safe(*args, **kwargs):

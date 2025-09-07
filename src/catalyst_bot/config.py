@@ -1,8 +1,8 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
-from typing import Optional
+from typing import Dict, List, Optional
+
 
 def _env_float_opt(name: str) -> Optional[float]:
     """
@@ -19,6 +19,7 @@ def _env_float_opt(name: str) -> Optional[float]:
     except Exception:
         return None
 
+
 def _b(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {
         "1",
@@ -34,13 +35,29 @@ class Settings:
     # Keys / tokens
     alphavantage_api_key: str = os.getenv("ALPHAVANTAGE_API_KEY", "")
     finviz_auth_token: str = os.getenv("FINVIZ_AUTH_TOKEN", "")
-    
-    # Primary Discord webhook (existing behavior).
-    webhook_url: str = os.getenv("DISCORD_WEBHOOK", "")
 
-    # Optional: separate admin/dev channel webhook for ops traffic (e.g., heartbeat).
-    # If unset, heartbeat falls back to webhook_url.
-    admin_webhook_url: Optional[str] = os.getenv("DISCORD_ADMIN_WEBHOOK") or None
+    # Helpers
+    def _env_first(*names: str) -> str:
+        import os
+
+        for n in names:
+            v = os.getenv(n)
+            if v and v.strip():
+                return v.strip()
+        return ""
+
+    # Primary Discord webhook (support several common names)
+    discord_webhook_url: str = _env_first(
+        "DISCORD_WEBHOOK_URL", "DISCORD_WEBHOOK", "ALERT_WEBHOOK"
+    )
+    # Back-compat aliases (so getattr(settings, "...") keeps working)
+    webhook_url: str = discord_webhook_url
+    discord_webhook: str = discord_webhook_url
+
+    # Optional admin/dev webhook (ops / heartbeat)
+    admin_webhook_url: Optional[str] = (
+        _env_first("DISCORD_ADMIN_WEBHOOK", "ADMIN_WEBHOOK") or None
+    )
 
     # Feature flags
     feature_heartbeat: bool = bool(int(os.getenv("FEATURE_HEARTBEAT", "1")))
@@ -133,10 +150,6 @@ class Settings:
     @property
     def finviz_cookie(self) -> str:
         return self.finviz_auth_token
-
-    @property
-    def discord_webhook(self) -> str:
-        return self.discord_webhook_url
 
 
 SETTINGS = Settings()
