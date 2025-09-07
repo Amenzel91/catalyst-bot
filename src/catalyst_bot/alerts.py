@@ -13,6 +13,18 @@ from .logging_utils import get_logger
 
 log = get_logger("alerts")
 
+
+def _mask_webhook(url: str | None) -> str:
+    """Return a scrubbed identifier for a Discord webhook (avoid leaking secrets)."""
+    if not url:
+        return "<unset>"
+    try:
+        tail = str(url).rsplit("/", 1)[-1]
+        return f"...{tail[-8:]}"
+    except Exception:
+        return "<masked>"
+
+
 # --- Simple per-webhook rate limiter state ---
 _RL_LOCK = threading.Lock()
 _RL_STATE: Dict[str, Dict[str, float]] = {}
@@ -311,6 +323,19 @@ def send_alert_safe(*args, **kwargs) -> bool:
     if record_only:
         log.info("alert_record_only source=%s ticker=%s", source, ticker)
         return True
+
+    # Log where the webhook came from (explicit arg vs env fallback)
+    if webhook_url:
+        try:
+            _env_w = os.getenv("DISCORD_WEBHOOK_URL") or ""
+            _src = "env" if (_env_w and webhook_url == _env_w) else "arg"
+            log.debug(
+                "discord_post_target source=%s webhook=%s",
+                _src,
+                _mask_webhook(webhook_url),
+            )
+        except Exception:
+            pass
     # Allow env fallback: only bail if neither an explicit webhook nor the
     # DISCORD_WEBHOOK_URL env var is available.
     if not (webhook_url or os.getenv("DISCORD_WEBHOOK_URL", "").strip()):
@@ -409,6 +434,16 @@ def _build_discord_embed(
 
     tval = ", ".join(tickers) if tickers else (primary or "-")
     tval = _deping(tval)
+    # Try to surface a compact reason/rationale (best-effort)
+    reason = ""
+    kw = item_dict.get("keywords")
+    if isinstance(item_dict.get("reason"), str):
+        reason = item_dict["reason"].strip()
+    elif isinstance(kw, (list, tuple)) and kw:
+        reason = ", ".join([str(x) for x in kw[:6]])
+    else:
+        reason = str(sc.get("category") or sc.get("why") or "").strip()
+
     embed = {
         "title": _deping(f"[{primary or '?'}] {title}")[:256],
         "url": link,
@@ -424,4 +459,8 @@ def _build_discord_embed(
         ],
         "footer": {"text": "Catalyst-Bot"},
     }
+    if reason:
+        embed["fields"].append(
+            {"name": "Reason", "value": reason[:1024], "inline": False}
+        )
     return embed
