@@ -211,7 +211,10 @@ def _format_discord_content(
 
     # Avoid showing $0.00 when price is unknown/missing
     _zeroish = {None, "", 0, 0.0, "0", "0.0"}
-    px = "n/a" if last_price in _zeroish else f"{float(last_price):.2f}"
+    if last_price in (None, "", 0, 0.0, "0", "0.0"):
+        px = "n/a"
+    else:
+        px = f"{float(last_price):.2f}"
     chg = _fmt_change(last_change_pct)
     # Prefer ASCII separators for Windows consoles
     sep = " | "
@@ -412,15 +415,14 @@ def _build_discord_embed(
     tickers = item_dict.get("tickers") or ([tkr] if tkr else [])
     primary = tkr or (tickers[0] if tickers else "")
 
-    # Price / change
-    _zeroish = {None, "", 0, 0.0, "0", "0.0"}
-    if last_price in _zeroish:
+    # Price / change (treat 0/empty as missing to avoid "$0.00")
+    if last_price in (None, "", 0, 0.0, "0", "0.0"):
         price_str = "n/a"
     elif isinstance(last_price, (int, float)):
         price_str = f"${last_price:0.2f}"
     else:
-        price_str = f"${float(last_price):0.2f}"
-    chg_str = last_change_pct or ""
+        price_str = str(last_price)
+    chg_str = (last_change_pct or "")
 
     # Score / sentiment (best-effort)
     sc = (scored or {}) if isinstance(scored, dict) else {}
