@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
-from typing import Optional, Tuple
 
+# Ensure we have datetime and timedelta available for intraday helpers
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+# Pandas is used for DatetimeIndex checks in get_intraday_snapshots
+import pandas as pd
 import requests
 
 from .logging_utils import get_logger
@@ -249,4 +254,227 @@ __all__ = [
     "ScoredItem",
     "get_last_price_snapshot",
     "get_last_price_change",
+    "get_volatility",
+    "get_intraday",
+    "get_intraday_snapshots",
 ]
+
+# ---------------------------------------------------------------------------
+# Volatility and intraday helpers
+#
+# These helpers provide additional context around a ticker's price action.
+# - get_volatility returns the average daily range (high-low)/close over a
+#   configurable number of days.
+# - get_intraday fetches intraday OHLC data via yfinance for configurable
+#   intervals; this can be used by the trade simulator or downstream analysis.
+# - get_intraday_snapshots computes simple premarket, intraday and after-hours
+#   snapshots for a given date. The snapshots return basic stats (open/high/low/close)
+#   per segment in US Eastern time.
+
+
+def get_volatility(ticker: str, *, days: int = 14) -> Optional[float]:
+    """Return the average daily range percentage over the past `days` days.
+
+    The daily range is defined as (high - low) / close. The result is
+    expressed as a percentage. If insufficient data is available or yfinance
+    is unavailable, returns None.
+    """
+    nt = _norm_ticker(ticker)
+    if nt is None or yf is None:
+        return None
+    try:
+        # Fetch a few extra days to ensure at least `days` complete entries
+        period_days = max(days + 1, days + 5)
+        hist = yf.Ticker(nt).history(
+            period=f"{period_days}d", interval="1d", auto_adjust=False, prepost=False
+        )
+        if hist is None or getattr(hist, "empty", False):
+            return None
+        # Use the last `days` rows
+        df = hist.tail(days)
+        if df.empty:
+            return None
+        try:
+            ranges = (df["High"] - df["Low"]) / df["Close"]
+            avg_range = float(ranges.mean()) * 100.0
+            return avg_range
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def get_intraday(
+    ticker: str,
+    *,
+    interval: str = "5min",
+    output_size: str = "full",
+    prepost: bool = True,
+) -> Optional["pd.DataFrame"]:
+    """Return intraday OHLC data for a ticker via yfinance.
+
+    Parameters
+    ----------
+    ticker : str
+        The security to fetch.
+    interval : str, default "5min"
+        The bar interval (e.g. "1m", "5min", "15min"). Must be supported by
+        yfinance. Note that Alpha Vantage intervals differ; this helper uses
+        yfinance exclusively.
+    output_size : str, default "full"
+        Either "full" or "compact". This flag is passed through to
+        yfinance, which returns as much data as possible when "full".
+    prepost : bool, default True
+        Whether to include pre/post market data. Default is True to
+        capture extended hours.
+
+    Returns
+    -------
+    pandas.DataFrame or None
+        A DataFrame indexed by timestamp with columns open/high/low/close/volume.
+        Returns None if yfinance is unavailable or on error.
+    """
+    # Avoid import at module top to speed import path when not used
+    if yf is None:
+        return None
+    nt = _norm_ticker(ticker)
+    if nt is None:
+        return None
+    try:
+        # Use download because it handles extended hours when prepost=True
+        # yfinance distinguishes between "compact" and "full" via period arg; map
+        period = "5d" if output_size == "compact" else "60d"
+        df = yf.download(nt, period=period, interval=interval, prepost=prepost)
+        if df is None or getattr(df, "empty", False):
+            return None
+        return df
+    except Exception:
+        return None
+
+
+def get_intraday_snapshots(
+    ticker: str, *, target_date: Optional["datetime.date"] = None
+) -> Optional[Dict[str, Dict[str, float]]]:
+    """Compute premarket/intraday/after-hours snapshots for a given ticker.
+
+    This helper returns a dictionary with three keys: "premarket", "intraday"
+    and "afterhours". Each entry is itself a dict with keys "open", "high",
+    "low" and "close". Values may be None if the segment contains no data.
+
+    The function uses yfinance 1-minute bars (if available). If extended
+    hours data is unavailable or the ticker is illiquid, some segments may
+    return None. Snapshots are calculated for the specified `target_date` (or
+    the current date if None) in US/Eastern time. The returned dictionary is
+    intended to be JSON‑serializable.
+    """
+    if yf is None:
+        return None
+    nt = _norm_ticker(ticker)
+    if nt is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo  # Python 3.9+
+    except Exception:
+        try:
+            from backports.zoneinfo import ZoneInfo  # type: ignore
+        except Exception:
+            ZoneInfo = None  # type: ignore
+    if ZoneInfo is None:
+        return None
+    try:
+        # Determine date of interest (assume current day if not provided)
+        if target_date is None:
+            dt_now = datetime.now()
+            target_date = dt_now.date()
+        # Fetch 1m bars for the surrounding days to ensure full coverage
+        df = yf.download(
+            nt,
+            start=(target_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+            end=(target_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1m",
+            prepost=True,
+        )
+        if df is None or getattr(df, "empty", False):
+            return None
+        # Index to datetime and convert to US/Eastern
+        idx = df.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            return None
+        try:
+            # If naive, localize to UTC first
+            if idx.tz is None:
+                df.index = idx.tz_localize("UTC").tz_convert("America/New_York")
+            else:
+                df.index = idx.tz_convert("America/New_York")
+        except Exception:
+            return None
+
+        # Build segments; times are naive but interpreted in America/New_York
+        def segment_range(start_hm: Tuple[int, int], end_hm: Tuple[int, int]):
+            sdt = datetime(
+                target_date.year,
+                target_date.month,
+                target_date.day,
+                start_hm[0],
+                start_hm[1],
+                tzinfo=ZoneInfo("America/New_York"),
+            )
+            edt = datetime(
+                target_date.year,
+                target_date.month,
+                target_date.day,
+                end_hm[0],
+                end_hm[1],
+                tzinfo=ZoneInfo("America/New_York"),
+            )
+            return sdt, edt
+
+        segments = {
+            "premarket": segment_range((4, 0), (9, 30)),
+            "intraday": segment_range((9, 30), (16, 0)),
+            "afterhours": segment_range((16, 0), (20, 0)),
+        }
+        snaps: Dict[str, Dict[str, Optional[float]]] = {}
+        for name, (sdt, edt) in segments.items():
+            seg_df = df.loc[(df.index >= sdt) & (df.index < edt)]
+            if seg_df is None or seg_df.empty:
+                snaps[name] = {
+                    "open": None,
+                    "high": None,
+                    "low": None,
+                    "close": None,
+                }
+                continue
+            try:
+                open_val = (
+                    float(seg_df.iloc[0]["Open"])
+                    if "Open" in seg_df.columns
+                    else float(seg_df.iloc[0]["Close"])
+                )
+            except Exception:
+                open_val = None
+            try:
+                high_val = (
+                    float(seg_df["High"].max()) if "High" in seg_df.columns else None
+                )
+            except Exception:
+                high_val = None
+            try:
+                low_val = (
+                    float(seg_df["Low"].min()) if "Low" in seg_df.columns else None
+                )
+            except Exception:
+                low_val = None
+            try:
+                close_val = float(seg_df.iloc[-1]["Close"])
+            except Exception:
+                close_val = None
+            snaps[name] = {
+                "open": open_val,
+                "high": high_val,
+                "low": low_val,
+                "close": close_val,
+            }
+        return snaps
+    except Exception:
+        return None

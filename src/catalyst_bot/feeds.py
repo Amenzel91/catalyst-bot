@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from typing import Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -17,6 +18,20 @@ import requests
 from dateutil import parser as dtparse
 
 from .logging_utils import get_logger
+from .market import get_last_price_snapshot, get_volatility
+
+try:
+    # Import classifier lazily; vaderSentiment may not be installed in all envs
+    from .classifier import classify, load_keyword_weights  # type: ignore
+except Exception:
+    classify = None  # type: ignore
+
+    def load_keyword_weights(
+        path: str = "data/keyword_weights.json",
+    ) -> Dict[str, float]:
+        """Fallback keyword weights loader when classifier is unavailable."""
+        return {}
+
 
 log = get_logger("feeds")
 
@@ -300,6 +315,15 @@ def _normalize_entry(source: str, e) -> Optional[Dict]:
 
     ticker = getattr(e, "ticker", None) or extract_ticker(title)
 
+    # Pull summary/description if available for richer metadata; leave empty if missing
+    summary = ""
+    try:
+        summary = (
+            getattr(e, "summary", None) or getattr(e, "description", None) or ""
+        ).strip()
+    except Exception:
+        summary = ""
+
     return {
         "id": _stable_id(source, link, guid),
         "title": title,
@@ -307,6 +331,7 @@ def _normalize_entry(source: str, e) -> Optional[Dict]:
         "ts": ts_iso,
         "source": source,
         "ticker": (ticker or None),
+        "summary": summary or None,
     }
 
 
@@ -429,6 +454,126 @@ def fetch_pr_feeds() -> List[Dict]:
     # De-duplicate across sources (Finviz vs wires, syndication, etc.)
     all_items = dedupe(all_items)
 
+    # ---------------------------------------------------------------------
+    # Filtering & metadata enrichment
+    #
+    # Only keep items whose ticker is below the configured price ceiling.
+    # Optionally leverage a Finviz universe CSV (data/finviz/universe.csv) to
+    # avoid repeated price lookups. If the ceiling is zero or not set, no
+    # filtering occurs. After filtering, enrich each item with a preliminary
+    # classification (sentiment/tags) and recent ticker context (headlines and
+    # volatility baseline). Additional intraday snapshots can be attached when
+    # FEATURE_INTRADAY_SNAPSHOTS is enabled.
+
+    filtered: List[Dict] = []
+    # Price ceiling: default to 0 (disabled) if not parsable
+    try:
+        price_ceiling = float(os.getenv("PRICE_CEILING", "0").strip() or "0")
+    except Exception:
+        price_ceiling = 0.0
+
+    # Finviz universe: load once into a set for O(1) lookups
+    finviz_universe: set[str] = set()
+    try:
+        # Allow override via env; fallback to data/finviz/universe.csv
+        uni_path = os.getenv("FINVIZ_UNIVERSE_PATH", "data/finviz/universe.csv")
+        if price_ceiling > 0 and os.path.exists(uni_path):
+            with open(uni_path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                # Attempt to find header row with ticker column; if none, assume first column
+                header = next(reader, None)
+                idx = 0
+                if header:
+                    for i, col in enumerate(header):
+                        if col.lower().startswith("ticker"):
+                            idx = i
+                            break
+                    else:
+                        # header exists but no column labelled ticker
+                        idx = 0
+                # read remainder of file (including header row if mis-detected)
+                for row in reader:
+                    if not row:
+                        continue
+                    t = row[idx].strip().upper()
+                    if t:
+                        finviz_universe.add(t)
+    except Exception:
+        pass
+
+    # Prepare keyword weights for classification once
+    try:
+        kw_weights = load_keyword_weights()
+    except Exception:
+        kw_weights = {}
+
+    # For caching lookback computations per ticker
+    _lookback_cache: Dict[str, Dict] = {}
+
+    # Determine whether to attach intraday snapshots
+    feature_intraday = str(
+        os.getenv("FEATURE_INTRADAY_SNAPSHOTS", "0")
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    for item in all_items:
+        ticker = item.get("ticker")
+        # Enforce price ceiling filtering only when a ticker is present and ceiling > 0
+        if ticker and price_ceiling > 0:
+            tick = ticker.strip().upper()
+            # Allow if in Finviz universe; else check live price
+            allowed = False
+            if finviz_universe and tick in finviz_universe:
+                allowed = True
+            else:
+                # avoid repeated lookups for the same ticker
+                try:
+                    last_price, _ = get_last_price_snapshot(tick)
+                except Exception:
+                    last_price = None
+                if last_price is not None and last_price <= price_ceiling:
+                    allowed = True
+            if not allowed:
+                continue  # skip overpriced ticker
+        # Preliminary sentiment classification
+        try:
+            cls = (
+                classify(item["title"], kw_weights or {})
+                if callable(classify)
+                else {"relevance_score": 0.0, "sentiment_score": 0.0, "tags": []}
+            )
+        except Exception:
+            cls = {"relevance_score": 0.0, "sentiment_score": 0.0, "tags": []}
+        item["cls"] = cls
+        # Compute lookback context (recent headlines + volatility)
+        if ticker:
+            tick = ticker.strip().upper()
+            if tick not in _lookback_cache:
+                _lookback_cache[tick] = _get_lookback_data(tick)
+            lb = _lookback_cache.get(tick, {})
+            if lb:
+                item["recent_headlines"] = lb.get("recent_headlines") or []
+                item["volatility14d"] = lb.get("volatility")
+        # Attach intraday snapshots if enabled
+        if feature_intraday and ticker:
+            try:
+                from .market import (  # local import to avoid circulars
+                    get_intraday_snapshots,
+                )
+
+                snap = get_intraday_snapshots(ticker)
+                if snap:
+                    item["intraday"] = snap
+            except Exception:
+                pass
+        filtered.append(item)
+
+    all_items = filtered
+
     # If EVERYTHING failed and user wants to validate alerts, inject demo
     if not all_items and os.getenv("DEMO_IF_EMPTY", "").lower() in ("1", "true", "yes"):
         now = datetime.now(timezone.utc).isoformat()
@@ -439,6 +584,7 @@ def fetch_pr_feeds() -> List[Dict]:
             "ts": now,
             "source": "demo",
             "ticker": "TEST",
+            "summary": None,
         }
         all_items.append(demo)
         log.info("feeds_empty demo_injected=1")
@@ -736,3 +882,64 @@ def validate_finviz_token(cookie: str) -> Tuple[bool, int]:
         return ok, getattr(resp, "status_code", 0)
     except Exception:
         return False, 0
+
+
+# ---------------------------------------------------------------------------
+# Contextual look-back helpers
+#
+# The analyzer can benefit from recent ticker context when processing a new
+# event. The function below returns a dictionary containing a list of recent
+# headlines for the same ticker (within the last few days) and a volatility
+# baseline computed over the past two weeks. This information can refine
+# hit definitions and scoring. It reads from the newline-delimited JSON
+# events file and leverages market.get_volatility for volatility.
+
+
+def _get_lookback_data(
+    ticker: str, *, lookback_days: int = 7, vol_days: int = 14
+) -> Dict[str, object]:
+    result: Dict[str, object] = {"recent_headlines": [], "volatility": None}
+    if not ticker:
+        return result
+    tick = ticker.strip().upper()
+    # Read recent events from the events JSONL file
+    events_path = os.getenv("EVENTS_PATH", "data/events.jsonl")
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=lookback_days)
+        headlines: List[Dict[str, str]] = []
+        if os.path.exists(events_path):
+            with open(events_path, "r", encoding="utf-8") as fp:
+                for line in fp:
+                    if not line.strip():
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    if (ev.get("ticker") or "").strip().upper() != tick:
+                        continue
+                    ts = ev.get("ts") or ev.get("timestamp")
+                    if not ts:
+                        continue
+                    try:
+                        dt = dtparse.parse(ts)
+                    except Exception:
+                        continue
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if dt < cutoff:
+                        continue
+                    headlines.append({"title": ev.get("title"), "ts": dt.isoformat()})
+        # Sort recent headlines by timestamp descending and cap to 10
+        headlines.sort(key=lambda x: x.get("ts"), reverse=True)
+        result["recent_headlines"] = headlines[:10]
+    except Exception:
+        pass
+    # Compute volatility baseline
+    try:
+        vol = get_volatility(tick, days=vol_days)
+    except Exception:
+        vol = None
+    result["volatility"] = vol
+    return result
