@@ -438,16 +438,15 @@ def get_intraday_snapshots(
             )
             return sdt, edt
 
-        # Define trading day segments. Use 16:01 as the start of after-hours so
-        # that the 16:00 bar (the regular-session close) is included in the
-        # intraday snapshot. Each segment uses a half-open interval [start, end),
-        # so the end time is exclusive.
+        # Define trading day segments. We end intraday at 16:01 (so
+        # 16:00 is captured) and start after‑hours at 16:00. The
+        # after‑hours segment ends at 20:01 so that the 20:00 bar is
+        # included. Each range is half‑open [start, end), so the end
+        # time is exclusive.
         segments = {
             "premarket": segment_range((4, 0), (9, 30)),
-            # End intraday at 16:01 to capture the 16:00 bar
             "intraday": segment_range((9, 30), (16, 1)),
-            # Start after-hours at 16:01 to avoid overlap
-            "afterhours": segment_range((16, 1), (20, 0)),
+            "afterhours": segment_range((16, 0), (20, 1)),
         }
 
         snaps: Dict[str, Dict[str, Optional[float]]] = {}

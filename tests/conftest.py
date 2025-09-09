@@ -65,6 +65,10 @@ def _ensure_market_db(tmp_path_factory):
             "CREATE TABLE IF NOT EXISTS finviz_filings ("
             "ticker TEXT, filing_type TEXT, filing_date TEXT, title TEXT)"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS finviz_screener_snapshots ("
+            "ticker TEXT, ts TEXT, preset TEXT)"
+        )
         conn.commit()
     finally:
         try:
