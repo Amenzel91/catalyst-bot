@@ -90,6 +90,13 @@ def simulate_trades(
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return []
 
+    # Normalize column names to lower-case to handle variations like 'Open' vs 'open'.
+    # Build a map from lowercase to the original column name.
+    try:
+        lower_map = {c.lower(): c for c in df.columns}
+    except Exception:
+        lower_map = {}
+
     # Ensure the index is a DatetimeIndex in UTC
     if not isinstance(df.index, pd.DatetimeIndex):
         # Try common columns
@@ -117,21 +124,47 @@ def simulate_trades(
         entry_idx = _find_bar_index(df, entry_ts)
         if entry_idx is None:
             continue
-        # Prefer 'open' if present; fall back to 'close'
-        entry_price = (
-            float(df.iloc[entry_idx]["open"])
-            if "open" in df.columns
-            else float(df.iloc[entry_idx]["close"])
-        )
+        # Prefer 'open' if present; fall back to 'close'.
+        # Use lower_map to find the actual column in a case-insensitive way.
+        open_col = lower_map.get("open")
+        close_col = lower_map.get("close")
+        entry_price = None
+        if open_col:
+            try:
+                entry_price = float(df.iloc[entry_idx][open_col])
+            except Exception:
+                entry_price = None
+        if entry_price is None and close_col:
+            try:
+                entry_price = float(df.iloc[entry_idx][close_col])
+            except Exception:
+                entry_price = None
+        if entry_price is None:
+            # Cannot determine entry price; skip this offset
+            continue
 
         for hold in config.hold_durations:
             exit_ts = entry_ts + timedelta(minutes=hold)
             exit_idx = _find_bar_index(df, exit_ts)
             if exit_idx is None:
                 # If the exit time is beyond available data, use last close
-                exit_price = float(df.iloc[-1]["close"])
+                exit_price = None
+                if close_col:
+                    try:
+                        exit_price = float(df.iloc[-1][close_col])
+                    except Exception:
+                        exit_price = None
+                if exit_price is None:
+                    continue
             else:
-                exit_price = float(df.iloc[exit_idx]["close"])
+                exit_price = None
+                if close_col:
+                    try:
+                        exit_price = float(df.iloc[exit_idx][close_col])
+                    except Exception:
+                        exit_price = None
+                if exit_price is None:
+                    continue
 
             # Compute simple return; slippage subtracted from both sides
             slippage = entry_price * (config.slippage_bps / 10000.0)
