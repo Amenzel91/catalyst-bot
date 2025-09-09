@@ -825,7 +825,24 @@ def runner_main(
     return 0
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(
+    *,
+    once: bool = False,
+    loop: bool = False,
+    sleep: float | None = None,
+    argv: List[str] | None = None,
+) -> int:
+    """
+    Entry point for the Catalyst Bot runner.
+
+    Supports programmatic invocation via keyword args (``once``, ``loop``, ``sleep``),
+    or command-line invocation via ``argv``.  When any of the keyword flags are
+    provided, argument parsing is bypassed and values are forwarded to
+    ``runner_main``.  This allows tests to call ``main(once=True, loop=False)``.
+    """
+    if once or loop or sleep is not None:
+        return runner_main(once=once, loop=loop, sleep_s=sleep)
+    # CLI path
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true", help="Run a single cycle and exit")
     ap.add_argument("--loop", action="store_true", help="Run continuously")

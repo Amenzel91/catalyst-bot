@@ -37,3 +37,38 @@ def _stub_feedparser_module():
         m.parse = _parse
         sys.modules["feedparser"] = m
     yield
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _ensure_market_db(tmp_path_factory):
+    """
+    Ensure that a SQLite database with the expected schema exists under the
+    ``data`` directory for tests that depend on it.
+
+    Tests such as ``test_db_integrity`` expect ``data/market.db`` to be present
+    with a table named ``finviz_filings``.  This fixture creates that file and
+    table if they do not already exist.
+    """
+    import os
+    import sqlite3
+
+    data_dir = os.path.join(os.getcwd(), "data")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except Exception:
+        pass
+    db_path = os.path.join(data_dir, "market.db")
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS finviz_filings ("
+            "ticker TEXT, filing_type TEXT, filing_date TEXT, title TEXT)"
+        )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    yield
