@@ -13,6 +13,9 @@ from .logging_utils import get_logger
 
 log = get_logger("alerts")
 
+alert_lock = threading.Lock()
+_alert_downgraded = False
+
 
 def _mask_webhook(url: str | None) -> str:
     """Return a scrubbed identifier for a Discord webhook (avoid leaking secrets)."""
@@ -210,7 +213,6 @@ def _format_discord_content(
     link = _deping(item.get("link") or "")
 
     # Avoid showing $0.00 when price is unknown/missing
-    _zeroish = {None, "", 0, 0.0, "0", "0.0"}
     if last_price in (None, "", 0, 0.0, "0", "0.0"):
         px = "n/a"
     else:
@@ -332,6 +334,11 @@ def send_alert_safe(*args, **kwargs) -> bool:
         log.info("alert_record_only source=%s ticker=%s", source, ticker)
         return True
 
+    # If a prior error downgraded alerts, record-only
+    if _alert_downgraded:
+        log.info("alert_record_only source=%s ticker=%s downgraded", source, ticker)
+        return True
+
     # Log where the webhook came from (explicit arg vs env fallback)
     if webhook_url:
         try:
@@ -422,7 +429,7 @@ def _build_discord_embed(
         price_str = f"${last_price:0.2f}"
     else:
         price_str = str(last_price)
-    chg_str = (last_change_pct or "")
+    chg_str = last_change_pct or ""
 
     # Score / sentiment (best-effort)
     sc = (scored or {}) if isinstance(scored, dict) else {}

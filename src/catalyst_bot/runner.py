@@ -799,6 +799,10 @@ def runner_main(
     )
 
     while True:
+        # Start of cycle: clear any per-cycle alert downgrade
+        from .alerts import reset_cycle_downgrade
+
+        reset_cycle_downgrade()
         if STOP:
             break
         t0 = time.time()

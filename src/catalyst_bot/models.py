@@ -45,3 +45,38 @@ class ScoredItem:
     @property
     def total(self) -> float:
         return self.relevance * self.source_weight
+
+
+# --- Trade simulation data structures ---
+
+
+@dataclass
+class TradeSimConfig:
+    """Configuration for trade simulation.
+
+    Attributes
+    ----------
+    entry_offsets : list[int]
+        Minutes after the alert timestamp at which to enter trades.
+    hold_durations : list[int]
+        Minutes to hold after entry (e.g. 30, 60, 120).
+    slippage_bps : float
+        Slippage applied on both entry and exit, expressed in basis points.
+    """
+
+    entry_offsets: List[int] = (0, 5, 10)  # immediate, 5m, 10m
+    hold_durations: List[int] = (30, 60, 120)  # hold 30m, 1h, 2h
+    slippage_bps: float = 5.0
+
+
+@dataclass
+class TradeSimResult:
+    """Result of a single trade simulation.
+
+    Stores the NewsItem, entry offset, hold duration and returns dict.
+    """
+
+    item: NewsItem
+    entry_offset: int
+    hold_duration: int
+    returns: Dict[str, float]

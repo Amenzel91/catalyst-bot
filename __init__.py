@@ -1,7 +1,10 @@
 # src/catalyst_bot/__init__.py
-__all__ = []
-# Keep this file lean. Avoid importing submodules at import time.
-# If you need names for type hints:
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .ticker_resolver import resolve  # or whatever symbols you reference in type hints
+"""
+Catalyst Bot package initializer.
+
+We intentionally avoid importing submodules here to keep import-time side effects
+to a minimum. When type hints are needed, prefer using string annotations
+instead of importing names directly.
+"""
+
+__all__: list[str] = []
