@@ -14,9 +14,13 @@ log = logging.getLogger(__name__)
 # Export only public classes defined in this module. We do not expose any
 # helpers or undefined names here to avoid flake8 F822.
 __all__ = [
+    # public classes exposed by this module
     "TickerResolver",
     "TickerRecord",
     "ResolveResult",
+    # headline parsing helpers
+    "_try_from_title",
+    "resolve_from_source",
 ]
 
 
@@ -30,6 +34,8 @@ class ResolveResult:
 
     ticker: Optional[str]
     method: str
+    # "title" when a ticker was extracted from the headline
+    # or "none" otherwise.
 
 
 # Resolve the default database path:
@@ -247,6 +253,107 @@ def _name_tokens(q: str) -> List[str]:
 
 def _row_to_rec(r: sqlite3.Row) -> TickerRecord:
     return TickerRecord(cik=int(r["cik"]), ticker=str(r["ticker"]), name=str(r["name"]))
+
+
+# -----------------------------------------------------
+# Title-based resolution helpers
+# -----------------------------------------------------
+# These functions allow extraction of ticker symbols directly from news headlines
+# or other text strings. They are intentionally lightweight and do not rely on
+# database lookups. Patterns focus on U.S. exchanges (e.g., NASDAQ, NYSE,
+# NYSE American, AMEX, OTC) and accept tickers of up to five characters with
+# optional dot or dash. See tests in ``test_ticker_resolver.py`` for examples.
+
+# Exchange names we recognise. Separate into a verbose regex with verbose flag
+_EXCH_PATTERN = r"""
+    (?:
+        NASDAQ|Nasdaq|NYSE\ American|NYSE|AMEX|
+        OTC(?:MKTS|QB|QX)?|OTC
+    )
+"""
+
+# Allowed ticker characters. Typically 1–5 alphanumerics with optional dot/dash.
+_TICKER_PATTERN = r"([A-Za-z\d\.\-]{1,5})"
+
+# Compile a pattern that matches something like "(NASDAQ: ABC)" or "NYSE: XYZ"
+_TITLE_REGEX = re.compile(
+    rf"""
+    # Optional opening bracket or brace
+    [\(\[\{{]?\s*
+    {_EXCH_PATTERN}\s*[:\-]\s*
+    {_TICKER_PATTERN}
+    \s*[\)\]\}}]?  # optional closing bracket or brace
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _sanitize_ticker(raw: str) -> Optional[str]:
+    """Normalize raw ticker capture to uppercase and ensure it resembles a ticker.
+
+    Strips stray punctuation, uppercases letters, and validates against a simple
+    pattern (leading letter followed by up to four alphanumerics, dot, or dash).
+    Returns None if the result does not appear to be a plausible ticker.
+    """
+    if not raw:
+        return None
+    t = raw.strip().upper().rstrip(".")
+    # Accept patterns like "BRK.B", "BRK-B", "ABC", "AAPL". Reject if invalid.
+    if not re.fullmatch(r"[A-Z][A-Z0-9\.-]{0,4}", t):
+        return None
+    return t
+
+
+def _try_from_title(title: Optional[str]) -> Optional[str]:
+    """Attempt to extract a ticker symbol from a headline or title.
+
+    Supported formats include:
+      - "Acme Corp (NASDAQ: ABC) announces..." → "ABC"
+      - "Example — NYSE: XYZ completes merger" → "XYZ"
+      - "Company [OTC: ABCD] files 8-K" → "ABCD"
+      - "WidgetCo (Nasdaq: wIdg) to present" → "WIDG"
+
+    Returns the uppercased ticker string if a match is found, otherwise None.
+    """
+    if not title:
+        return None
+    m = _TITLE_REGEX.search(title)
+    if not m:
+        return None
+    return _sanitize_ticker(m.group(1))
+
+
+def resolve_from_source(
+    title: Optional[str], source_name: Optional[str], url: Optional[str]
+) -> ResolveResult:
+    """Resolve a ticker and method from a source description.
+
+    The resolver currently only inspects the headline/title for exchange-tagged
+    tickers. It returns a ResolveResult containing the extracted ticker (if
+    found) and a method string indicating how the resolution was made. Future
+    implementations may inspect the URL or source-specific fields to extract
+    tickers.
+
+    Parameters
+    ----------
+    title : Optional[str]
+        The headline or title text from which to extract a ticker.
+    source_name : Optional[str]
+        Currently unused; reserved for future enhancements.
+    url : Optional[str]
+        Currently unused; reserved for future enhancements.
+
+    Returns
+    -------
+    ResolveResult
+        A dataclass with ``ticker`` and ``method`` fields. ``method`` is
+        "title" if a ticker was extracted from the headline; otherwise
+        "none".
+    """
+    ticker = _try_from_title(title)
+    if ticker:
+        return ResolveResult(ticker=ticker, method="title")
+    return ResolveResult(ticker=None, method="none")
 
 
 # --------------------------
