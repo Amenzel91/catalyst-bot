@@ -1,5 +1,6 @@
 # jobs/finviz_ingest.py
 from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -43,8 +44,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_snapshots_key
   ON finviz_screener_snapshots(ticker, ts, COALESCE(preset,''));
 """
 
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 def main():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -73,7 +76,8 @@ def main():
                    ?, ?)
                 """,
                 (
-                    ts, preset,
+                    ts,
+                    preset,
                     r.get("ticker"),
                     r.get("company"),
                     r.get("sector"),
@@ -97,6 +101,7 @@ def main():
             )
 
     log.info("ingest_complete")
+
 
 if __name__ == "__main__":  # pragma: no cover
     main()

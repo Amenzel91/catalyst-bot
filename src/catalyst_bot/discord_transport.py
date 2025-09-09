@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-import time
 import threading
+import time
 from typing import Any, Dict, Tuple
 
 import requests  # runtime dep
@@ -10,6 +10,7 @@ import requests  # runtime dep
 # --- Small per-webhook soft rate limiter (header-aware) ---
 _RL_LOCK = threading.Lock()
 _RL_STATE: Dict[str, Dict[str, float]] = {}
+
 
 def _min_interval_seconds() -> float:
     try:
@@ -19,6 +20,7 @@ def _min_interval_seconds() -> float:
     # keep within sane bounds
     ms = max(0, min(ms, 2000))
     return ms / 1000.0
+
 
 def _rl_pre_wait(url: str) -> None:
     """Sleep if a previous call asked us to, and always schedule a small spacing."""
@@ -35,11 +37,13 @@ def _rl_pre_wait(url: str) -> None:
     if wait > 0:
         time.sleep(wait)
 
+
 def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
     """
     Respect Discord's rate-limit headers.
     - On 429: always pause for Reset-After / Retry-After.
-    - On success: optionally pause if Remaining <= 0, controlled by ALERTS_RESPECT_RL_ON_SUCCESS (default ON).
+    - On success: optionally pause if Remaining <= 0,
+      controlled by ALERTS_RESPECT_RL_ON_SUCCESS (default ON).
     """
     try:
         reset_after = headers.get("X-RateLimit-Reset-After")
@@ -50,12 +54,15 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
 
         should_pace = bool(is_429)
         if not should_pace:
-            if os.getenv("ALERTS_RESPECT_RL_ON_SUCCESS", "1").strip().lower() in {"1","true","yes","on"}:
+            # store env var in a local variable to shorten the line
+            env_val = os.getenv("ALERTS_RESPECT_RL_ON_SUCCESS", "1").strip().lower()
+            if env_val in {"1", "true", "yes", "on"}:
                 rem = headers.get("X-RateLimit-Remaining")
                 try:
                     if rem is not None and float(rem) <= 0:
                         should_pace = True
                 except Exception:
+                    # If the header is malformed, ignore
                     pass
         if not should_pace:
             return
@@ -66,12 +73,17 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
             wait_s = wait_s / 1000.0
         with _RL_LOCK:
             st = _RL_STATE.get(url) or {}
-            st["next_ok_at"] = max(float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05)
+            st["next_ok_at"] = max(
+                float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05
+            )
             _RL_STATE[url] = st
     except Exception:
         return
 
-def post_discord_with_backoff(url: str, payload: dict, session=None) -> Tuple[bool, int | None]:
+
+def post_discord_with_backoff(
+    url: str, payload: dict, session=None
+) -> Tuple[bool, int | None]:
     """
     Do a header-aware POST with a soft pre-wait and a single retry on 429.
     Returns (ok, status_code).

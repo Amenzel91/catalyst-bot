@@ -119,5 +119,4 @@ def classify(
                 "sentiment": sentiment,
                 "keywords": hits,
                 "score": total_score,
-        }
-        
+            }

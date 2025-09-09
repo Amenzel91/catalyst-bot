@@ -344,7 +344,14 @@ def get_intraday(
         # Use download because it handles extended hours when prepost=True
         # yfinance distinguishes between "compact" and "full" via period arg; map
         period = "5d" if output_size == "compact" else "60d"
-        df = yf.download(nt, period=period, interval=interval, prepost=prepost)
+        df = yf.download(
+            nt,
+            period=period,
+            interval=interval,
+            prepost=prepost,
+            auto_adjust=False,
+            progress=False,
+        )
         if df is None or getattr(df, "empty", False):
             return None
         return df
@@ -393,6 +400,8 @@ def get_intraday_snapshots(
             end=(target_date + timedelta(days=1)).strftime("%Y-%m-%d"),
             interval="1m",
             prepost=True,
+            auto_adjust=False,
+            progress=False,
         )
         if df is None or getattr(df, "empty", False):
             return None

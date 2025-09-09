@@ -1,6 +1,9 @@
-import sqlite3, re, os
+import os
+import re
+import sqlite3
 
 _CIK_RE = re.compile(r"/edgar/data/(\d+)/", re.IGNORECASE)
+
 
 def load_cik_to_ticker(db_path=None):
     db_path = db_path or os.getenv("TICKERS_DB_PATH", "data/tickers.db")
@@ -16,6 +19,7 @@ def load_cik_to_ticker(db_path=None):
         m[s] = ticker
         m[s.zfill(10)] = ticker  # SEC sometimes pads to 10
     return m
+
 
 def cik_from_text(text: str | None):
     if not text:
