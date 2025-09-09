@@ -199,6 +199,18 @@ def _deping(text: Any) -> str:
     return s
 
 
+# ---------------------------------------------------------------------------
+# Per-cycle alert downgrade reset
+# The runner invokes ``reset_cycle_downgrade()`` at the start of each cycle.
+# Provide a simple no‑op implementation so the import doesn’t fail.
+def reset_cycle_downgrade() -> None:
+    """Clear per-cycle downgrade flags (no-op stub)."""
+    # If there is per-cycle state to reset (e.g., _alert_downgraded), do it here.
+    global _alert_downgraded
+    _alert_downgraded = False
+    return None
+
+
 def _format_discord_content(
     item: Dict[str, Any],
     last_price: Optional[float],
