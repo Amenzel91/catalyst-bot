@@ -1,8 +1,7 @@
-import os
 from datetime import datetime, timezone
 
-from catalyst_bot.models import NewsItem
 from catalyst_bot.classify import classify
+from catalyst_bot.models import NewsItem
 
 
 def test_ai_adapter_mock_enriches_tags_and_sentiment(monkeypatch):

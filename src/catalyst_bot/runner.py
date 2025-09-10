@@ -802,6 +802,22 @@ def runner_main(
         # Start of cycle: clear any per-cycle alert downgrade
         from .alerts import reset_cycle_downgrade
 
+        # Optional: poll approval marker → promote analyzer plan (no-op if disabled)
+        try:
+            if (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }:
+                from .approval import promote_if_approved
+
+                promoted = promote_if_approved()
+                if promoted:
+                    log.info("approval_promoted %s", str(promoted))
+        except Exception:
+            pass
+
         reset_cycle_downgrade()
         if STOP:
             break

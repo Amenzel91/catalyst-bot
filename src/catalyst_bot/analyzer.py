@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
+from .approval import get_pending_plan, promote_if_approved, write_pending_plan
 from .classifier import classify, load_keyword_weights
 from .logging_utils import get_logger
 from .market import get_last_price_change
@@ -280,6 +281,39 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
         unknown_keywords,
     )
 
+    # --- Optional: append report enrichments (Top movers / Anomalies) ---
+    try:
+        if (os.getenv("FEATURE_REPORT_ENRICH", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            # Use list(events) so we don't exhaust the iterator
+            _append_enrichments(str(report_path), list(events))
+    except Exception:
+        pass
+
+    # --- Optional: approval loop (file-based) ---
+    try:
+        if (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            # Write a normalized pending plan if we have proposals and no existing pending plan
+            if weight_proposals and not get_pending_plan():
+                plan_id = _make_plan_id(for_date or target)
+                write_pending_plan(
+                    {"weights": weight_proposals, "new_keywords": unknown_keywords},
+                    plan_id,
+                )
+            # Promote if approved by presence of out/approvals/<planId>.approved
+            promote_if_approved()
+    except Exception:
+        pass
+
     log.info(
         "analyzer_result date=%s events=%d categories=%d pending=%s report=%s",
         target.isoformat(),
@@ -295,6 +329,76 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
         weights_path=weights_path,
         events_count=len(events),
     )
+
+
+def _maybe_append_backtest_section(report_path: str) -> None:
+    """
+    Placeholder for appending backtest metrics to the report.
+    Future versions may implement this; currently no-op.
+    """
+    _ = report_path
+    return
+
+
+def _append_enrichments(report_path: str, events: List[Dict[str, object]]) -> None:
+    """
+    Append Top Movers and Anomalies sections to the report.
+    Uses existing price fetchers; gracefully degrades on errors.
+    """
+    try:
+        top_n = int(os.getenv("REPORT_TOP_MOVERS_N", "10"))
+    except Exception:
+        top_n = 10
+    try:
+        threshold = float(os.getenv("REPORT_ANOMALY_ABS_PCT", "8.0"))
+    except Exception:
+        threshold = 8.0
+
+    per_ticker: Dict[str, float] = {}
+    for ev in events:
+        tkr = str((ev.get("ticker") or "")).strip().upper()
+        if not tkr or tkr in per_ticker:
+            continue
+        try:
+            res = get_last_price_change(tkr)
+            change_pct = None
+            if isinstance(res, tuple):
+                _, change_pct = res
+            else:
+                change_pct = res
+            if change_pct is None:
+                continue
+            per_ticker[tkr] = float(change_pct)
+        except Exception:
+            continue
+    if not per_ticker:
+        return
+    movers = sorted(per_ticker.items(), key=lambda kv: abs(kv[1]), reverse=True)[:top_n]
+    anomalies = [(t, c) for t, c in movers if abs(c) >= threshold]
+
+    lines: List[str] = []
+    lines.append("\n## Top Movers")
+    for t, c in movers:
+        sign = "+" if c >= 0 else ""
+        lines.append(f"- `{t}` {sign}{c:.2f}%")
+    if anomalies:
+        lines.append("\n## Anomalies")
+        for t, c in anomalies:
+            sign = "+" if c >= 0 else ""
+            lines.append(f"- `{t}` anomaly {sign}{c:.2f}%")
+
+    try:
+        with open(report_path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def _make_plan_id(target_date: date_cls) -> str:
+    """
+    Generate a plan identifier string based on the target date.
+    """
+    return f"plan-{target_date.isoformat()}"
 
 
 def _write_markdown_report(
