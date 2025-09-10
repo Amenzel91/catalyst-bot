@@ -129,10 +129,24 @@ class ScoredItem:
     relevance: float
     sentiment: float
     tags: List[str]
+    # Weight applied to relevance; historically tests passed the total score here.
     source_weight: float = 1.0
+    # Explicit list of keyword/category hits. Tests rely on this field.
+    keyword_hits: List[str] = None  # type: ignore
+
+    def __post_init__(self) -> None:
+        # Ensure keyword_hits is an empty list if not provided
+        if self.keyword_hits is None:
+            self.keyword_hits = []
 
     @property
     def total(self) -> float:
+        """
+        Total score combining relevance and source weight.
+
+        Historically this returned relevance * source_weight. Sentiment is not
+        included in this property.
+        """
         return self.relevance * self.source_weight
 
 

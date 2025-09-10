@@ -105,13 +105,20 @@ def classify(
     # Total score: simple combination that is deterministic and monotonic
     total_score = relevance + sentiment
 
-    # Build ScoredItem using positional args (max compatibility across versions)
+    # Build ScoredItem. Use keyword arguments to ensure fields map correctly and
+    # populate keyword_hits explicitly so tests can introspect matched categories.
     try:
-        return ScoredItem(relevance, sentiment, hits, total_score)
+        return ScoredItem(
+            relevance=relevance,
+            sentiment=sentiment,
+            tags=hits,
+            source_weight=total_score,
+            keyword_hits=hits.copy(),
+        )
     except TypeError:
-        # Older builds may not accept score as an arg; try 3-arg form
+        # Older builds may not accept keyword_hits; fall back to positional args
         try:
-            return ScoredItem(relevance, sentiment, hits)
+            return ScoredItem(relevance, sentiment, hits, total_score)
         except Exception:
             # Last resort so pipeline doesn’t die; downstream runner handles dicts too
             return {
