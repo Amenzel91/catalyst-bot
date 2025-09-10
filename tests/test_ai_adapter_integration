@@ -1,0 +1,24 @@
+import os
+from datetime import datetime, timezone
+
+from catalyst_bot.models import NewsItem
+from catalyst_bot.classify import classify
+
+
+def test_ai_adapter_mock_enriches_tags_and_sentiment(monkeypatch):
+    monkeypatch.setenv("AI_BACKEND", "mock")
+    item = NewsItem(
+        ts_utc=datetime.now(timezone.utc),
+        title="Biotech Co receives FDA approval for phase 3 trial",
+        canonical_url="http://example.com",
+        source_host="businesswire.com",
+        ticker="ABC",
+    )
+    scored = classify(item)
+    # Adapter should add to tags without breaking core scoring
+    tags = getattr(scored, "tags", []) or []
+    assert isinstance(tags, list)
+    # ai sentiment recorded in extra
+    extra = getattr(scored, "extra", {}) or {}
+    ai = extra.get("ai_sentiment", {})
+    assert ai.get("label") in {"positive", "neutral", "negative"}
