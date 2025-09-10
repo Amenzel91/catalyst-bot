@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .ai_adapter import AIEnrichment, get_adapter
+
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 except Exception:  # pragma: no cover
@@ -105,10 +107,12 @@ def classify(
     # Total score: simple combination that is deterministic and monotonic
     total_score = relevance + sentiment
 
-    # Build ScoredItem. Use keyword arguments to ensure fields map correctly and
-    # populate keyword_hits explicitly so tests can introspect matched categories.
+    # Build ScoredItem first (keep existing behavior), then optionally enrich.
+    # Use keyword arguments to ensure fields map correctly and populate
+    # keyword_hits explicitly so tests can introspect matched categories.
+    scored: ScoredItem | dict
     try:
-        return ScoredItem(
+        scored = ScoredItem(
             relevance=relevance,
             sentiment=sentiment,
             tags=hits,
@@ -118,12 +122,66 @@ def classify(
     except TypeError:
         # Older builds may not accept keyword_hits; fall back to positional args
         try:
-            return ScoredItem(relevance, sentiment, hits, total_score)
+            scored = ScoredItem(relevance, sentiment, hits, total_score)
         except Exception:
             # Last resort so pipeline doesn’t die; downstream runner handles dicts too
-            return {
+            scored = {
                 "relevance": relevance,
                 "sentiment": sentiment,
                 "keywords": hits,
                 "score": total_score,
             }
+
+    # --- Optional AI enrichment (noop by default via AI_BACKEND=none) -------
+    # Adds 'ai_sentiment' into .extra and merges 'ai_tags' into tags.
+    try:
+        adapter = get_adapter()
+        enr: AIEnrichment = adapter.enrich(item.title or "", None)
+
+        # Helper accessors for object-or-dict compatibility
+        def _get_tags(obj):
+            if isinstance(obj, dict):
+                # prefer 'tags', fall back to 'keywords'
+                return list(obj.get("tags") or obj.get("keywords") or [])
+            return list(getattr(obj, "tags", []) or [])
+
+        def _set_tags(obj, new_tags: List[str]):
+            if isinstance(obj, dict):
+                obj["tags"] = new_tags
+            else:
+                try:
+                    setattr(obj, "tags", new_tags)
+                except Exception:
+                    pass
+
+        def _get_extra(obj) -> dict:
+            if isinstance(obj, dict):
+                obj.setdefault("extra", {})
+                return obj["extra"]
+            extra = getattr(obj, "extra", None)
+            if extra is None:
+                try:
+                    setattr(obj, "extra", {})
+                    extra = getattr(obj, "extra", {})
+                except Exception:
+                    extra = {}
+            return extra
+
+        # Merge tags from AI (deduped)
+        if enr.ai_tags:
+            cur = set(_get_tags(scored))
+            cur.update(enr.ai_tags)
+            _set_tags(scored, sorted(cur))
+
+        # Record AI sentiment in 'extra' without overriding numeric 'sentiment'
+        if enr.ai_sentiment:
+            extra = _get_extra(scored)
+            extra["ai_sentiment"] = {
+                "label": enr.ai_sentiment.label,
+                "score": float(enr.ai_sentiment.score),
+            }
+    except Exception:
+        # Never let enrichment break classification
+        pass
+
+    return scored

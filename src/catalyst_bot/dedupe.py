@@ -10,8 +10,10 @@ to simple exact matching.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
-from typing import Iterable
+import sqlite3
+from typing import Dict, Iterable, Optional, Tuple
 
 try:
     from rapidfuzz import fuzz
@@ -74,3 +76,92 @@ def is_near_duplicate(
         if similarity(normalized, prev) >= threshold:
             return True
     return False
+
+
+# --- Refined dedup: first-seen index with source weighting -----------------
+
+DEFAULT_SOURCE_WEIGHTS: Dict[str, float] = {
+    # Prefer original wires over aggregates
+    "businesswire.com": 1.0,
+    "globenewswire.com": 0.98,
+    "prnewswire.com": 0.95,
+    "sec.gov": 0.9,
+    # common aggregators lower
+    "finance.yahoo.com": 0.6,
+    "seekingalpha.com": 0.6,
+    "marketwatch.com": 0.6,
+    "benzinga.com": 0.6,
+}
+
+
+def _source_weight(host: str, overrides: Optional[Dict[str, float]] = None) -> float:
+    host = (host or "").lower()
+    w = (overrides or {}).get(host)
+    if w is not None:
+        return float(w)
+    return DEFAULT_SOURCE_WEIGHTS.get(host, 0.7)
+
+
+class FirstSeenIndex:
+    """SQLite-backed first-seen index for content signatures.
+
+    Schema:
+      index(signature TEXT PRIMARY KEY, id TEXT, ts INTEGER, source TEXT, link TEXT, weight REAL)
+    """
+
+    def __init__(self, db_path: str) -> None:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self._conn = sqlite3.connect(db_path, timeout=10)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS index("
+            "signature TEXT PRIMARY KEY,"
+            "id TEXT,"
+            "ts INTEGER,"
+            "source TEXT,"
+            "link TEXT,"
+            "weight REAL)"
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def get(self, signature: str) -> Optional[Tuple[str, int, float]]:
+        cur = self._conn.execute(
+            "SELECT id, ts, weight FROM index WHERE signature = ?", (signature,)
+        )
+        row = cur.fetchone()
+        return (row[0], int(row[1]), float(row[2])) if row else None
+
+    def upsert(
+        self,
+        signature: str,
+        item_id: str,
+        ts: int,
+        source: str,
+        link: str,
+        weight: float,
+    ) -> None:
+        self._conn.execute(
+            "INSERT INTO index(signature, id, ts, source, link, weight) "
+            "VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(signature) DO UPDATE SET "
+            "id=excluded.id, ts=excluded.ts, "
+            "source=excluded.source, link=excluded.link, "
+            "weight=excluded.weight",
+            (signature, item_id, ts, source, link, weight),
+        )
+        self._conn.commit()
+
+
+# If your file does not already define signature_from(), add this minimal helper:
+try:
+    signature_from  # type: ignore[name-defined]
+except NameError:
+
+    def signature_from(title: str, url: str) -> str:
+        core = normalize_title(title) + "|" + (url or "")
+        return hashlib.sha1(core.encode("utf-8")).hexdigest()

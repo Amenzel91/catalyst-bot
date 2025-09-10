@@ -36,6 +36,57 @@ except Exception:
 log = get_logger("feeds")
 
 
+def _apply_refined_dedup(items: List[Dict]) -> List[Dict]:
+    """Apply first-seen + source-weighted deduplication.
+
+    Enabled when FEATURE_DEDUP_REFINED is truthy. Uses a SQLite index at
+    data/dedup/first_seen.db. Items marked as duplicates receive a
+    'duplicate_of' field (signature) and are filtered out of the returned list.
+    """
+    if str(os.getenv("FEATURE_DEDUP_REFINED", "0")).strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return items
+    try:
+        from .dedupe import FirstSeenIndex, _source_weight, signature_from
+    except Exception:
+        return items
+
+    db_path = os.path.join("data", "dedup", "first_seen.db")
+    idx = FirstSeenIndex(db_path)
+    out: List[Dict] = []
+    try:
+        now_ts = int(time.time())
+        for it in items:
+            title = it.get("title") or ""
+            link = it.get("link") or it.get("canonical_url") or ""
+            src = (it.get("source_host") or it.get("source") or "").lower()
+            sig = signature_from(title, link)
+            prev = idx.get(sig)
+            w = _source_weight(src)
+            if prev is None:
+                idx.upsert(sig, it.get("id") or link or title, now_ts, src, link, w)
+                out.append(it)
+            else:
+                prev_id, prev_ts, prev_w = prev
+                # keep earliest/highest-weight; mark others as duplicates
+                keep_current = (w > prev_w) or (w == prev_w and now_ts < prev_ts)
+                if keep_current:
+                    idx.upsert(sig, it.get("id") or link or title, now_ts, src, link, w)
+                    out.append(it)
+                else:
+                    it["duplicate_of"] = sig
+        return out
+    finally:
+        try:
+            idx.close()
+        except Exception:
+            pass
+
+
 # --- small helpers -----------------------------------------------------------
 def _env_int(name: str, default: int) -> int:
     try:
@@ -594,7 +645,7 @@ def fetch_pr_feeds() -> List[Dict]:
     summary["items"] = len(all_items)
     summary["t_ms"] = round((time.time() - t0) * 1000.0, 1)
     log.info("%s", {"feeds_summary": summary})
-    return all_items
+    return _apply_refined_dedup(all_items)
 
 
 # ===================== Finviz Elite news helpers =====================
