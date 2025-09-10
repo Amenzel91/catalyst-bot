@@ -113,7 +113,8 @@ class FirstSeenIndex:
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self._conn = sqlite3.connect(db_path, timeout=10)
         self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS index("
+            # Use a non-reserved table name instead of 'index'
+            "CREATE TABLE IF NOT EXISTS first_seen_index("
             "signature TEXT PRIMARY KEY,"
             "id TEXT,"
             "ts INTEGER,"
@@ -131,7 +132,8 @@ class FirstSeenIndex:
 
     def get(self, signature: str) -> Optional[Tuple[str, int, float]]:
         cur = self._conn.execute(
-            "SELECT id, ts, weight FROM index WHERE signature = ?", (signature,)
+            "SELECT id, ts, weight FROM first_seen_index WHERE signature = ?",
+            (signature,),
         )
         row = cur.fetchone()
         return (row[0], int(row[1]), float(row[2])) if row else None
@@ -146,7 +148,7 @@ class FirstSeenIndex:
         weight: float,
     ) -> None:
         self._conn.execute(
-            "INSERT INTO index(signature, id, ts, source, link, weight) "
+            "INSERT INTO first_seen_index(signature, id, ts, source, link, weight) "
             "VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(signature) DO UPDATE SET "
             "id=excluded.id, ts=excluded.ts, "
