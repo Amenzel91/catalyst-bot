@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 import requests
 
+from .config import get_settings
 from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem  # re-export for market.NewsItem
 
@@ -493,3 +494,67 @@ def get_intraday_snapshots(
         return snaps
     except Exception:
         return None
+
+
+def get_intraday_indicators(
+    ticker: str, *, target_date: Optional["datetime.date"] = None
+) -> Dict[str, Optional[float]]:
+    """
+    Compute light indicators (VWAP, RSI14) from 1-minute bars using yfinance.
+    Returns {'vwap': float|None, 'rsi14': float|None} or {} on failure/disabled.
+    Respects Settings.feature_indicators; never raises.
+    """
+    try:
+        if not getattr(get_settings(), "feature_indicators", False):
+            return {}
+    except Exception:
+        return {}
+    if yf is None:
+        return {}
+    nt = _norm_ticker(ticker)
+    if not nt:
+        return {}
+    try:
+        if target_date is None:
+            target_date = datetime.now().date()
+        df = yf.download(
+            nt,
+            start=(target_date - timedelta(days=1)).strftime("%Y-%m-%d"),
+            end=(target_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1m",
+            prepost=True,
+            auto_adjust=False,
+            progress=False,
+        )
+        if df is None or getattr(df, "empty", False):
+            return {}
+        # Normalize columns
+        cols = {c.lower(): c for c in df.columns}
+        close = df[cols.get("close", "Close")]
+        vol = df[cols.get("volume", "Volume")]
+        # VWAP
+        try:
+            vwap = float((close * vol).sum() / vol.sum()) if vol.sum() else None
+        except Exception:
+            vwap = None
+        # RSI14 (Wilder smoothing)
+        try:
+            delta = close.diff()
+            up = delta.clip(lower=0.0)
+            down = (-delta).clip(lower=0.0)
+            roll = 14
+            ma_up = up.ewm(alpha=1 / roll, adjust=False).mean()
+            ma_down = down.ewm(alpha=1 / roll, adjust=False).mean()
+            rs = ma_up / (ma_down.replace(0, float("nan")))
+            rsi = 100 - (100 / (1 + rs))
+            rsi14 = float(rsi.iloc[-1]) if rsi.notna().any() else None
+        except Exception:
+            rsi14 = None
+        out: Dict[str, Optional[float]] = {}
+        if vwap is not None:
+            out["vwap"] = vwap
+        if rsi14 is not None:
+            out["rsi14"] = rsi14
+        return out
+    except Exception:
+        return {}

@@ -20,8 +20,11 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from uuid import uuid4
 
+from .alerts import post_admin_summary_md
 from .approval import get_pending_plan, promote_if_approved, write_pending_plan
-from .classifier import classify, load_keyword_weights
+from .classifier import load_keyword_weights
+from .classify_bridge import classify_text
+from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_last_price_change
 
@@ -197,9 +200,18 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
         if not ticker:
             continue
 
-        # Classify title to get relevance, sentiment and tags
-        cls = classify(title, keyword_weights)
-        tags = list(cls.get("tags", []))
+        # Classify title to get tags (unify bridge when enabled)
+        try:
+            if getattr(get_settings(), "feature_classifier_unify", False):
+                out = classify_text(title)
+                tags = list(out.get("tags") or [])
+            else:
+                from .classifier import classify as legacy_classify
+
+                cls = legacy_classify(title, keyword_weights)
+                tags = list(cls.get("tags", []))
+        except Exception:
+            tags = []
 
         # Determine categories matched by tags
         keyword_categories = getattr(settings, "keyword_categories", {}) or {}
@@ -311,6 +323,13 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
                 )
             # Promote if approved by presence of out/approvals/<planId>.approved
             promote_if_approved()
+    except Exception:
+        pass
+
+    # Optional: post admin summary embed
+    try:
+        if getattr(get_settings(), "feature_admin_embed", False):
+            post_admin_summary_md(str(report_path))
     except Exception:
         pass
 
