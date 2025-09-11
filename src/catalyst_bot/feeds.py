@@ -17,6 +17,8 @@ import feedparser  # type: ignore
 import requests
 from dateutil import parser as dtparse
 
+from .classify_bridge import classify_text
+from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_last_price_snapshot, get_volatility
 
@@ -554,7 +556,7 @@ def fetch_pr_feeds() -> List[Dict]:
     except Exception:
         pass
 
-    # Prepare keyword weights for classification once
+    # Prepare keyword weights for legacy preliminary classification (once)
     try:
         kw_weights = load_keyword_weights()
     except Exception:
@@ -572,6 +574,12 @@ def fetch_pr_feeds() -> List[Dict]:
         "yes",
         "on",
     }
+
+    settings = None
+    try:
+        settings = get_settings()
+    except Exception:
+        settings = None
 
     for item in all_items:
         ticker = item.get("ticker")
@@ -592,13 +600,20 @@ def fetch_pr_feeds() -> List[Dict]:
                     allowed = True
             if not allowed:
                 continue  # skip overpriced ticker
-        # Preliminary sentiment classification
+        # Preliminary classification (flag-gated bridge)
         try:
-            cls = (
-                classify(item["title"], kw_weights or {})
-                if callable(classify)
-                else {"relevance_score": 0.0, "sentiment_score": 0.0, "tags": []}
-            )
+            if settings and getattr(settings, "feature_classifier_unify", False):
+                out = classify_text(item.get("title") or "")
+                cls = {
+                    "relevance_score": 0.0,
+                    "sentiment_score": 0.0,
+                    "tags": list(out.get("tags") or []),
+                }
+            else:
+                if callable(classify):
+                    cls = classify(item.get("title") or "", kw_weights or {})
+                else:
+                    cls = {"relevance_score": 0.0, "sentiment_score": 0.0, "tags": []}
         except Exception:
             cls = {"relevance_score": 0.0, "sentiment_score": 0.0, "tags": []}
         item["cls"] = cls

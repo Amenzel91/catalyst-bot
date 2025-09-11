@@ -71,6 +71,17 @@ class Settings:
     feature_alerts: bool = _b("FEATURE_ALERTS", True)
     feature_verbose_logging: bool = _b("FEATURE_VERBOSE_LOGGING", True)
 
+    # --- Phase-B feature flags (default: OFF) ---
+    # Use classify.classify() bridge in feeds/analyzer instead of legacy classifier.py
+    feature_classifier_unify: bool = _b("FEATURE_CLASSIFIER_UNIFY", False)
+    # Post analyzer summary markdown to admin webhook via alerts helper
+    feature_admin_embed: bool = _b("FEATURE_ADMIN_EMBED", False)
+    # Add intraday indicators (VWAP/RSI14) into alert embeds
+    feature_indicators: bool = _b("FEATURE_INDICATORS", False)
+
+    # Optional explicit path for analyzer summary markdown to post
+    admin_summary_path: Optional[str] = os.getenv("ADMIN_SUMMARY_PATH", None)
+
     # Misc
     tz: str = os.getenv("TZ", "America/Chicago")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")

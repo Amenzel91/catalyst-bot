@@ -9,7 +9,9 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 import requests
 
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
+from .config import get_settings
 from .logging_utils import get_logger
+from .market import get_intraday_indicators
 
 log = get_logger("alerts")
 
@@ -197,6 +199,80 @@ def _deping(text: Any) -> str:
         # break bare @User (but leave emails like foo@bar.com alone)
         s = re.sub(r"(?<!\w)@(?=[A-Za-z])", "@\u200b", s)
     return s
+
+
+# ---------------- Admin summary + indicators helpers ------------------------
+
+
+def post_admin_summary_md(summary_path: Optional[str] = None) -> bool:
+    """
+    Post first ~30 non-empty lines from an analyzer summary markdown file as an
+    embed to DISCORD_ADMIN_WEBHOOK when FEATURE_ADMIN_EMBED=1. Returns bool.
+    """
+    try:
+        s = get_settings()
+    except Exception:
+        return False
+    if not getattr(s, "feature_admin_embed", False):
+        return False
+    webhook = getattr(s, "admin_webhook_url", None)
+    if not webhook:
+        return False
+    import glob
+    import os
+
+    path = summary_path or getattr(s, "admin_summary_path", None)
+    if not path:
+        cands = glob.glob(os.path.join(str(s.out_dir), "analyzer", "summary_*.md"))
+        cands += glob.glob(os.path.join(str(s.out_dir), "summary_*.md"))
+        path = max(cands, key=os.path.getmtime) if cands else None
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        lines = [
+            ln.strip()
+            for ln in open(path, "r", encoding="utf-8", errors="ignore")
+            .read()
+            .splitlines()
+        ]
+    except Exception:
+        return False
+    preview = "\n".join([ln for ln in lines if ln][:30]).strip()
+    if not preview:
+        return False
+    payload = {
+        "username": "Analyzer Admin",
+        "embeds": [{"title": "Analyzer Summary", "description": preview[:3900]}],
+    }
+    return post_discord_json(payload, webhook_url=webhook)
+
+
+def enrich_with_indicators(
+    embed: Dict[str, Any], indicators: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Append VWAP/RSI fields if present."""
+    try:
+        if indicators:
+            fields = embed.setdefault("fields", [])
+            if indicators.get("vwap") is not None:
+                fields.append(
+                    {
+                        "name": "VWAP",
+                        "value": f"{float(indicators['vwap']):.4f}",
+                        "inline": True,
+                    }
+                )
+            if indicators.get("rsi14") is not None:
+                fields.append(
+                    {
+                        "name": "RSI(14)",
+                        "value": f"{float(indicators['rsi14']):.1f}",
+                        "inline": True,
+                    }
+                )
+    except Exception:
+        pass
+    return embed
 
 
 # ---------------------------------------------------------------------------
@@ -492,4 +568,12 @@ def _build_discord_embed(
         embed["fields"].append(
             {"name": "Reason", "value": reason[:1024], "inline": False}
         )
+    # Optionally add intraday indicators (VWAP/RSI14)
+    try:
+        s = get_settings()
+        if getattr(s, "feature_indicators", False) and (item_dict.get("ticker")):
+            ind = get_intraday_indicators(str(item_dict.get("ticker")))
+            embed = enrich_with_indicators(embed, ind)
+    except Exception:
+        pass
     return embed
