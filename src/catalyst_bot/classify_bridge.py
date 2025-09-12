@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+
 
 def classify_text(title: str) -> Dict[str, Any]:
     """
@@ -12,6 +14,7 @@ def classify_text(title: str) -> Dict[str, Any]:
     try:
         from .classify import classify as classify_item
         from .models import NewsItem
+
         item = NewsItem(ts_utc=datetime.now(timezone.utc), title=title or "")
         scored = classify_item(item)
         tags: List[str] = []
@@ -19,7 +22,9 @@ def classify_text(title: str) -> Dict[str, Any]:
         if isinstance(scored, dict):
             tags = list(scored.get("keyword_hits") or scored.get("tags") or [])
             rh = scored.get("keyword_hits", {})
-            hits = {str(k): int(v) for k, v in (rh.items() if isinstance(rh, dict) else [])}
+            hits = {
+                str(k): int(v) for k, v in (rh.items() if isinstance(rh, dict) else [])
+            }
             if not hits and tags:
                 hits = {t: 1 for t in tags}
         else:
@@ -39,7 +44,9 @@ def classify_text(title: str) -> Dict[str, Any]:
     except Exception:
         # Legacy fallback: title-only
         try:
-            from .classifier import classify as legacy_classify, load_keyword_weights
+            from .classifier import classify as legacy_classify
+            from .classifier import load_keyword_weights
+
             w = {}
             try:
                 w = load_keyword_weights()
