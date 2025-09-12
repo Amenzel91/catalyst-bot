@@ -250,6 +250,7 @@ def get_last_price_change(
     return last, chg_pct
 
 
+# Public API of this module (explicit export list)
 __all__ = [
     "NewsItem",
     "ScoredItem",
@@ -258,6 +259,7 @@ __all__ = [
     "get_volatility",
     "get_intraday",
     "get_intraday_snapshots",
+    "get_intraday_indicators",
 ]
 
 # ---------------------------------------------------------------------------

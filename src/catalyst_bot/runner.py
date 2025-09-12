@@ -386,7 +386,10 @@ _CIK_MAP = None
 def ensure_cik_map():
     global _CIK_MAP
     if _CIK_MAP is None:
+        log = get_logger("runner")
+        log.debug("ticker_map_init start")
         _CIK_MAP = load_cik_to_ticker()  # uses TICKERS_DB_PATH or data/tickers.db
+        log.debug("ticker_map_init done size=%s", len(_CIK_MAP))
 
 
 def enrich_ticker(entry: dict, item: dict):
