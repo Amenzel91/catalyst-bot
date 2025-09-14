@@ -1,6 +1,7 @@
 ﻿# src/catalyst_bot/alerts.py
 from __future__ import annotations
 
+import base64
 import os
 import threading
 import time
@@ -9,6 +10,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 import requests
 
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
+from .charts import CHARTS_OK, render_intraday_chart
 from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_intraday_indicators
@@ -206,13 +208,21 @@ def _deping(text: Any) -> str:
 
 def post_admin_summary_md(summary_path: Optional[str] = None) -> bool:
     """
-    Post first ~30 non-empty lines from an analyzer summary markdown file as an
-    embed to DISCORD_ADMIN_WEBHOOK when FEATURE_ADMIN_EMBED=1. Returns bool.
+    Post a digest of an analyzer summary Markdown file to the admin webhook.
+
+    When FEATURE_ADMIN_EMBED is enabled, this helper reads the specified
+    ``summary_path`` (or the most recent summary under ``out/analyzer``),
+    extracts the first ~30 non-empty lines, and composes a Discord embed
+    containing the preview.  If a pending analyzer plan exists and the
+    approval loop is active, the embed will include information about the
+    plan and interactive Approve/Reject buttons.  Returns True on
+    successful post, False otherwise.
     """
     try:
         s = get_settings()
     except Exception:
         return False
+    # Feature flag must be enabled
     if not getattr(s, "feature_admin_embed", False):
         return False
     webhook = getattr(s, "admin_webhook_url", None)
@@ -221,6 +231,7 @@ def post_admin_summary_md(summary_path: Optional[str] = None) -> bool:
     import glob
     import os
 
+    # Resolve summary path: explicit argument → ADMIN_SUMMARY_PATH → latest file
     path = summary_path or getattr(s, "admin_summary_path", None)
     if not path:
         cands = glob.glob(os.path.join(str(s.out_dir), "analyzer", "summary_*.md"))
@@ -229,21 +240,103 @@ def post_admin_summary_md(summary_path: Optional[str] = None) -> bool:
     if not path or not os.path.exists(path):
         return False
     try:
-        lines = [
-            ln.strip()
-            for ln in open(path, "r", encoding="utf-8", errors="ignore")
-            .read()
-            .splitlines()
-        ]
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            lines = [ln.strip() for ln in fh.read().splitlines()]
     except Exception:
         return False
-    preview = "\n".join([ln for ln in lines if ln][:30]).strip()
+    # Grab first 30 non-empty lines for preview
+    preview_lines = [ln for ln in lines if ln][:30]
+    preview = "\n".join(preview_lines).strip()
     if not preview:
         return False
-    payload = {
-        "username": "Analyzer Admin",
-        "embeds": [{"title": "Analyzer Summary", "description": preview[:3900]}],
+
+    # Build base embed
+    embed: Dict[str, Any] = {
+        "title": "Analyzer Summary",
+        "description": preview[:3900],
     }
+
+    # Include pending plan details when approval loop is active and a plan exists
+    # Avoid circular import by importing inside the function
+    try:
+        from .approval import get_pending_plan
+
+        # Only include pending info when the user has enabled approval loop
+        enable_loop = getattr(s, "feature_approval_loop", False) or (
+            os.getenv("FEATURE_APPROVAL_LOOP", "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        if enable_loop:
+            pending = get_pending_plan()
+            if pending:
+                plan_id = str(
+                    pending.get("planId") or pending.get("plan_id") or ""
+                ).strip()
+                plan = pending.get("plan") or {}
+                weights = plan.get("weights") or {}
+                new_keywords = plan.get("new_keywords") or {}
+                # Summarize weights and new keywords in a field
+                summary_parts = []  # type: ignore[var-annotated]
+                if weights:
+                    # Only show up to 5 entries to avoid long embeds
+                    for idx, (k, v) in enumerate(sorted(weights.items())):
+                        if idx >= 5:
+                            summary_parts.append("...")
+                            break
+                        try:
+                            summary_parts.append(f"{k}: {float(v):.3f}")
+                        except Exception:
+                            summary_parts.append(f"{k}: {v}")
+                if new_keywords:
+                    kw_list = ", ".join(list(new_keywords.keys())[:5])
+                    summary_parts.append(f"New keywords: {kw_list}")
+                pending_desc = (
+                    "\n".join(summary_parts)
+                    if summary_parts
+                    else "Pending changes available."
+                )
+                fields = embed.setdefault("fields", [])
+                fields.append(
+                    {
+                        "name": "Pending Plan",
+                        "value": f"ID: `{plan_id}`\n{pending_desc}",
+                        "inline": False,
+                    }
+                )
+                # Prepare interactive buttons for approval if supported by Discord
+                components = [
+                    {
+                        "type": 1,  # action row
+                        "components": [
+                            {
+                                "type": 2,
+                                "label": "Approve Plan",
+                                "style": 3,  # success (green)
+                                "custom_id": f"approve_{plan_id}",
+                            },
+                            {
+                                "type": 2,
+                                "label": "Reject Plan",
+                                "style": 4,  # danger (red)
+                                "custom_id": f"reject_{plan_id}",
+                            },
+                        ],
+                    }
+                ]
+            else:
+                components = []
+        else:
+            components = []
+    except Exception:
+        components = []
+
+    payload: Dict[str, Any] = {
+        "username": "Analyzer Admin",
+        "embeds": [embed],
+    }
+    # Add components only if present (discord rejects empty components)
+    if components:
+        payload["components"] = components
     return post_discord_json(payload, webhook_url=webhook)
 
 
@@ -574,6 +667,26 @@ def _build_discord_embed(
         if getattr(s, "feature_indicators", False) and (item_dict.get("ticker")):
             ind = get_intraday_indicators(str(item_dict.get("ticker")))
             embed = enrich_with_indicators(embed, ind)
+        # Optionally attach an intraday chart when rich alerts are enabled.  Only
+        # render charts when dependencies are available and a ticker is present.
+        if getattr(s, "feature_rich_alerts", False) and CHARTS_OK:
+            t = (item_dict.get("ticker") or "").strip()
+            if t:
+                try:
+                    chart_path = render_intraday_chart(t)
+                    if (
+                        chart_path
+                        and chart_path.exists()
+                        and chart_path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+                    ):
+                        with chart_path.open("rb") as cf:
+                            bdata = cf.read()
+                        # Encode as base64 data URI (Discord may ignore, but tests can inspect)
+                        b64 = base64.b64encode(bdata).decode("ascii")
+                        embed["image"] = {"url": f"data:image/png;base64,{b64}"}
+                except Exception:
+                    # best-effort: ignore chart rendering errors
+                    pass
     except Exception:
         pass
     return embed

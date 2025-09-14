@@ -25,6 +25,7 @@ from .approval import get_pending_plan, promote_if_approved, write_pending_plan
 from .classifier import load_keyword_weights
 from .classify_bridge import classify_text
 from .config import get_settings
+from .earnings import load_earnings_calendar
 from .logging_utils import get_logger
 from .market import get_last_price_change
 
@@ -167,6 +168,38 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
     events_path = data_dir / "events.jsonl"
     events = _load_events_for_date(events_path, target)
 
+    # Load earnings calendar and determine upcoming earnings for tickers in events.
+    # This checks the cached CSV saved by jobs/earnings_pull.py.  Only the
+    # earliest upcoming report date per ticker is used.
+    earnings_today: Dict[str, date_cls] = {}
+    earnings_week: Dict[str, date_cls] = {}
+    try:
+        earn_map = load_earnings_calendar(
+            getattr(settings, "earnings_calendar_cache", "data/earnings_calendar.csv")
+        )
+        if earn_map:
+            for e in events:
+                ticker = str(e.get("ticker") or "").strip().upper()
+                if not ticker:
+                    continue
+                edate = earn_map.get(ticker)
+                if not edate:
+                    continue
+                # Determine relation to target date
+                try:
+                    delta = (edate - target).days
+                except Exception:
+                    continue
+                if delta == 0:
+                    earnings_today[ticker] = edate
+                elif 0 < delta <= 7:
+                    # Only include one entry per ticker for the week
+                    earnings_week.setdefault(ticker, edate)
+    except Exception:
+        # fall back silently on errors
+        earnings_today = {}
+        earnings_week = {}
+
     log.info(
         "analyzer_load date=%s events=%d from=%s",
         target.isoformat(),
@@ -285,6 +318,8 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
         category_stats,
         weight_proposals,
         unknown_keywords,
+        earnings_today=earnings_today,
+        earnings_week=earnings_week,
     )
     pending_path = _write_pending_changes(
         analyzer_dir,
@@ -308,20 +343,29 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
 
     # --- Optional: approval loop (file-based) ---
     try:
-        if (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            # Write a normalized pending plan if we have proposals and no existing pending plan
+        # Determine whether the approval loop is enabled.  Prefer the
+        # configuration setting from Settings, but fall back to the
+        # environment variable FEATURE_APPROVAL_LOOP for backward
+        # compatibility.  Any truthy value in {"1", "true", "yes", "on"}
+        # will enable the loop.
+        enable_loop: bool = False
+        try:
+            enable_loop = getattr(get_settings(), "feature_approval_loop", False)
+        except Exception:
+            enable_loop = False
+        if not enable_loop:
+            env_val = (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower()
+            if env_val in {"1", "true", "yes", "on"}:
+                enable_loop = True
+        if enable_loop:
+            # Write a pending plan if we have proposals and none exists yet
             if weight_proposals and not get_pending_plan():
                 plan_id = _make_plan_id(for_date or target)
                 write_pending_plan(
                     {"weights": weight_proposals, "new_keywords": unknown_keywords},
                     plan_id,
                 )
-            # Promote if approved by presence of out/approvals/<planId>.approved
+            # Promote if an approval marker file is present
             promote_if_approved()
     except Exception:
         pass
@@ -427,6 +471,9 @@ def _write_markdown_report(
     category_stats: Dict[str, List[int]],
     weight_proposals: Dict[str, float],
     unknown_keywords: Dict[str, int],
+    *,
+    earnings_today: Optional[Dict[str, date_cls]] = None,
+    earnings_week: Optional[Dict[str, date_cls]] = None,
 ) -> Path:
     """
     Generate a daily Markdown report summarizing event counts,
@@ -472,6 +519,26 @@ def _write_markdown_report(
             for kw, cnt in sorted(unknown_keywords.items(), key=lambda x: -x[1]):
                 lines.append(f"| {kw} | {cnt} |")
             lines.append("")
+
+        # Append earnings calendar highlights when provided
+        try:
+            et = earnings_today or {}
+            ew = earnings_week or {}
+            if et or ew:
+                lines.append("## Upcoming Earnings")
+                lines.append("| Ticker | Report Date | Relative |")
+                lines.append("|---|---|---|")
+                for t, d in sorted(et.items()):
+                    lines.append(f"| {t} | {d.isoformat()} | Today |")
+                for t, d in sorted(ew.items()):
+                    # Avoid duplicating tickers already listed under today
+                    if t in et:
+                        continue
+                    lines.append(f"| {t} | {d.isoformat()} | This Week |")
+                lines.append("")
+        except Exception:
+            # If anything goes wrong, skip earnings section
+            pass
         path.write_text("\n".join(lines), encoding="utf-8")
     except Exception:
         pass

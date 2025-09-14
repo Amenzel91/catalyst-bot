@@ -21,6 +21,20 @@ from .classify_bridge import classify_text
 from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_last_price_snapshot, get_volatility
+from .watchlist import load_watchlist_set
+
+# Import FMP sentiment helpers.  These are new in Phase‑C Patch 3.
+try:
+    from .fmp_sentiment import attach_fmp_sentiment, fetch_fmp_sentiment  # type: ignore
+except Exception:
+    # If the module cannot be imported (e.g. during partial installations),
+    # provide no-op fallbacks so the call sites do not fail.
+    def fetch_fmp_sentiment(*_args, **_kwargs):  # type: ignore
+        return {}
+
+    def attach_fmp_sentiment(*_args, **_kwargs) -> None:  # type: ignore
+        return None
+
 
 try:
     # Import classifier lazily; vaderSentiment may not be installed in all envs
@@ -449,8 +463,83 @@ def fetch_pr_feeds() -> List[Dict]:
                     "t_ms": round((time.time() - st) * 1000.0, 1),
                 }
             except Exception as e:
+                # Distinguish authentication failures (HTTP 401/403) from other errors.
+                msg = str(e) if e else ""
+                # Default metrics when an error occurs
+                err_metrics = {
+                    "ok": 0,
+                    "http4": 0,
+                    "http5": 0,
+                    "errors": 0,
+                    "entries_raw": 0,
+                    "entries": 0,
+                    "t_ms": round((time.time() - st) * 1000.0, 1),
+                }
+                if "finviz_auth_failed" in msg:
+                    # Count as a client error (http4) and log a clear warning
+                    err_metrics["http4"] = 1
+                    log.warning("finviz_news_auth_failed status=%s", msg.split("=")[-1])
+                elif "finviz_http status=" in msg:
+                    # Extract status code and bucket into http4/5
+                    try:
+                        status = int(msg.split("=")[-1])
+                    except Exception:
+                        status = 0
+                    if 400 <= status < 500:
+                        err_metrics["http4"] = 1
+                    elif 500 <= status < 600:
+                        err_metrics["http5"] = 1
+                    else:
+                        err_metrics["errors"] = 1
+                    log.warning("finviz_news_http status=%s", status)
+                else:
+                    err_metrics["errors"] = 1
+                    log.warning(
+                        "finviz_news_error err=%s", e.__class__.__name__, exc_info=False
+                    )
                 summary.setdefault("by_source", {})
-                summary["by_source"]["finviz_news"] = {
+                summary["by_source"]["finviz_news"] = err_metrics
+
+        # ---------------- Optional Finviz news export CSV feed (opt-in) ----------------
+        # When FEATURE_FINVIZ_NEWS_EXPORT=1 and a FINVIZ_NEWS_EXPORT_URL is set in the
+        # environment (see config.py), pull the CSV from the specified URL and
+        # append its entries to the item list.  We run this after the main Finviz
+        # news feed to allow deduplication against news_export.ashx.  Skip this
+        # entirely when running under pytest.
+        settings = get_settings()
+        if (
+            settings.feature_finviz_news_export
+            and settings.finviz_news_export_url
+            and os.environ.get("PYTEST_CURRENT_TEST") is None
+        ):
+            st = time.time()
+            try:
+                _seen_ids = {i.get("id") for i in all_items if i.get("id")}
+                _seen_links = {i.get("link") for i in all_items if i.get("link")}
+                export_items = _fetch_finviz_news_export(
+                    settings.finviz_news_export_url
+                )
+                export_unique = [
+                    it
+                    for it in export_items
+                    if (
+                        (it.get("id") not in _seen_ids)
+                        and (it.get("link") not in _seen_links)
+                    )
+                ]
+                all_items.extend(export_unique)
+                summary["by_source"]["finviz_export"] = {
+                    "ok": 1,
+                    "http4": 0,
+                    "http5": 0,
+                    "errors": 0,
+                    "entries_raw": len(export_items),
+                    "entries": len(export_unique),
+                    "t_ms": round((time.time() - st) * 1000.0, 1),
+                }
+            except Exception as e:
+                summary.setdefault("by_source", {})
+                summary["by_source"]["finviz_export"] = {
                     "ok": 0,
                     "http4": 0,
                     "http5": 0,
@@ -460,7 +549,7 @@ def fetch_pr_feeds() -> List[Dict]:
                     "t_ms": round((time.time() - st) * 1000.0, 1),
                 }
                 log.warning(
-                    "finviz_news_error err=%s", e.__class__.__name__, exc_info=True
+                    "finviz_export_error err=%s", e.__class__.__name__, exc_info=True
                 )
 
     for src, url_list in FEEDS.items():
@@ -508,6 +597,21 @@ def fetch_pr_feeds() -> List[Dict]:
 
     # De-duplicate across sources (Finviz vs wires, syndication, etc.)
     all_items = dedupe(all_items)
+
+    # -----------------------------------------------------------------
+    # Attach optional FMP sentiment scores
+    #
+    # When the feature flag is enabled, fetch the sentiment RSS feed once
+    # per cycle and merge the resulting scores into each item.  We perform
+    # this step after deduplication so that identical links map correctly.
+    try:
+        fmp_sents = fetch_fmp_sentiment()
+    except Exception:
+        fmp_sents = {}
+    try:
+        attach_fmp_sentiment(all_items, fmp_sents)
+    except Exception:
+        pass
 
     # ---------------------------------------------------------------------
     # Filtering & metadata enrichment
@@ -581,25 +685,43 @@ def fetch_pr_feeds() -> List[Dict]:
     except Exception:
         settings = None
 
+    # Load watchlist set once per cycle if the feature flag is enabled. If
+    # WATCHLIST_CSV cannot be loaded, fall back to an empty set. This is used
+    # to bypass the price ceiling for watchlisted tickers during filtering.
+    watchlist_set: set[str] = set()
+    if settings and getattr(settings, "feature_watchlist", False):
+        try:
+            wl_path = getattr(settings, "watchlist_csv", "") or ""
+            watchlist_set = load_watchlist_set(wl_path)
+        except Exception:
+            watchlist_set = set()
+
     for item in all_items:
         ticker = item.get("ticker")
         # Enforce price ceiling filtering only when a ticker is present and ceiling > 0
         if ticker and price_ceiling > 0:
             tick = ticker.strip().upper()
-            # Allow if in Finviz universe; else check live price
-            allowed = False
-            if finviz_universe and tick in finviz_universe:
+            # Bypass the price filter for watchlisted tickers
+            if watchlist_set and tick in watchlist_set:
                 allowed = True
             else:
-                # avoid repeated lookups for the same ticker
-                try:
-                    last_price, _ = get_last_price_snapshot(tick)
-                except Exception:
-                    last_price = None
-                if last_price is not None and last_price <= price_ceiling:
+                # Allow if in Finviz universe; else check live price
+                allowed = False
+                if finviz_universe and tick in finviz_universe:
                     allowed = True
+                else:
+                    # avoid repeated lookups for the same ticker
+                    try:
+                        last_price, _ = get_last_price_snapshot(tick)
+                    except Exception:
+                        last_price = None
+                    if last_price is not None and last_price <= price_ceiling:
+                        allowed = True
             if not allowed:
                 continue  # skip overpriced ticker
+            # Mark item as being on the watchlist for downstream consumers
+            if watchlist_set and tick in watchlist_set:
+                item["watchlist"] = True
         # Preliminary classification (flag-gated bridge)
         try:
             if settings and getattr(settings, "feature_classifier_unify", False):
@@ -733,8 +855,18 @@ def _fetch_finviz_news_from_env() -> list[dict]:
     """
     Pull Finviz Elite news using env-config. Returns a list of normalized items:
         {'source','title','summary','link','id','ts','ticker','tickers'}
+
+    The bot will look up the Finviz authentication token from either
+    ``FINVIZ_AUTH_TOKEN`` or, as a fallback, ``FINVIZ_ELITE_AUTH``. If both
+    are unset or empty, the function returns an empty list and a warning
+    will be logged on the first attempt.  All other Finviz news options
+    (kind, tickers, blogs, extra params, max items, timeout) behave as
+    documented in the environment example.
+
     Env:
-      FINVIZ_AUTH_TOKEN           (required)
+      FINVIZ_AUTH_TOKEN           Primary API token for Finviz Elite
+      FINVIZ_ELITE_AUTH           Legacy/alternate token; used when
+                                   ``FINVIZ_AUTH_TOKEN`` is not set
       FINVIZ_NEWS_KIND            market|stocks|etfs|crypto  (default: stocks)
       FINVIZ_NEWS_TICKERS         CSV of symbols to filter (optional)
       FINVIZ_NEWS_INCLUDE_BLOGS   0/1 (default: 0)
@@ -742,16 +874,37 @@ def _fetch_finviz_news_from_env() -> list[dict]:
       FINVIZ_NEWS_MAX             cap item count (default: 200)
       FINVIZ_NEWS_TIMEOUT         seconds (default: 10)
     """
-    token = (os.getenv("FINVIZ_AUTH_TOKEN") or "").strip()
+    # Prefer the primary token but fall back to the legacy/alternate var if
+    # unset.  This allows users to migrate gradually without breaking feeds.
+    token = (
+        os.getenv("FINVIZ_AUTH_TOKEN") or os.getenv("FINVIZ_ELITE_AUTH") or ""
+    ).strip()
     if not token:
+        # Emit a warning only once per process to avoid log spam.  Use an
+        # environment flag to suppress if desired (e.g. during tests).
+        if not getattr(_fetch_finviz_news_from_env, "_warned_missing_token", False):
+            # Split the long warning message across multiple string literals to satisfy
+            # line length constraints.  Adjacent string literals are concatenated.
+            log.warning(
+                "finviz_news_token_missing=1 "
+                "message='No FINVIZ_AUTH_TOKEN or FINVIZ_ELITE_AUTH set'"
+            )
+            setattr(_fetch_finviz_news_from_env, "_warned_missing_token", True)
         return []
     kind = (os.getenv("FINVIZ_NEWS_KIND") or "stocks").strip().lower()
     tickers_env = (os.getenv("FINVIZ_NEWS_TICKERS") or "").strip()
-    tickers = (
-        [t.strip().upper() for t in tickers_env.split(",") if t.strip()]
-        if tickers_env
-        else None
-    )
+    # Normalise the FINVIZ_NEWS_TICKERS CSV into a list of upper‑case symbols.
+    # Break the comprehension across multiple lines to satisfy line length checks.
+    tickers = None
+    if tickers_env:
+        _tmp: list[str] = []
+        for t in tickers_env.split(","):
+            if not t:
+                continue
+            s = t.strip().upper()
+            if s:
+                _tmp.append(s)
+        tickers = _tmp if _tmp else None
     include_blogs_flag = str(
         os.getenv("FINVIZ_NEWS_INCLUDE_BLOGS", "0")
     ).strip().lower() in {"1", "true", "yes", "on"}
@@ -773,6 +926,13 @@ def _fetch_finviz_news_from_env() -> list[dict]:
     timeout = float(os.getenv("FINVIZ_NEWS_TIMEOUT", "10"))
 
     def _fetch_once(include_blogs: bool) -> str:
+        """
+        Inner helper to fetch the Finviz CSV once.  Uses exponential backoff
+        for retries and distinguishes authentication failures.  On success,
+        returns the decoded CSV text; on repeated failure, re-raises the last
+        encountered exception.  Authentication errors raise a RuntimeError
+        with a clear message so callers can detect and log appropriately.
+        """
         url = _finviz_build_news_url(
             token,
             kind=kind,
@@ -808,14 +968,14 @@ def _fetch_finviz_news_from_env() -> list[dict]:
                 log.debug("finviz_export_url %s", redacted)
             except Exception:
                 pass
-        last_exc = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 resp = requests.get(
                     url, timeout=timeout, headers={"User-Agent": USER_AGENT}
                 )
+                # Some endpoints have both .ashx and without; try alternate on 404
                 if resp.status_code == 404:
-                    # toggle .ashx on/off once
                     alt = (
                         url.replace("news_export.ashx", "news_export")
                         if "news_export.ashx" in url
@@ -824,12 +984,14 @@ def _fetch_finviz_news_from_env() -> list[dict]:
                     resp = requests.get(
                         alt, timeout=timeout, headers={"User-Agent": USER_AGENT}
                     )
-                if resp.status_code in (401, 403):
-                    raise RuntimeError(f"finviz_auth_failed status={resp.status_code}")
-                if resp.status_code >= 500:
-                    raise RuntimeError(f"finviz_server_error status={resp.status_code}")
-                if not (200 <= resp.status_code < 300):
-                    raise RuntimeError(f"finviz_http status={resp.status_code}")
+                status = resp.status_code
+                if status in (401, 403):
+                    # Immediately propagate an auth failure; no further retries.
+                    raise RuntimeError(f"finviz_auth_failed status={status}")
+                if status >= 500:
+                    raise RuntimeError(f"finviz_server_error status={status}")
+                if not (200 <= status < 300):
+                    raise RuntimeError(f"finviz_http status={status}")
                 text = resp.content.decode("utf-8-sig", errors="replace")
                 pfx = text.lstrip()[:200].lower()
                 if "<!doctype html" in pfx or "<html" in pfx:
@@ -837,7 +999,9 @@ def _fetch_finviz_news_from_env() -> list[dict]:
                 return text
             except Exception as e:
                 last_exc = e
-                time.sleep(0.5 * (attempt + 1))
+                # Exponential backoff using the global helper to space retries
+                _sleep_backoff(attempt)
+        # After exhausting retries, raise the last exception (or generic)
         raise last_exc if last_exc else RuntimeError("finviz_unknown_error")
 
     out: list[dict] = []
@@ -927,12 +1091,34 @@ def dedupe(items: List[Dict]) -> List[Dict]:
 
 
 def validate_finviz_token(cookie: str) -> Tuple[bool, int]:
-    """
-    Best-effort probe to see if the Finviz Elite cookie looks valid.
-    We call a lightweight page that requires auth and check for 200.
+    """Validate a Finviz Elite auth cookie or token.
+
+    Finviz Elite requires a valid token (sometimes referred to as a cookie) to
+    access its CSV export endpoints.  This helper performs a lightweight
+    probe by requesting a tiny news export and, if that fails, falls back to
+    hitting the main screener page.  It returns a tuple ``(is_valid, status)``
+    where ``is_valid`` is True when a 200 response is received and the
+    response body appears to be a CSV export.  ``status`` is the HTTP status
+    code from the last request made (or 0 if the request failed before
+    receiving a response).
+
+    Parameters
+    ----------
+    cookie: str
+        The Finviz Elite authentication token or session cookie.  This value
+        is appended to the test URL as an ``auth`` query parameter.  If the
+        cookie is empty or None, the function returns ``(False, 0)`` without
+        making any network requests.
+
+    Returns
+    -------
+    Tuple[bool, int]
+        A tuple of (is_valid, status_code) indicating whether the token
+        appears to be valid and the HTTP status code observed.
     """
     if not cookie:
         return False, 0
+
     try:
         # Prefer a tiny CSV probe (auth in query) then fall back to screener page.
         test_url = (
@@ -941,6 +1127,7 @@ def validate_finviz_token(cookie: str) -> Tuple[bool, int]:
         resp = requests.get(test_url, headers={"User-Agent": USER_AGENT}, timeout=10)
         ok = (resp.status_code == 200) and resp.text.lstrip().startswith('"Title"')
         if not ok:
+            # Fall back to the screener page which also requires authentication.
             resp = requests.get(
                 "https://elite.finviz.com/screener.ashx",
                 headers={"Cookie": cookie, "User-Agent": USER_AGENT},
@@ -950,6 +1137,80 @@ def validate_finviz_token(cookie: str) -> Tuple[bool, int]:
         return ok, getattr(resp, "status_code", 0)
     except Exception:
         return False, 0
+
+
+# ---------------------------------------------------------------------------
+# Finviz News Export CSV
+#
+# Finviz Elite offers a simple CSV export for aggregated news headlines.  Unlike
+# news_export.ashx, the CSV feed does not include tickers or summaries; only
+# the headline, source, publication timestamp, URL and a high‑level category
+# are provided.  To consume this feed, set FEATURE_FINVIZ_NEWS_EXPORT=1 and
+# specify FINVIZ_NEWS_EXPORT_URL in your environment.  The URL must already
+# include any desired filters and an auth token.  This function will fetch
+# the CSV, parse each row and produce a list of event dicts compatible with
+# the rest of the ingestion pipeline.  Events lack ticker information, so
+# downstream logic should handle missing tickers gracefully.
+
+
+def _fetch_finviz_news_export(url: str) -> list[dict]:
+    """Fetch the Finviz news export CSV from the given URL and normalize rows.
+
+    Each row in the CSV should have at least the following columns:
+        Title, Source, Date, Url, Category
+    If the header names differ in case or whitespace, they will be normalised.
+    Returns a list of dicts with keys: source, title, summary, link, id, ts,
+    ticker and tickers.  The summary is left empty, and ticker fields are
+    populated as None/[] because the export feed does not provide symbols.
+
+    Raises RuntimeError on HTTP errors (status >= 400) or if the response
+    cannot be decoded as UTF‑8.
+    """
+    if not url:
+        return []
+    try:
+        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=20)
+    except Exception as e:
+        raise RuntimeError(f"finviz_export_fetch_error: {e}") from e
+    if resp.status_code >= 500:
+        raise RuntimeError(f"finviz_export_server_error status={resp.status_code}")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"finviz_export_http status={resp.status_code}")
+    try:
+        text = resp.content.decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        raise RuntimeError(f"finviz_export_decode_error: {e}") from e
+    out: list[dict] = []
+    rdr = csv.DictReader(StringIO(text))
+    for row in rdr:
+        if not row:
+            continue
+        # Normalise header keys (strip BOM, lower case, strip whitespace)
+        low: dict[str, str] = {}
+        for k, v in row.items():
+            if k is None:
+                continue
+            k2 = str(k).lstrip("\ufeff").strip().lower()
+            if k2:
+                low[k2] = v
+        title = (low.get("title") or low.get("headline") or "").strip()
+        link = (low.get("url") or low.get("link") or "").strip()
+        ts = (low.get("date") or low.get("datetime") or "").strip()
+        # Skip rows without a title or link
+        if not title or not link:
+            continue
+        item = {
+            "source": "finviz_export",
+            "title": title,
+            "summary": "",  # export feed has no summary
+            "link": link,
+            "id": _hash_id(f"finviz_export::{link}"),
+            "ts": _parse_finviz_ts(ts) if ts else None,
+            "ticker": None,
+            "tickers": [],
+        }
+        out.append(item)
+    return out
 
 
 # ---------------------------------------------------------------------------

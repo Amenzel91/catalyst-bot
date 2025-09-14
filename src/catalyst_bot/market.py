@@ -166,13 +166,92 @@ def _alpha_last_prev(
         return None, None
 
 
+# ---------------------------------------------------------------------------
+# Tiingo price fetcher
+#
+# When enabled via FEATURE_TIINGO and a non‑empty TIINGO_API_KEY, Tiingo is
+# consulted first for real‑time last price and previous close. The Tiingo IEX
+# endpoint returns a JSON array of quote objects; we extract the ``last`` (or
+# ``tngoLast``) and ``prevClose`` fields. On any error or missing data,
+# (None, None) is returned without raising.
+def _tiingo_last_prev(
+    ticker: str, api_key: str, *, timeout: int = 8
+) -> Tuple[Optional[float], Optional[float]]:
+    """Return (last, previous_close) using Tiingo IEX API.
+
+    This helper attempts to fetch the most recent trade price and previous close
+    from the Tiingo IEX endpoint. It gracefully handles network errors,
+    unexpected response formats and absent fields by returning (None, None).
+    """
+    try:
+        # Build the request; Tiingo requires a token parameter.
+        url = f"https://api.tiingo.com/iex/{ticker.strip().upper()}"
+        params = {"token": api_key.strip()}
+        r = requests.get(url, params=params, timeout=timeout)
+        if r.status_code != 200:
+            return None, None
+        data = r.json()
+        # The response may be a list of quote objects or a single object.
+        q: Dict[str, float] = {}  # type: ignore
+        if isinstance(data, list):
+            if not data:
+                return None, None
+            # take the first record
+            q = data[0] or {}
+        elif isinstance(data, dict):
+            q = data
+        else:
+            return None, None
+        # Extract last price (multiple possible field names)
+        last_candidates = [
+            q.get("last"),
+            q.get("tngoLast"),
+            q.get("lastSalePrice"),
+            q.get("close"),
+            q.get("adjClose"),
+        ]
+        prev_candidates = [
+            q.get("prevClose"),
+            q.get("previousClose"),
+            q.get("priorClose"),
+            q.get("prevclose"),
+        ]
+        last_val: Optional[float] = None
+        prev_val: Optional[float] = None
+        for cand in last_candidates:
+            try:
+                if cand not in (None, "", "0", "0.0"):
+                    last_val = float(cand)
+                    break
+            except Exception:
+                continue
+        for cand in prev_candidates:
+            try:
+                if cand not in (None, "", "0", "0.0"):
+                    prev_val = float(cand)
+                    break
+            except Exception:
+                continue
+        return last_val, prev_val
+    except Exception:
+        return None, None
+
+
 def get_last_price_snapshot(
     ticker: str, retries: int = 2
 ) -> Tuple[Optional[float], Optional[float]]:
     """
-    Best-effort last price and previous close.
-    Order: Alpha Vantage (if key present) → yfinance fallback.
-    Returns (last_price, previous_close); either may be None. Never raises.
+    Return the best‑effort last traded price and previous close for a ticker.
+
+    This implementation honours the MARKET_PROVIDER_ORDER setting to select
+    providers.  Supported identifiers include ``tiingo`` (Tiingo IEX API),
+    ``av`` or ``alpha`` (Alpha Vantage), and ``yf`` or ``yahoo`` (yfinance).
+    Values are tried in the order provided; missing values from earlier
+    providers may be filled by later ones.  Telemetry is logged to record
+    which provider responded along with the latency and whether any values
+    were returned.  On any exception or missing provider, the function
+    continues to the next provider.  It never raises and returns
+    ``(last, prev)`` where either component may be ``None``.
     """
     nt = _norm_ticker(ticker)
     if not nt:
@@ -180,57 +259,148 @@ def get_last_price_snapshot(
     last: Optional[float] = None
     prev: Optional[float] = None
 
-    # 1) Alpha Vantage primary (if configured)
-    if _AV_KEY and not _SKIP_ALPHA:
-        # Use the cached Alpha Vantage wrapper to avoid repeated API calls.
-        for attempt in range(retries + 1):
-            a_last, a_prev = _alpha_last_prev_cached(nt, _AV_KEY)
-            # Take what we can get (sometimes prev is missing temporarily)
-            if a_last is not None:
-                last = a_last
-            if a_prev is not None:
-                prev = a_prev
-            if last is not None and prev is not None:
-                return last, prev
-            time.sleep(0.35 * (attempt + 1))
+    # Resolve settings lazily to avoid circular imports in tests
+    try:
+        settings = get_settings()
+    except Exception:
+        settings = None  # pragma: no cover
 
-    # 2) yfinance fallback
-    if yf is None:
-        log.info("yf_missing skip_price_lookup")
-        return last, prev
+    # Determine provider order
+    order_str = None
+    if settings is not None:
+        order_str = getattr(settings, "market_provider_order", None)
+    if not order_str:
+        order_str = "tiingo,av,yf"
+    providers = [p.strip().lower() for p in str(order_str).split(",") if p.strip()]
 
-    t = yf.Ticker(nt)
-    for attempt in range(retries + 1):
+    # Helper to log telemetry
+    def _log_provider(
+        provider: str,
+        t0: float,
+        l: Optional[float],
+        p: Optional[float],
+        error: Optional[str] = None,
+    ) -> None:
         try:
-            # Fast path via fast_info (attribute or dict-like)
-            fi = getattr(t, "fast_info", None)
-            if fi is not None:
-                last = last or _fi_get(fi, "last_price")
-                prev = prev or _fi_get(fi, "previous_close")
-
-            # Fallback: tiny 1d/2d history scrape
-            if last is None or prev is None:
-                hist = t.history(period="2d", interval="1d", auto_adjust=False)
-                if not hist.empty:
-                    last = float(hist["Close"].iloc[-1])
-                    if len(hist) >= 2:
-                        prev = float(hist["Close"].iloc[-2])
-                    else:
-                        info = getattr(t, "info", None)
-                        if isinstance(info, dict):
-                            pv = info.get("previousClose") or info.get(
-                                "regularMarketPreviousClose"
-                            )
-                            if pv is not None:
-                                try:
-                                    prev = float(pv)
-                                except Exception:
-                                    pass
-            return last, prev
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            status = "ok" if (l is not None or p is not None) else (error or "no_data")
+            log.info(
+                "provider_usage provider=%s t_ms=%.1f status=%s",
+                provider,
+                elapsed,
+                status,
+            )
         except Exception:
-            if attempt >= retries:
-                return last, prev
-            time.sleep(0.4 * (attempt + 1))
+            # logging should never cause failures
+            pass
+
+    # Try each provider in order
+    for prov in providers:
+        pname = prov.lower()
+        if pname in {"tiingo", "tngo"}:
+            # Only consult Tiingo when feature flag and key present
+            use_tiingo = False
+            key = ""
+            if settings is not None:
+                use_tiingo = bool(getattr(settings, "feature_tiingo", False))
+                key = getattr(settings, "tiingo_api_key", "") or ""
+            if use_tiingo and key:
+                for attempt in range(retries + 1):
+                    t0 = time.perf_counter()
+                    try:
+                        t_last, t_prev = _tiingo_last_prev(nt, key)
+                        # update values if present
+                        if t_last is not None:
+                            last = t_last
+                        if t_prev is not None:
+                            prev = t_prev
+                        _log_provider("tiingo", t0, t_last, t_prev)
+                        # Break early if both populated
+                        if last is not None and prev is not None:
+                            return last, prev
+                    except Exception as e:
+                        _log_provider(
+                            "tiingo", t0, None, None, error=str(e.__class__.__name__)
+                        )
+                    # small backoff before next attempt
+                    time.sleep(0.35 * (attempt + 1))
+            continue
+
+        if pname in {"av", "alpha", "alphavantage", "alpha_vantage"}:
+            # Skip alpha when no key or skip flag
+            if not _AV_KEY or _SKIP_ALPHA:
+                continue
+            for attempt in range(retries + 1):
+                t0 = time.perf_counter()
+                try:
+                    a_last, a_prev = _alpha_last_prev_cached(nt, _AV_KEY)
+                    if a_last is not None:
+                        last = a_last
+                    if a_prev is not None:
+                        prev = a_prev
+                    _log_provider("alpha", t0, a_last, a_prev)
+                    if last is not None and prev is not None:
+                        return last, prev
+                except Exception as e:
+                    _log_provider(
+                        "alpha", t0, None, None, error=str(e.__class__.__name__)
+                    )
+                time.sleep(0.35 * (attempt + 1))
+            continue
+
+        if pname in {"yf", "yahoo", "yfinance"}:
+            # yfinance fallback; if missing, log and skip
+            if yf is None:
+                log.info("yf_missing skip_price_lookup")
+                continue
+            t = yf.Ticker(nt)
+            for attempt in range(retries + 1):
+                t0 = time.perf_counter()
+                try:
+                    # Use fast_info to fill missing values; only update missing slots
+                    fi = getattr(t, "fast_info", None)
+                    if fi is not None:
+                        if last is None:
+                            candidate = _fi_get(fi, "last_price")
+                            if candidate is not None:
+                                last = candidate
+                        if prev is None:
+                            candidate = _fi_get(fi, "previous_close")
+                            if candidate is not None:
+                                prev = candidate
+                    # If still missing, fetch small history and override both values
+                    if last is None or prev is None:
+                        hist = t.history(period="2d", interval="1d", auto_adjust=False)
+                        if not getattr(hist, "empty", False):
+                            try:
+                                close_series = hist["Close"]
+                                last = float(close_series.iloc[-1])
+                                if len(hist) >= 2:
+                                    prev = float(close_series.iloc[-2])
+                                else:
+                                    info = getattr(t, "info", None)
+                                    if isinstance(info, dict):
+                                        pv = info.get("previousClose") or info.get(
+                                            "regularMarketPreviousClose"
+                                        )
+                                        if pv is not None:
+                                            try:
+                                                prev = float(pv)
+                                            except Exception:
+                                                pass
+                            except Exception:
+                                pass
+                    _log_provider("yf", t0, last, prev)
+                    # Regardless of completeness, break after one attempt
+                    break
+                except Exception as e:
+                    _log_provider("yf", t0, None, None, error=str(e.__class__.__name__))
+                    if attempt >= retries:
+                        break
+                    time.sleep(0.4 * (attempt + 1))
+            # Do not break outer loop; yfinance is typically last provider
+            continue
+    # After trying all providers, return whatever we collected (may be None)
     return last, prev
 
 
@@ -250,6 +420,63 @@ def get_last_price_change(
     return last, chg_pct
 
 
+# ---------------------------------------------------------------------------
+# Alpaca streaming (optional booster)
+#
+# When FEATURE_ALPACA_STREAM is enabled and valid credentials are provided,
+# the runner may subscribe to Alpaca’s free IEX data feed for a short
+# window after sending an alert.  This helper is a stub implementation that
+# logs the intent to subscribe and waits for the configured sample window.
+
+
+def sample_alpaca_stream(tickers: list[str] | tuple[str, ...], secs: int) -> None:
+    """Sample Alpaca IEX stream for the given tickers for up to ``secs`` seconds.
+
+    This function is a no‑op stub that logs when streaming starts and ends.
+    In a production environment, this would open a websocket to Alpaca’s
+    market data endpoint and stream real‑time quotes.  To avoid blocking
+    the main thread, consider invoking this helper in a background thread.
+
+    Parameters
+    ----------
+    tickers : list or tuple of str
+        Tickers to subscribe to.
+    secs : int
+        Duration of the subscription window in seconds.  Values less than or
+        equal to zero result in an immediate return.
+    """
+    try:
+        secs_int = int(secs) if secs is not None else 0
+    except Exception:
+        secs_int = 0
+    if not tickers or secs_int <= 0:
+        return
+    # Normalize and join tickers for logging
+    tickers_list = [str(t).strip().upper() for t in tickers if t]
+    try:
+        log.info(
+            "alpaca_stream_start tickers=%s secs=%s",
+            ",".join(tickers_list),
+            secs_int,
+        )
+    except Exception:
+        pass
+    # Sleep for the requested duration (clamped to 30s); in real usage this
+    # would run asynchronously.
+    try:
+        wait_time = min(max(secs_int, 0), 30)
+        time.sleep(wait_time)
+    except Exception:
+        pass
+    try:
+        log.info(
+            "alpaca_stream_end tickers=%s",
+            ",".join(tickers_list),
+        )
+    except Exception:
+        pass
+
+
 # Public API of this module (explicit export list)
 __all__ = [
     "NewsItem",
@@ -260,6 +487,7 @@ __all__ = [
     "get_intraday",
     "get_intraday_snapshots",
     "get_intraday_indicators",
+    "sample_alpaca_stream",
 ]
 
 # ---------------------------------------------------------------------------

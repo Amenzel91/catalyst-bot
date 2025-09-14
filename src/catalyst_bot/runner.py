@@ -12,6 +12,7 @@ import random
 import re
 import signal
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -60,6 +61,7 @@ from .analyzer import run_analyzer_once_if_scheduled
 from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .logging_utils import get_logger, setup_logging
+from .market import sample_alpaca_stream
 
 try:
     import yfinance as yf  # type: ignore
@@ -698,6 +700,26 @@ def _cycle(log, settings) -> None:
             if jitter_ms > 0:
                 time.sleep(max(0.0, min(jitter_ms, 1000)) / 1000.0 * random.random())
 
+            # Optional: subscribe to Alpaca stream after sending an alert.  Run
+            # asynchronously so we do not block the runner loop.  The feature
+            # requires FEATURE_ALPACA_STREAM=1, valid credentials and a non‑zero
+            # stream_sample_window_sec.  Use getattr on settings to avoid
+            # resolving when not needed.
+            try:
+                if getattr(settings, "feature_alpaca_stream", False):
+                    win_secs = getattr(settings, "stream_sample_window_sec", 0) or 0
+                    if win_secs and ticker:
+                        # Spawn a daemon thread to sample the stream; pass the
+                        # ticker in a list.  The helper will handle sleeping.
+                        threading.Thread(
+                            target=sample_alpaca_stream,
+                            args=([ticker], win_secs),
+                            daemon=True,
+                        ).start()
+            except Exception:
+                # Ignore all streaming errors
+                pass
+
             # Optional: stop early if we hit the cap
             if max_alerts_per_cycle > 0 and alerted >= max_alerts_per_cycle:
                 log.info("alert_cap_reached cap=%s", max_alerts_per_cycle)
@@ -807,12 +829,17 @@ def runner_main(
 
         # Optional: poll approval marker → promote analyzer plan (no-op if disabled)
         try:
-            if (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }:
+            # Determine approval loop via settings or env fallback
+            enable_loop = False
+            try:
+                enable_loop = getattr(settings, "feature_approval_loop", False)
+            except Exception:
+                enable_loop = False
+            if not enable_loop:
+                env_val = (os.getenv("FEATURE_APPROVAL_LOOP", "") or "").strip().lower()
+                if env_val in {"1", "true", "yes", "on"}:
+                    enable_loop = True
+            if enable_loop:
                 from .approval import promote_if_approved
 
                 promoted = promote_if_approved()

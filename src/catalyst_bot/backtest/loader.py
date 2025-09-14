@@ -12,14 +12,18 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+
+# Note: avoid importing ``Dict`` here because this module does not refer to it
+# directly.  Importing unused type names can lead to flake8 (F821) warnings
+# when type annotations are evaluated lazily under ``from __future__ import annotations``.
+from typing import Iterable, List, Optional
 
 import pandas as pd
 
 from ..market import get_intraday
 
 
-def load_events(path: str) -> List[Dict]:
+def load_events(path: str) -> List[dict]:
     """Load a list of event dicts from a newline‑delimited JSON file.
 
     Parameters
@@ -33,7 +37,7 @@ def load_events(path: str) -> List[Dict]:
     list of dict
         All parsed events. Invalid JSON lines are skipped silently.
     """
-    events: List[Dict] = []
+    events: List[dict] = []
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -84,8 +88,8 @@ def load_price_history(
 
 
 def get_event_window(
-    events: Iterable[Dict], *, start_date: datetime, end_date: datetime
-) -> List[Dict]:
+    events: Iterable[dict], *, start_date: datetime, end_date: datetime
+) -> List[dict]:
     """Filter events within a date range [start_date, end_date].
 
     Parameters
@@ -102,7 +106,10 @@ def get_event_window(
     list of dict
         Events whose timestamp falls within the specified date range.
     """
-    window: List[Dict] = []
+    # Use builtin ``dict`` in type annotations to avoid requiring an explicit
+    # ``Dict`` import.  Flake8 (F821) can complain if ``Dict`` is not defined
+    # when type annotations are evaluated with ``from __future__ import annotations``.
+    window: List[dict] = []
     for ev in events:
         ts = ev.get("ts")
         if not ts:

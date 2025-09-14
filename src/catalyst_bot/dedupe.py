@@ -159,6 +159,43 @@ class FirstSeenIndex:
         self._conn.commit()
 
 
+# --------------------------------------------------------------------------
+# Schema migration helpers
+#
+# To support database initialization from standalone scripts (e.g., jobs/db_init.py),
+# expose a simple migration function that creates the required table when
+# invoked on a connection.  This avoids having to instantiate a FirstSeenIndex
+# purely for schema setup.
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Ensure the first_seen_index table exists.
+
+    This function creates the ``first_seen_index`` table if it is missing and
+    commits the transaction.  It is safe to call multiple times.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        An open SQLite connection.  WAL mode should be configured by the
+        caller prior to migration if desired.
+    """
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS first_seen_index("
+            "signature TEXT PRIMARY KEY,"
+            "id TEXT,"
+            "ts INTEGER,"
+            "source TEXT,"
+            "link TEXT,"
+            "weight REAL)"
+        )
+        conn.commit()
+    except Exception:
+        # swallow errors silently to prevent initialization failure
+        pass
+
+
 # If your file does not already define signature_from(), add this minimal helper:
 try:
     signature_from  # type: ignore[name-defined]
