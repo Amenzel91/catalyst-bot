@@ -1,9 +1,12 @@
 # src/catalyst_bot/logging_utils.py
 import json
 import logging
+import logging.handlers
 import sys
 import time
 from typing import Any, Dict
+
+from .config import get_settings
 
 # Keys commonly present on a LogRecord that we don't want to echo as "extra"
 _EXCLUDE_KEYS = {
@@ -41,6 +44,17 @@ def _jsonify(value: Any) -> Any:
 
 
 def setup_logging(level: str = "INFO") -> None:
+    """Configure logging for Catalyst‑Bot.
+
+    When LOG_PLAIN is set to 1 in the environment (see Settings.log_plain), the
+    console output will use a human‑readable single‑line format with colourised
+    levels.  Regardless of this setting, a JSON log will be written to a
+    rotating file in ``data/logs`` for downstream consumption.  If LOG_PLAIN
+    is unset (the default), console logs will continue to use the JSON
+    formatter.  The log level can be customised via the ``level`` argument or
+    via the ``LOG_LEVEL`` environment variable.
+    """
+
     class JsonFormatter(logging.Formatter):
         def format(self, record: logging.LogRecord) -> str:
             base: Dict[str, Any] = {
@@ -53,22 +67,73 @@ def setup_logging(level: str = "INFO") -> None:
             for k, v in record.__dict__.items():
                 if k not in _EXCLUDE_KEYS and k not in base and not k.startswith("_"):
                     base[k] = _jsonify(v)
-
             if record.exc_info:
                 try:
                     base["exc"] = self.formatException(record.exc_info)
                 except Exception:
                     base["exc"] = "unavailable"
-
-            # Keep logs compact and machine friendly
             return json.dumps(base, ensure_ascii=False)
 
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
+    class PlainFormatter(logging.Formatter):
+        """Human‑readable single‑line log formatter with colourised levels."""
+
+        # ANSI colour codes for different log levels
+        LEVEL_COLOURS = {
+            "DEBUG": "\033[36m",  # cyan
+            "INFO": "\033[32m",  # green
+            "WARNING": "\033[33m",  # yellow
+            "ERROR": "\033[31m",  # red
+            "CRITICAL": "\033[35m",  # magenta
+        }
+        RESET = "\033[0m"
+
+        def format(self, record: logging.LogRecord) -> str:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            level = record.levelname
+            name = record.name
+            msg = record.getMessage()
+            # Build extras string from non‑excluded keys
+            extras: list[str] = []
+            for k, v in record.__dict__.items():
+                if k not in _EXCLUDE_KEYS and not k.startswith("_"):
+                    extras.append(f"{k}={_jsonify(v)}")
+            extra_str = " " + " ".join(extras) if extras else ""
+            colour = self.LEVEL_COLOURS.get(level, "")
+            reset = self.RESET if colour else ""
+            return f"{ts} {colour}{level:<8}{reset} {name}: {msg}{extra_str}"
+
+    settings = get_settings()
+    # Determine desired log level (environment overrides function argument)
+    env_level = settings.log_level or level
+    level_upper = (env_level or level or "INFO").upper()
+
+    # Configure root logger
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
-    root.setLevel((level or "INFO").upper())
+    root.setLevel(level_upper)
+
+    # Ensure logs directory exists for file output
+    try:
+        log_dir = settings.data_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Write JSON logs to a rotating file for ingestion
+        file_path = log_dir / "bot.jsonl"
+        file_handler = logging.handlers.RotatingFileHandler(
+            file_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        file_handler.setFormatter(JsonFormatter())
+        root.addHandler(file_handler)
+    except Exception:
+        # If file handler fails (e.g. unwritable directory), fall back silently
+        pass
+
+    # Configure console handler: plain or JSON based on LOG_PLAIN flag
+    stream_handler = logging.StreamHandler(sys.stdout)
+    if settings.log_plain:
+        stream_handler.setFormatter(PlainFormatter())
+    else:
+        stream_handler.setFormatter(JsonFormatter())
+    root.addHandler(stream_handler)
 
 
 def get_logger(name: str) -> logging.Logger:

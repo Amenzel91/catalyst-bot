@@ -24,39 +24,103 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS finviz_screener_snapshots (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          captured_at INTEGER NOT NULL,
-          screen_key TEXT NOT NULL,
-          ticker TEXT,
-          price REAL,
-          change REAL,
-          relvolume REAL,
-          raw_json TEXT NOT NULL
-        );
+    """Create tables and indexes for the market database if missing.
 
-        CREATE INDEX IF NOT EXISTS idx_finviz_snap_time ON finviz_screener_snapshots(captured_at);
-        CREATE INDEX IF NOT EXISTS idx_finviz_snap_ticker ON finviz_screener_snapshots(ticker);
+    This migration is idempotent: it will not fail if the tables already
+    exist.  It is designed to tolerate older schemas that may be
+    missing columns referenced by the indexes.  Any errors encountered
+    during index creation are suppressed to avoid breaking the caller.
 
-        CREATE TABLE IF NOT EXISTS finviz_filings (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          captured_at INTEGER NOT NULL,
-          ticker TEXT NOT NULL,
-          form TEXT,
-          filing_date TEXT,
-          title TEXT,
-          link TEXT,
-          raw_json TEXT NOT NULL,
-          UNIQUE(ticker, form, filing_date, title) ON CONFLICT IGNORE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_finviz_filings_time ON finviz_filings(captured_at);
-        CREATE INDEX IF NOT EXISTS idx_finviz_filings_ticker ON finviz_filings(ticker);
-        """
-    )
-    conn.commit()
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        An open SQLite connection.  The caller is responsible for
+        closing the connection.
+    """
+    # Create the finviz_screener_snapshots table with the latest schema.
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS finviz_screener_snapshots (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              captured_at INTEGER NOT NULL,
+              screen_key TEXT NOT NULL,
+              ticker TEXT,
+              price REAL,
+              change REAL,
+              relvolume REAL,
+              raw_json TEXT NOT NULL
+            );
+            """
+        )
+    except Exception:
+        # If the table exists with a different schema, ignore the error.
+        pass
+    # Create indexes on finviz_screener_snapshots.  Suppress errors if
+    # the columns are missing in older schemas.
+    try:
+        # Define SQL separately to keep line lengths within 100 characters.
+        sql_time_idx = (
+            "CREATE INDEX IF NOT EXISTS idx_finviz_snap_time "
+            "ON finviz_screener_snapshots(captured_at);"
+        )
+        conn.execute(sql_time_idx)
+    except sqlite3.OperationalError:
+        # Older schemas may not have the captured_at column; skip index creation.
+        pass
+    except Exception:
+        pass
+    try:
+        sql_ticker_idx = (
+            "CREATE INDEX IF NOT EXISTS idx_finviz_snap_ticker "
+            "ON finviz_screener_snapshots(ticker);"
+        )
+        conn.execute(sql_ticker_idx)
+    except sqlite3.OperationalError:
+        # Column may be missing in legacy schemas.
+        pass
+    except Exception:
+        pass
+    # Create the finviz_filings table.
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS finviz_filings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              captured_at INTEGER NOT NULL,
+              ticker TEXT NOT NULL,
+              form TEXT,
+              filing_date TEXT,
+              title TEXT,
+              link TEXT,
+              raw_json TEXT NOT NULL,
+              UNIQUE(ticker, form, filing_date, title) ON CONFLICT IGNORE
+            );
+            """
+        )
+    except Exception:
+        pass
+    # Create indexes on finviz_filings.  Ignore errors if columns are missing.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_finviz_filings_time ON finviz_filings(captured_at);"
+        )
+    except sqlite3.OperationalError:
+        pass
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_finviz_filings_ticker ON finviz_filings(ticker);"
+        )
+    except sqlite3.OperationalError:
+        pass
+    except Exception:
+        pass
+    try:
+        conn.commit()
+    except Exception:
+        pass
 
 
 def now_ts() -> int:
