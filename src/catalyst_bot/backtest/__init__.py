@@ -7,4 +7,6 @@ and serves as a scaffold for future enhancements. See loader.py and
 simulator.py for details.
 """
 
-__all__ = ["loader", "simulator"]
+# Export top‑level submodules for ease of access.  ``scraper`` is new in
+# Phase‑C Patch 14 and provides a CLI for historical event filtering.
+__all__ = ["loader", "simulator", "scraper"]
