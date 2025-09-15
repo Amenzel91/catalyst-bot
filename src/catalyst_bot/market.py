@@ -24,6 +24,11 @@ try:
 except Exception:  # pragma: no cover
     yf = None  # type: ignore
 
+# Pandas is used for calculating momentum indicators when requested.  The
+# computation functions below will import pandas and yfinance lazily as
+# needed.  Do not import pandas at module load time to keep startup
+# overhead minimal.
+
 # ---------------------------------------------------------------------------
 # Alpha Vantage caching
 #
@@ -785,6 +790,137 @@ def get_intraday_indicators(
             out["vwap"] = vwap
         if rsi14 is not None:
             out["rsi14"] = rsi14
+        return out
+    except Exception:
+        return {}
+
+
+def get_momentum_indicators(
+    ticker: str, *, target_date: Optional["datetime.date"] = None
+) -> Dict[str, Optional[float]]:
+    """
+    Compute additional momentum indicators (MACD, EMA crossovers and VWAP
+    delta) from 1‑minute bars using yfinance.  The returned dictionary
+    contains the following keys when successful:
+
+    - ``macd``: the latest MACD value (EMA12 – EMA26).
+    - ``macd_signal``: the latest 9‑period signal line value.
+    - ``macd_cross``: +1 when the MACD crosses above the signal line on
+      the most recent bar, −1 when it crosses below, and 0 otherwise.
+    - ``ema9``: the latest 9‑period exponential moving average.
+    - ``ema21``: the latest 21‑period exponential moving average.
+    - ``ema_cross``: +1 when the 9 EMA crosses above the 21 EMA on the
+      most recent bar, −1 when it crosses below, and 0 otherwise.
+    - ``vwap_delta``: the difference between the last close and VWAP.
+
+    This helper respects the ``feature_momentum_indicators`` flag.  It
+    returns an empty dictionary when disabled, when data is unavailable
+    or when any errors occur.  Indicators are computed without raising
+    exceptions.
+    """
+    try:
+        s = get_settings()
+        # Require both indicators and momentum flags to be enabled
+        if not (
+            getattr(s, "feature_indicators", False)
+            and getattr(s, "feature_momentum_indicators", False)
+        ):
+            return {}
+    except Exception:
+        return {}
+    if yf is None:
+        return {}
+    nt = _norm_ticker(ticker)
+    if not nt:
+        return {}
+    try:
+        if target_date is None:
+            target_date = datetime.now().date()
+        # Pull the last two days to compute EMAs and MACD with enough history
+        df = yf.download(
+            nt,
+            start=(target_date - timedelta(days=3)).strftime("%Y-%m-%d"),
+            end=(target_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+            interval="1m",
+            prepost=True,
+            auto_adjust=False,
+            progress=False,
+        )
+        if df is None or getattr(df, "empty", False):
+            return {}
+        # Normalize columns
+        cols = {c.lower(): c for c in df.columns}
+        close = df[cols.get("close", "Close")]  # type: ignore[index]
+        vol = df[cols.get("volume", "Volume")]  # type: ignore[index]
+
+        out: Dict[str, Optional[float]] = {}
+        # VWAP delta: last close minus VWAP
+        try:
+            vwap = (close * vol).cumsum() / vol.cumsum()
+            last_close = float(close.iloc[-1])
+            vwap_val = float(vwap.iloc[-1]) if not vwap.isna().iloc[-1] else None
+            if vwap_val is not None:
+                out["vwap_delta"] = last_close - vwap_val
+        except Exception:
+            pass
+        # EMA9 and EMA21
+        try:
+            ema9 = close.ewm(span=9, adjust=False).mean()
+            ema21 = close.ewm(span=21, adjust=False).mean()
+            ema9_val = float(ema9.iloc[-1]) if ema9.notna().iloc[-1] else None
+            ema21_val = float(ema21.iloc[-1]) if ema21.notna().iloc[-1] else None
+            if ema9_val is not None:
+                out["ema9"] = ema9_val
+            if ema21_val is not None:
+                out["ema21"] = ema21_val
+            # Detect cross on the most recent interval
+            ema_cross = 0
+            try:
+                if len(ema9) >= 2 and len(ema21) >= 2:
+                    prev_diff = ema9.iloc[-2] - ema21.iloc[-2]
+                    curr_diff = ema9.iloc[-1] - ema21.iloc[-1]
+                    if prev_diff < 0 <= curr_diff:
+                        ema_cross = 1
+                    elif prev_diff > 0 >= curr_diff:
+                        ema_cross = -1
+                out["ema_cross"] = ema_cross
+            except Exception:
+                pass
+        except Exception:
+            pass
+        # MACD (12/26 EMAs) and signal
+        try:
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            macd_series = ema12 - ema26
+            signal_series = macd_series.ewm(span=9, adjust=False).mean()
+            macd_val = (
+                float(macd_series.iloc[-1]) if macd_series.notna().iloc[-1] else None
+            )
+            signal_val = (
+                float(signal_series.iloc[-1])
+                if signal_series.notna().iloc[-1]
+                else None
+            )
+            if macd_val is not None:
+                out["macd"] = macd_val
+            if signal_val is not None:
+                out["macd_signal"] = signal_val
+            # Detect MACD cross
+            macd_cross = 0
+            try:
+                if len(macd_series) >= 2 and len(signal_series) >= 2:
+                    prev_diff = macd_series.iloc[-2] - signal_series.iloc[-2]
+                    curr_diff = macd_series.iloc[-1] - signal_series.iloc[-1]
+                    if prev_diff < 0 <= curr_diff:
+                        macd_cross = 1
+                    elif prev_diff > 0 >= curr_diff:
+                        macd_cross = -1
+                out["macd_cross"] = macd_cross
+            except Exception:
+                pass
+        except Exception:
+            pass
         return out
     except Exception:
         return {}
