@@ -199,6 +199,37 @@ class Settings:
     # this flag is off.  Use FEATURE_RICH_ALERTS=1 to turn on chart rendering.
     feature_rich_alerts: bool = _b("FEATURE_RICH_ALERTS", False)
 
+    # --- Quick win: Finviz chart fallback ---
+    # When enabled and rich alerts are disabled or charts are unavailable, the
+    # bot will embed a static daily candlestick chart from Finviz for the
+    # primary ticker on each alert.  This uses Finviz’s public chart API
+    # (charts2.finviz.com) and does not require any additional credentials.
+    # To enable, set FEATURE_FINVIZ_CHART=1 in your environment.
+    feature_finviz_chart: bool = _b("FEATURE_FINVIZ_CHART", False)
+
+    # --- Momentum & QuickChart features ---
+    # When FEATURE_QUICKCHART is enabled, the bot will render intraday
+    # candlestick charts using the QuickChart API.  A Chart.js config
+    # is generated on the fly and passed to the API, which returns a
+    # hosted PNG image.  This avoids embedding large base64 payloads
+    # in Discord messages.  If disabled, the bot falls back to local
+    # chart rendering (FEATURE_RICH_ALERTS) or Finviz static charts.
+    feature_quickchart: bool = _b("FEATURE_QUICKCHART", False)
+
+    # When FEATURE_MOMENTUM_INDICATORS is enabled (in addition to
+    # FEATURE_INDICATORS), the bot will compute MACD, EMA crossovers
+    # and VWAP deltas from intraday data and include these metrics in
+    # alert embeds.  The additional indicators provide traders with
+    # context about momentum and trend strength.  Defaults to false.
+    feature_momentum_indicators: bool = _b("FEATURE_MOMENTUM_INDICATORS", False)
+
+    # When FEATURE_LOCAL_SENTIMENT is enabled, a fallback sentiment
+    # score will be computed using the VADER sentiment analyser for each
+    # headline.  This score will be displayed in the alert embed
+    # alongside any FMP sentiment value (when available).  Defaults to
+    # false.
+    feature_local_sentiment: bool = _b("FEATURE_LOCAL_SENTIMENT", False)
+
     # --- Phase-C Patch 8: Admin digest & approval loop ---
     # When this flag is enabled, the analyzer will write pending plan files
     # and expect a manual approval before promoting weight adjustments.

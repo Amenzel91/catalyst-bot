@@ -200,6 +200,45 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         min_score = os.getenv("MIN_SCORE", "") or "—"
         min_sent = os.getenv("MIN_SENT_ABS", "") or "—"
         target_label = "admin" if admin_url else "main"
+        # Compose status fields for the heartbeat embed.  Include additional
+        # operational parameters like price ceiling, provider order, watchlist
+        # length and active feature flags for easy diagnostics.
+        # Price ceiling: show numeric value or em dash when unset.
+        price_ceiling = (
+            str(settings.price_ceiling)
+            if getattr(settings, "price_ceiling", None) is not None
+            else "—"
+        )
+        # Watchlist size (only when feature_watchlist=1)
+        watchlist_size = "—"
+        if getattr(settings, "feature_watchlist", False):
+            try:
+                # Lazily import watchlist loader to avoid circular deps
+                from catalyst_bot.watchlist import load_watchlist_set
+
+                wl_path = getattr(settings, "watchlist_csv", None) or ""
+                wl_set = load_watchlist_set(str(wl_path)) if wl_path else set()
+                watchlist_size = str(len(wl_set))
+            except Exception:
+                watchlist_size = "—"
+        # Provider order: comma-separated string or em dash when empty
+        provider_order = getattr(settings, "market_provider_order", "") or "—"
+        # Active feature flags: build a comma-separated list of enabled features
+        feature_map = {
+            "Tiingo": getattr(settings, "feature_tiingo", False),
+            "FMP": getattr(settings, "feature_fmp_sentiment", False),
+            "FinvizExport": getattr(settings, "feature_finviz_news_export", False),
+            "Watchlist": getattr(settings, "feature_watchlist", False),
+            "RichAlerts": getattr(settings, "feature_rich_alerts", False),
+            "Indicators": getattr(settings, "feature_indicators", False),
+            "AdminEmbed": getattr(settings, "feature_admin_embed", False),
+            "ApprovalLoop": getattr(settings, "feature_approval_loop", False),
+            "AlpacaStream": getattr(settings, "feature_alpaca_stream", False),
+            "FinvizChart": getattr(settings, "feature_finviz_chart", False),
+        }
+        active_features = [name for name, enabled in feature_map.items() if enabled]
+        features_value = ", ".join(active_features) if active_features else "—"
+
         payload["embeds"] = [
             {
                 "title": f"Catalyst-Bot heartbeat ({reason})",
@@ -215,6 +254,10 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     {"name": "Skip Sources", "value": skip_sources, "inline": False},
                     {"name": "Min Score", "value": min_score, "inline": True},
                     {"name": "Min |sent|", "value": min_sent, "inline": True},
+                    {"name": "Price Ceiling", "value": price_ceiling, "inline": True},
+                    {"name": "Watchlist", "value": watchlist_size, "inline": True},
+                    {"name": "Providers", "value": provider_order, "inline": True},
+                    {"name": "Features", "value": features_value, "inline": False},
                 ],
                 "footer": {"text": "Catalyst-Bot"},
             }
@@ -421,11 +464,19 @@ def enrich_ticker(entry: dict, item: dict):
 # ---------------- Instrument-like detection (refined) ----------------
 def _is_instrument_like(t: str) -> bool:
     """
-    Heuristic to drop warrants/units/series/etc without nuking legit tickers like DNOW.
+    Heuristic to drop warrants/units/series/OTC tickers without nuking legit tickers like DNOW.
+
     Rules:
-      - Hyphen '-' or caret '^' -> drop
+      - Hyphen '-' or caret '^' => drop (synthetic instruments)
       - A dot '.' is OK **only** for class shares like BRK.A / BF.B
-      - Length >= 5 and endswith one of {'W','WW','WS','WT','U','PU','PD'} -> drop
+        All other dotted symbols are dropped.
+      - Length >= 5 and endswith one of {'W', 'WW', 'WS', 'WT', 'U', 'PU', 'PD'}
+        => drop (warrants/units)
+      - New: 5‑letter symbols ending with 'F' or 'Y' => drop (common OTC/cross‑listed suffixes)
+
+    These heuristics are conservative: they attempt to strip out ticker variants that are
+    unlikely to be tradable on major U.S. brokerages (e.g. Webull, Robinhood) while
+    preserving legitimate class-share tickers.
     """
     if not t:
         return False
@@ -439,10 +490,16 @@ def _is_instrument_like(t: str) -> bool:
         if re.fullmatch(r"[A-Z]{1,4}\.[A-Z]$", u):
             return False
         return True
+    # Warrants/units by suffix or U/E etc
     if len(u) >= 5:
-        if u.endswith(("WW", "WS", "WT", "PU", "PD", "U")):
+        suffixes = ("WW", "WS", "WT", "PU", "PD", "U")
+        if u.endswith(suffixes):
             return True
         if u.endswith("W"):
+            return True
+        # OTC/cross‑listed tickers often end with F or Y (e.g. TDOMF, VODPF).
+        # Filter 5‑letter symbols ending with F or Y to avoid thinly‑traded OTC names.
+        if len(u) == 5 and u[-1] in {"F", "Y"}:
             return True
     return False
 

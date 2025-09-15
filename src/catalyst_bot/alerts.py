@@ -10,10 +10,10 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 import requests
 
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
-from .charts import CHARTS_OK, render_intraday_chart
+from .charts import CHARTS_OK, get_quickchart_url, render_intraday_chart
 from .config import get_settings
 from .logging_utils import get_logger
-from .market import get_intraday_indicators
+from .market import get_intraday_indicators, get_momentum_indicators
 
 log = get_logger("alerts")
 
@@ -612,16 +612,38 @@ def _build_discord_embed(
         price_str = str(last_price)
     chg_str = last_change_pct or ""
 
-    # Score / sentiment (best-effort)
+    # Score / sentiment (best‑effort).  Use classifier scores and, when
+    # available, FMP sentiment and local fallback.
     sc = (scored or {}) if isinstance(scored, dict) else {}
-    sent = (sc.get("sentiment") or sc.get("sent") or "") or "n/a"
+    # Local sentiment from classifier (VADER) or fallback.  Keep as string.
+    local_sent = (sc.get("sentiment") or sc.get("sent") or "") or "n/a"
+    # FMP sentiment attached on the event (from fmp_sentiment.py).  Display as
+    # signed two‑digit value when present; otherwise n/a.  Some FMP feeds use
+    # integer sentiment values scaled 1–5; convert to float when possible.
+    fmp_raw = item_dict.get("sentiment_fmp")
+    if fmp_raw is not None:
+        try:
+            fmp_val = float(fmp_raw)
+            fmp_sent = f"{fmp_val:+.2f}"
+        except Exception:
+            fmp_sent = str(fmp_raw)
+    else:
+        fmp_sent = "n/a"
+    # Overall sentiment: combine local and FMP if both present
+    if fmp_sent != "n/a":
+        sent = f"{local_sent} / {fmp_sent}"
+    else:
+        sent = local_sent
+    # Score from classifier (raw relevance + sentiment)
     score = sc.get("score", sc.get("raw_score", None))
     if isinstance(score, (int, float)):
         score_str = f"{score:.2f}"
     else:
         score_str = "n/a" if score is None else str(score)
 
-    # Color: green for up, red for down; fallback to Discord blurple
+    # Color: green for up, red for down; fallback to Discord blurple.  When
+    # momentum indicators are available, override colour to reflect the
+    # EMA/MACD crossover direction: bullish → green, bearish → red.
     color = 0x5865F2
     try:
         v = str(chg_str).replace("%", "").replace("+", "").strip()
@@ -642,51 +664,172 @@ def _build_discord_embed(
     else:
         reason = str(sc.get("category") or sc.get("why") or "").strip()
 
+    # Compute additional momentum indicators when enabled.  This uses
+    # get_momentum_indicators() which returns a dictionary of values such
+    # as RSI14, MACD, signal line, EMA cross and VWAP delta.  When any
+    # momentum signals are present, we will summarise them in the
+    # embed and adjust the colour accordingly.  Use best‑effort and
+    # ignore errors silently.
+    momentum: Dict[str, Optional[float]] = {}
+    try:
+        s = get_settings()
+        # Only compute when both indicator flags are on and a ticker is present
+        if (
+            getattr(s, "feature_indicators", False)
+            and getattr(s, "feature_momentum_indicators", False)
+            and primary
+        ):
+            momentum = get_momentum_indicators(primary)
+    except Exception:
+        momentum = {}
+
+    # If momentum signals exist, override colour when a cross is detected.
+    try:
+        if momentum:
+            # EMA cross: +1 bullish, -1 bearish
+            ec = momentum.get("ema_cross")
+            mc = momentum.get("macd_cross")
+            # Prefer EMA cross over MACD cross to determine colour
+            sig = None
+            if isinstance(ec, int) and ec != 0:
+                sig = ec
+            elif isinstance(mc, int) and mc != 0:
+                sig = mc
+            if sig:
+                color = 0x2ECC71 if sig > 0 else 0xE74C3C
+    except Exception:
+        pass
+
+    # Build the list of fields.  Combine price and change for a concise layout.
+    fields = []
+    price_change_val = f"{price_str or 'n/a'} / {chg_str or 'n/a'}"
+    fields.append({"name": "Price / Change", "value": price_change_val, "inline": True})
+    fields.append({"name": "Sentiment", "value": sent, "inline": True})
+    fields.append({"name": "Score", "value": score_str, "inline": True})
+    # Summarise momentum indicators when available
+    if momentum:
+        parts: list[str] = []
+        rsi_val = momentum.get("rsi14")
+        if isinstance(rsi_val, (int, float)):
+            # Mark overbought/oversold thresholds
+            tag = ""
+            try:
+                if rsi_val >= 70:
+                    tag = " – Overbought"
+                elif rsi_val <= 30:
+                    tag = " – Oversold"
+            except Exception:
+                tag = ""
+            parts.append(f"RSI14: {rsi_val:.1f}{tag}")
+        # MACD
+        macd_val = momentum.get("macd")
+        macd_sig = momentum.get("macd_signal")
+        macd_cross = momentum.get("macd_cross")
+        if isinstance(macd_val, (int, float)) and isinstance(macd_sig, (int, float)):
+            macd_val - macd_sig
+            cross_note = ""
+            try:
+                if isinstance(macd_cross, int):
+                    if macd_cross > 0:
+                        cross_note = " (Bullish)"
+                    elif macd_cross < 0:
+                        cross_note = " (Bearish)"
+            except Exception:
+                cross_note = ""
+            parts.append(f"MACD: {macd_val:+.2f} vs {macd_sig:+.2f}{cross_note}")
+        # EMA cross
+        ema_cross = momentum.get("ema_cross")
+        if isinstance(ema_cross, int) and ema_cross != 0:
+            ema_str = "Bullish" if ema_cross > 0 else "Bearish"
+            parts.append(f"EMA9/21: {ema_str}")
+        # VWAP delta
+        vwap_d = momentum.get("vwap_delta")
+        if isinstance(vwap_d, (int, float)):
+            sign = "+" if vwap_d >= 0 else ""
+            parts.append(f"VWAP Δ: {sign}{vwap_d:.2f}")
+        if parts:
+            fields.append(
+                {"name": "Indicators", "value": "; ".join(parts), "inline": False}
+            )
+    # Always include source and tickers fields last
+    fields.append({"name": "Source", "value": src or "-", "inline": True})
+    fields.append({"name": "Tickers", "value": tval, "inline": False})
+    # Include reason when available
+    if reason:
+        fields.append({"name": "Reason", "value": reason[:1024], "inline": False})
+
     embed = {
         "title": _deping(f"[{primary or '?'}] {title}")[:256],
         "url": link,
         "color": color,
-        "timestamp": ts,  # ISO-8601 preferred
-        "fields": [
-            {"name": "Price", "value": price_str or "n/a", "inline": True},
-            {"name": "Change", "value": chg_str or "n/a", "inline": True},
-            {"name": "Sentiment", "value": sent, "inline": True},
-            {"name": "Score", "value": score_str, "inline": True},
-            {"name": "Source", "value": src or "-", "inline": True},
-            {"name": "Tickers", "value": tval, "inline": False},
-        ],
+        "timestamp": ts,
+        "fields": fields,
         "footer": {"text": "Catalyst-Bot"},
     }
-    if reason:
-        embed["fields"].append(
-            {"name": "Reason", "value": reason[:1024], "inline": False}
-        )
     # Optionally add intraday indicators (VWAP/RSI14)
     try:
         s = get_settings()
         if getattr(s, "feature_indicators", False) and (item_dict.get("ticker")):
             ind = get_intraday_indicators(str(item_dict.get("ticker")))
             embed = enrich_with_indicators(embed, ind)
-        # Optionally attach an intraday chart when rich alerts are enabled.  Only
-        # render charts when dependencies are available and a ticker is present.
-        if getattr(s, "feature_rich_alerts", False) and CHARTS_OK:
+        # Optionally attach an intraday chart when rich alerts are enabled.
+        # Use QuickChart if FEATURE_QUICKCHART is enabled; otherwise fall
+        # back to local mpl charts.  Only render charts when a ticker is
+        # present.
+        img_attached = False
+        try:
             t = (item_dict.get("ticker") or "").strip()
             if t:
-                try:
-                    chart_path = render_intraday_chart(t)
-                    if (
-                        chart_path
-                        and chart_path.exists()
-                        and chart_path.suffix.lower() in {".png", ".jpg", ".jpeg"}
-                    ):
-                        with chart_path.open("rb") as cf:
-                            bdata = cf.read()
-                        # Encode as base64 data URI (Discord may ignore, but tests can inspect)
-                        b64 = base64.b64encode(bdata).decode("ascii")
-                        embed["image"] = {"url": f"data:image/png;base64,{b64}"}
-                except Exception:
-                    # best-effort: ignore chart rendering errors
-                    pass
+                if getattr(s, "feature_quickchart", False):
+                    # QuickChart integration: fetch a hosted chart URL
+                    try:
+                        qc_url = get_quickchart_url(t)
+                        if qc_url:
+                            embed["image"] = {"url": qc_url}
+                            img_attached = True
+                    except Exception:
+                        pass
+                # Fallback to local chart rendering when rich alerts are on
+                if (
+                    not img_attached
+                    and getattr(s, "feature_rich_alerts", False)
+                    and CHARTS_OK
+                ):
+                    try:
+                        chart_path = render_intraday_chart(t)
+                        if (
+                            chart_path
+                            and chart_path.exists()
+                            and chart_path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+                        ):
+                            with chart_path.open("rb") as cf:
+                                bdata = cf.read()
+                            b64 = base64.b64encode(bdata).decode("ascii")
+                            embed["image"] = {"url": f"data:image/png;base64,{b64}"}
+                            img_attached = True
+                    except Exception:
+                        pass
+                # Finviz static chart fallback when no image attached
+                if (
+                    not img_attached
+                    and (not getattr(s, "feature_rich_alerts", False) or not CHARTS_OK)
+                    and getattr(s, "feature_finviz_chart", False)
+                    and "image" not in embed
+                ):
+                    try:
+                        tt = t.upper()
+                        if tt:
+                            # daily candlestick: ty=c, ta=1, p=d, s=l
+                            finviz_url = (
+                                f"https://charts2.finviz.com/chart.ashx?"
+                                f"t={tt}&ty=c&ta=1&p=d&s=l"
+                            )
+                            embed["image"] = {"url": finviz_url}
+                            img_attached = True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     except Exception:
         pass
     return embed

@@ -49,11 +49,9 @@ import argparse
 import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Sequence
+from typing import Iterator, List, Optional, Sequence
 
 from ..logging_utils import get_logger
-
 
 log = get_logger("backtest.scraper")
 
@@ -97,22 +95,34 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--end",
         default="",
-        help="Exclusive end date (YYYY-MM-DD).  Events on or after this date are excluded.",
+        help=(
+            "Exclusive end date (YYYY-MM-DD). "
+            "Events on or after this date are excluded."
+        ),
     )
     parser.add_argument(
         "--tickers",
         default="",
-        help="Comma-separated list of tickers to include (case-insensitive).  If omitted, all tickers are included.",
+        help=(
+            "Comma-separated list of tickers to include (case-insensitive). "
+            "If omitted, all tickers are included."
+        ),
     )
     parser.add_argument(
         "--sources",
         default="",
-        help="Comma-separated list of source keys to include (case-insensitive).  If omitted, all sources are included.",
+        help=(
+            "Comma-separated list of source keys to include (case-insensitive). "
+            "If omitted, all sources are included."
+        ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="If set, do not write any output file; just report the number of events that would be included.",
+        help=(
+            "If set, do not write any output file; "
+            "just report the number of events that would be included."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -159,7 +169,9 @@ def _str_to_date(s: str) -> Optional[datetime]:
     return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
 
 
-def _event_within_range(ev: dict, start: Optional[datetime], end: Optional[datetime]) -> bool:
+def _event_within_range(
+    ev: dict, start: Optional[datetime], end: Optional[datetime]
+) -> bool:
     """Check whether an event falls within a date range.
 
     Parameters
@@ -185,7 +197,9 @@ def _event_within_range(ev: dict, start: Optional[datetime], end: Optional[datet
     if not ts_val:
         return False
     try:
-        ts = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00")).astimezone(timezone.utc)
+        ts = datetime.fromisoformat(str(ts_val).replace("Z", "+00:00")).astimezone(
+            timezone.utc
+        )
     except Exception:
         return False
     if start and ts < start:
@@ -195,7 +209,11 @@ def _event_within_range(ev: dict, start: Optional[datetime], end: Optional[datet
     return True
 
 
-def _event_matches_filters(ev: dict, tickers: Optional[set[str]], sources: Optional[set[str]]) -> bool:
+def _event_matches_filters(
+    ev: dict,
+    tickers: Optional[set[str]],
+    sources: Optional[set[str]],
+) -> bool:
     """Determine if an event matches ticker/source filters.
 
     Parameters
@@ -251,7 +269,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         events_out.append(ev)
         count_out += 1
     log.info(
-        "read %d events from %s and selected %d within range", count_in, in_path, count_out
+        "read %d events from %s and selected %d within range",
+        count_in,
+        in_path,
+        count_out,
     )
     if args.dry_run:
         print(f"Would write {count_out} events to {out_path}")
