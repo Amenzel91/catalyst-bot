@@ -342,6 +342,36 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
         cfg = _build_quickchart_config(dataset, nt)
         cfg_json = json.dumps(cfg, separators=(",", ":"))
         encoded = urllib.parse.quote(cfg_json, safe="")
-        return f"https://quickchart.io/chart?c={encoded}"
+        # Build base URL
+        base_url = f"https://quickchart.io/chart?c={encoded}"
+        # If URL length exceeds ~1900 characters, attempt to shorten via QuickChart API.
+        # This avoids hitting Discord's message limit and improves readability.
+        try:
+            # Determine threshold from env or default (1900)
+            import os
+
+            threshold = int(os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "1900").strip() or 1900)
+        except Exception:
+            threshold = 1900
+        try:
+            if len(base_url) > threshold:
+                # Use the QuickChart /chart/create endpoint to shorten the config.
+                import requests
+
+                resp = requests.post(
+                    "https://quickchart.io/chart/create",
+                    json={"chart": cfg},
+                    timeout=10,
+                )
+                # Expect JSON {"success": true, "url": "https://..."}
+                if resp.ok:
+                    data = resp.json()
+                    url = data.get("url") or data.get("shortUrl") or None
+                    if isinstance(url, str) and url.startswith("http"):
+                        return url
+        except Exception:
+            # Fall back to original long URL on any failure
+            pass
+        return base_url
     except Exception:
         return None

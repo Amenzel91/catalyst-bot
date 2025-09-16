@@ -1,4 +1,4 @@
-﻿# src/catalyst_bot/feeds.py
+# src/catalyst_bot/feeds.py
 from __future__ import annotations
 
 import csv
@@ -22,6 +22,21 @@ from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_last_price_snapshot, get_volatility
 from .watchlist import load_watchlist_set
+
+# Local sentiment fallback: optional.  If import fails (no module), attach
+# sentiment is a no-op so that pipeline continues smoothly.
+try:
+    from .local_sentiment import attach_local_sentiment  # type: ignore
+except Exception:
+    def attach_local_sentiment(*_args, **_kwargs):  # type: ignore
+        return None
+
+# Breakout scanner: optional importer; fall back to stub when missing
+try:
+    from .scanner import scan_breakouts_under_10  # type: ignore
+except Exception:
+    def scan_breakouts_under_10(*_args, **_kwargs):  # type: ignore
+        return []
 
 # Import FMP sentiment helpers.  These are new in Phase‑C Patch 3.
 try:
@@ -552,6 +567,39 @@ def fetch_pr_feeds() -> List[Dict]:
                     "finviz_export_error err=%s", e.__class__.__name__, exc_info=True
                 )
 
+    # -----------------------------------------------------------------------------
+    # Patch‑2: proactive breakout scanner
+    #
+    # When the breakout scanner feature is enabled, append breakout candidate
+    # events to the list before fetching other feeds.  We treat these like
+    # normal events; deduplication will collapse duplicates.  Failures are
+    # silently ignored.
+    try:
+        settings = get_settings()
+    except Exception:
+        settings = None
+    try:
+        if settings and getattr(settings, "feature_breakout_scanner", False):
+            # Use thresholds from settings; defaults applied in config
+            bv = getattr(settings, "breakout_min_avg_vol", 300000.0)
+            rv = getattr(settings, "breakout_min_relvol", 1.5)
+            # scan_breakouts_under_10 returns a list of event dicts
+            bitems = scan_breakouts_under_10(
+                min_avg_vol=float(bv) if bv is not None else 0.0,
+                min_relvol=float(rv) if rv is not None else 0.0,
+            )
+            if bitems:
+                all_items.extend(bitems)
+                summary.setdefault("by_source", {})
+                summary["by_source"]["breakout_scanner"] = {
+                    "ok": 1,
+                    "entries": len(bitems),
+                    "t_ms": 0.0,
+                }
+    except Exception:
+        # swallow scanner errors; they will be visible in logs if needed
+        pass
+
     for src, url_list in FEEDS.items():
         # Optional single-URL override via env
         if ENV_URL_OVERRIDES.get(src):
@@ -610,6 +658,23 @@ def fetch_pr_feeds() -> List[Dict]:
         fmp_sents = {}
     try:
         attach_fmp_sentiment(all_items, fmp_sents)
+    except Exception:
+        pass
+
+    # -----------------------------------------------------------------
+    # Patch‑2: attach local sentiment when enabled
+    #
+    # If FEATURE_LOCAL_SENTIMENT is on, compute a fallback sentiment score for
+    # each item using the lightweight analyser.  We do this after FMP
+    # sentiment so that both values can co‑exist in the item dict.  All
+    # exceptions are swallowed to avoid interrupting the feed pipeline.
+    try:
+        settings = settings or get_settings()
+    except Exception:
+        settings = None
+    try:
+        if settings and getattr(settings, "feature_local_sentiment", False):
+            attach_local_sentiment(all_items)
     except Exception:
         pass
 

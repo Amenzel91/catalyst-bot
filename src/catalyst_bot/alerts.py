@@ -1,4 +1,4 @@
-﻿# src/catalyst_bot/alerts.py
+# src/catalyst_bot/alerts.py
 from __future__ import annotations
 
 import base64

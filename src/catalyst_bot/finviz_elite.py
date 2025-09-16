@@ -160,19 +160,50 @@ def _parse_csv_rows(text: str) -> List[Dict[str, Any]]:
 
 
 def export_screener(
-    filters: str, auth: Optional[str] = None, view: Optional[str] = None
+    filters: str,
+    auth: Optional[str] = None,
+    view: Optional[str] = None,
+    signal: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Returns normalized rows from screener export.
-    - filters: Finviz filter string (e.g., "f=sh_avgvol_o300,sh_relvol_o1.5")
-    - view: override with FINVIZ_SCREENER_VIEW (try 152 for broader columns)
+    Return normalized rows from a Finviz screener export.
+
+    Parameters
+    ----------
+    filters : str
+        A comma‑separated Finviz filter string (e.g. ``"sh_avgvol_o300,sh_relvol_o1.5"``).
+        Prefix ``f=`` is not required; it will be added automatically.
+    auth : Optional[str], optional
+        Elite authentication token.  If not provided, the environment
+        variables FINVIZ_AUTH_TOKEN or FINVIZ_ELITE_AUTH are used.
+    view : Optional[str], optional
+        Numeric view identifier controlling which columns Finviz returns.  If
+        None, the environment variable FINVIZ_SCREENER_VIEW is consulted
+        (default "152" for a rich set).  See Finviz documentation for
+        available views.
+    signal : Optional[str], optional
+        When provided, include a Finviz ``signal`` parameter in the export
+        request.  Signals allow filtering by technical patterns or market
+        events (e.g. "ta_newhigh" for new highs).  If omitted, no signal
+        filter is applied.  See https://finviz.com/screener.ashx for
+        supported values.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Normalised rows where column names have been transformed to
+        snake‑case keys and numeric values parsed.  An empty list is
+        returned on any error.
     """
-    view = (
-        view or os.getenv("FINVIZ_SCREENER_VIEW", "152").strip()
-    )  # default to 152 for richer set
-    params = {"v": view, "f": filters}
-    resp = _finviz_get(PATH_SCREENER_EXPORT, params, auth=auth)
-    return _parse_csv_rows(resp.text)
+    try:
+        view_id = (view or os.getenv("FINVIZ_SCREENER_VIEW", "152").strip()) or "152"
+        params: Dict[str, Any] = {"v": view_id, "f": filters}
+        if signal:
+            params["s"] = signal
+        resp = _finviz_get(PATH_SCREENER_EXPORT, params, auth=auth)
+        return _parse_csv_rows(resp.text)
+    except Exception:
+        return []
 
 
 def export_latest_filings(
