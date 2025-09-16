@@ -230,6 +230,25 @@ class Settings:
     # false.
     feature_local_sentiment: bool = _b("FEATURE_LOCAL_SENTIMENT", False)
 
+    # --- Patch‑2: Breakout scanner flags and thresholds ---
+    # When enabled, the bot will proactively scan for breakout
+    # candidates using Finviz Elite’s screener export.  The scanner
+    # looks for sub‑$10 tickers with unusually high volume and new highs.
+    # Use FEATURE_BREAKOUT_SCANNER=1 to activate.
+    feature_breakout_scanner: bool = _b("FEATURE_BREAKOUT_SCANNER", False)
+    # Minimum average daily volume (shares) for breakout scanner; values
+    # should be specified as plain integers (e.g. 300000).  Defaults to
+    # 300000 shares.  Use BREAKOUT_MIN_AVG_VOL to override.
+    breakout_min_avg_vol: float = float(
+        os.getenv("BREAKOUT_MIN_AVG_VOL", "300000").strip() or 300000
+    )
+    # Minimum relative volume threshold.  Values greater than 1 indicate
+    # above‑average trading activity.  Defaults to 1.5.  Use
+    # BREAKOUT_MIN_RELVOL to override.
+    breakout_min_relvol: float = float(
+        os.getenv("BREAKOUT_MIN_RELVOL", "1.5").strip() or 1.5
+    )
+
     # --- Phase-C Patch 8: Admin digest & approval loop ---
     # When this flag is enabled, the analyzer will write pending plan files
     # and expect a manual approval before promoting weight adjustments.

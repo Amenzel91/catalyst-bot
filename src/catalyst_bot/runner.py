@@ -62,6 +62,7 @@ from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
+from .seen_store import should_filter  # persistent seen store for cross-run dedupe
 
 try:
     import yfinance as yf  # type: ignore
@@ -73,6 +74,12 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 STOP = False
 _PX_CACHE: Dict[str, Tuple[float, float]] = {}
+
+# Patch‑2: Expose last cycle statistics for heartbeat embeds.  Each cycle
+# updates this mapping with counts of items processed, deduped items,
+# skipped events and alerts sent.  When unset (e.g. before the first
+# cycle), the heartbeat will display dashes instead of numbers.
+LAST_CYCLE_STATS: Dict[str, Any] = {}
 
 
 def _sig_handler(signum, frame):
@@ -204,26 +211,27 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         # operational parameters like price ceiling, provider order, watchlist
         # length and active feature flags for easy diagnostics.
         # Price ceiling: show numeric value or em dash when unset.
-        price_ceiling = (
-            str(settings.price_ceiling)
-            if getattr(settings, "price_ceiling", None) is not None
-            else "—"
-        )
-        # Watchlist size (only when feature_watchlist=1)
-        watchlist_size = "—"
-        if getattr(settings, "feature_watchlist", False):
+        # Price ceiling: show value or infinity symbol when unset (None)
+        if getattr(settings, "price_ceiling", None) is None:
+            price_ceiling = "∞"
+        else:
             try:
-                # Lazily import watchlist loader to avoid circular deps
-                from catalyst_bot.watchlist import load_watchlist_set
-
-                wl_path = getattr(settings, "watchlist_csv", None) or ""
-                wl_set = load_watchlist_set(str(wl_path)) if wl_path else set()
-                watchlist_size = str(len(wl_set))
+                price_ceiling = str(settings.price_ceiling)
             except Exception:
-                watchlist_size = "—"
+                price_ceiling = "—"
+        # Watchlist size: always show a count, even when feature_watchlist=0
+        watchlist_size = "—"
+        try:
+            from catalyst_bot.watchlist import load_watchlist_set
+
+            wl_path = getattr(settings, "watchlist_csv", None) or ""
+            wl_set = load_watchlist_set(str(wl_path)) if wl_path else set()
+            watchlist_size = str(len(wl_set))
+        except Exception:
+            watchlist_size = "—"
         # Provider order: comma-separated string or em dash when empty
         provider_order = getattr(settings, "market_provider_order", "") or "—"
-        # Active feature flags: build a comma-separated list of enabled features
+        # Active feature flags: include QuickChart, Momentum, LocalSentiment and BreakoutScanner
         feature_map = {
             "Tiingo": getattr(settings, "feature_tiingo", False),
             "FMP": getattr(settings, "feature_fmp_sentiment", False),
@@ -231,13 +239,27 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             "Watchlist": getattr(settings, "feature_watchlist", False),
             "RichAlerts": getattr(settings, "feature_rich_alerts", False),
             "Indicators": getattr(settings, "feature_indicators", False),
+            "Momentum": getattr(settings, "feature_momentum_indicators", False),
+            "QuickChart": getattr(settings, "feature_quickchart", False),
+            "FinvizChart": getattr(settings, "feature_finviz_chart", False),
+            "LocalSent": getattr(settings, "feature_local_sentiment", False),
+            "BreakoutScanner": getattr(settings, "feature_breakout_scanner", False),
             "AdminEmbed": getattr(settings, "feature_admin_embed", False),
             "ApprovalLoop": getattr(settings, "feature_approval_loop", False),
             "AlpacaStream": getattr(settings, "feature_alpaca_stream", False),
-            "FinvizChart": getattr(settings, "feature_finviz_chart", False),
         }
         active_features = [name for name, enabled in feature_map.items() if enabled]
         features_value = ", ".join(active_features) if active_features else "—"
+        # Gather last cycle metrics from global state; show dashes when unavailable
+        from .runner import LAST_CYCLE_STATS  # import within function to avoid circulars
+
+        try:
+            items_cnt = str(LAST_CYCLE_STATS.get("items", "—"))
+            dedup_cnt = str(LAST_CYCLE_STATS.get("deduped", "—"))
+            skipped_cnt = str(LAST_CYCLE_STATS.get("skipped", "—"))
+            alerted_cnt = str(LAST_CYCLE_STATS.get("alerts", "—"))
+        except Exception:
+            items_cnt = dedup_cnt = skipped_cnt = alerted_cnt = "—"
 
         payload["embeds"] = [
             {
@@ -258,6 +280,11 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     {"name": "Watchlist", "value": watchlist_size, "inline": True},
                     {"name": "Providers", "value": provider_order, "inline": True},
                     {"name": "Features", "value": features_value, "inline": False},
+                    # Patch‑2: include counts from the most recent cycle
+                    {"name": "Items", "value": items_cnt, "inline": True},
+                    {"name": "Deduped", "value": dedup_cnt, "inline": True},
+                    {"name": "Skipped", "value": skipped_cnt, "inline": True},
+                    {"name": "Alerts", "value": alerted_cnt, "inline": True},
                 ],
                 "footer": {"text": "Catalyst-Bot"},
             }
@@ -622,11 +649,26 @@ def _cycle(log, settings) -> None:
     skipped_low_score = 0
     skipped_sent_gate = 0
     skipped_cat_gate = 0
+    # Track events skipped because they were already seen in a previous cycle.
+    skipped_seen = 0
     alerted = 0
 
     for it in deduped:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
+
+        # Suppress alerts for events we've seen recently (persisted store).  This helps
+        # prevent duplicate notifications across cycles.  The persistent seen store
+        # uses a TTL defined via SEEN_TTL_DAYS/SEEN_TTL_SECONDS and respects the
+        # FEATURE_PERSIST_SEEN flag.  If should_filter() returns True, skip this item.
+        try:
+            item_id = it.get("id") or ""
+            if item_id and should_filter(item_id):
+                skipped_seen += 1
+                continue
+        except Exception:
+            # If the seen store fails, fall through and process normally.
+            pass
 
         # Skip whole sources if configured
         if skip_sources and source in skip_sources:
@@ -786,6 +828,8 @@ def _cycle(log, settings) -> None:
             log.info("alert_skip source=%s ticker=%s", source, ticker)
 
     # Final cycle metrics
+    # Use a single log line for compatibility with upstream monitoring; update
+    # LAST_CYCLE_STATS to expose counts for the heartbeat embed.
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' price_ceiling=%s "
@@ -808,6 +852,28 @@ def _cycle(log, settings) -> None:
         skipped_cat_gate,
         alerted,
     )
+    # Patch‑2: update global cycle stats for heartbeat
+    try:
+        global LAST_CYCLE_STATS
+        skipped_total = (
+            skipped_no_ticker
+            + skipped_price_gate
+            + skipped_instr
+            + skipped_by_source
+            + skipped_low_score
+            + skipped_sent_gate
+            + skipped_cat_gate
+            + skipped_seen
+        )
+        LAST_CYCLE_STATS = {
+            "items": len(items),
+            "deduped": len(deduped),
+            "skipped": skipped_total,
+            "alerts": alerted,
+        }
+    except Exception:
+        # ignore any errors when updating stats
+        pass
 
     # Analyzer: run at the scheduled UTC time (no-op if not time)
     try:

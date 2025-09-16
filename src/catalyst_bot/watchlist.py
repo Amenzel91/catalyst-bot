@@ -86,6 +86,119 @@ def load_watchlist_csv(path: str) -> Dict[str, Dict[str, Optional[str]]]:
         return {}
     return watchlist
 
+# -----------------------------------------------------------------------------
+# Dynamic watchlist helpers
+#
+# Patch‑2 introduces a small API for modifying the watchlist at runtime.  The
+# primary use case is handling Discord slash commands that add or remove
+# tickers without requiring a bot restart.  The helpers below operate on the
+# same CSV format expected by load_watchlist_csv().  They tolerate missing
+# files and attempt to preserve any existing metadata when updating rows.
+
+def _normalise_ticker(sym: str) -> str:
+    """Return a normalised uppercase ticker, or an empty string on failure."""
+    if not sym:
+        return ""
+    return str(sym).strip().upper()
+
+
+def list_watchlist(path: str) -> Set[str]:
+    """Return the set of uppercase tickers contained in ``path``.
+
+    This is a convenience wrapper around load_watchlist_set().  Missing
+    or unreadable files yield an empty set.
+    """
+    try:
+        return load_watchlist_set(path)
+    except Exception:
+        return set()
+
+
+def add_to_watchlist(ticker: str, path: str) -> bool:
+    """Add ``ticker`` to the watchlist CSV located at ``path``.
+
+    Returns True if the ticker was added or already present, False on
+    unrecoverable errors (e.g. file could not be written).  When the CSV
+    does not exist, it will be created with a header row.  Existing
+    metadata for other tickers is preserved.
+    """
+    tick = _normalise_ticker(ticker)
+    if not tick:
+        return False
+    # Load existing entries
+    try:
+        entries = load_watchlist_csv(path)
+    except Exception:
+        entries = {}
+    # If already present, nothing to do
+    if tick in entries:
+        return True
+    # Add a blank metadata dict; preserve order by copying
+    entries[tick] = {}
+    try:
+        # Determine header
+        headers = ["ticker"]
+        # Include optional columns if any entry defines them
+        for meta in entries.values():
+            for k in meta.keys():
+                if k not in headers:
+                    headers.append(k)
+        # Write back to CSV
+        with open(path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            for sym, meta in entries.items():
+                row = {h: "" for h in headers}
+                row["ticker"] = sym
+                # Fill any known metadata
+                for k, v in (meta or {}).items():
+                    if k in headers:
+                        row[k] = v if v is not None else ""
+                writer.writerow(row)
+        return True
+    except Exception:
+        return False
+
+
+def remove_from_watchlist(ticker: str, path: str) -> bool:
+    """Remove ``ticker`` from the watchlist CSV at ``path``.
+
+    Returns True if the ticker was removed or not present, False on
+    unrecoverable errors.  If the resulting list is empty, a header
+    row is still written to keep the file valid.
+    """
+    tick = _normalise_ticker(ticker)
+    if not tick:
+        return False
+    try:
+        entries = load_watchlist_csv(path)
+    except Exception:
+        entries = {}
+    # Remove if present
+    if tick in entries:
+        entries.pop(tick, None)
+    try:
+        # Compute header across remaining entries
+        headers = ["ticker"]
+        for meta in entries.values():
+            for k in meta.keys():
+                if k not in headers:
+                    headers.append(k)
+        # Always write at least the header to maintain a valid CSV
+        with open(path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            writer.writeheader()
+            for sym, meta in entries.items():
+                row = {h: "" for h in headers}
+                row["ticker"] = sym
+                for k, v in (meta or {}).items():
+                    if k in headers:
+                        row[k] = v if v is not None else ""
+                writer.writerow(row)
+        return True
+    except Exception:
+        return False
+
 
 def load_watchlist_set(path: str) -> Set[str]:
     """Load a watchlist CSV and return a set of uppercase tickers.
