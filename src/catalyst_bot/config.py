@@ -249,6 +249,40 @@ class Settings:
         os.getenv("BREAKOUT_MIN_RELVOL", "1.5").strip() or 1.5
     )
 
+    # --- Patch‑5: Watchlist cascade and 52‑week low scanner ---
+    # When enabled, the bot maintains a stateful watchlist where tickers
+    # transition from HOT to WARM to COOL over time.  The state and
+    # timestamps are persisted to ``watchlist_state_file``.  Use
+    # FEATURE_WATCHLIST_CASCADE=1 to turn on this behaviour.
+    feature_watchlist_cascade: bool = _b("FEATURE_WATCHLIST_CASCADE", False)
+    # Durations (in days) for each state before demotion.  HOT tickers
+    # become WARM after watchlist_hot_days; WARM tickers become COOL
+    # after watchlist_hot_days + watchlist_warm_days.  COOL tickers
+    # remain COOL indefinitely.  Defaults: 7/21/60 days.
+    watchlist_hot_days: int = int(os.getenv("WATCHLIST_HOT_DAYS", "7") or "7")
+    watchlist_warm_days: int = int(os.getenv("WATCHLIST_WARM_DAYS", "21") or "21")
+    watchlist_cool_days: int = int(os.getenv("WATCHLIST_COOL_DAYS", "60") or "60")
+    # Path to the JSON file used to persist watchlist cascade state.  If
+    # relative, it is resolved relative to the project root.  Defaults
+    # to ``data/watchlist_state.json``.  Use WATCHLIST_STATE_FILE to
+    # override.
+    watchlist_state_file: str = os.getenv(
+        "WATCHLIST_STATE_FILE", "data/watchlist_state.json"
+    )
+
+    # Flag to enable the 52‑week low scanner.  When true, the bot
+    # proactively scans for tickers trading near their 52‑week lows and
+    # adds them to the watchlist cascade.  Defaults to false.
+    feature_52w_low_scanner: bool = _b("FEATURE_52W_LOW_SCANNER", False)
+    # Distance from the 52‑week low (percentage) considered "near".  A
+    # value of 5 means the price is within 5% above the 52‑week low.
+    # Defaults to 5.
+    low_distance_pct: float = float(os.getenv("LOW_DISTANCE_PCT", "5") or "5")
+    # Minimum average daily volume required for 52‑week low scanner.  Use
+    # LOW_MIN_AVG_VOL=300000 to require at least 300k shares.  Defaults
+    # to 300k shares.
+    low_min_avg_vol: float = float(os.getenv("LOW_MIN_AVG_VOL", "300000") or "300000")
+
     # --- Phase-C Patch 8: Admin digest & approval loop ---
     # When this flag is enabled, the analyzer will write pending plan files
     # and expect a manual approval before promoting weight adjustments.

@@ -603,37 +603,76 @@ def _build_discord_embed(
     tickers = item_dict.get("tickers") or ([tkr] if tkr else [])
     primary = tkr or (tickers[0] if tickers else "")
 
-    # Price / change (treat 0/empty as missing to avoid "$0.00")
+    # Price / change (treat 0/empty as missing to avoid "$0.00").
     if last_price in (None, "", 0, 0.0, "0", "0.0"):
         price_str = "n/a"
     elif isinstance(last_price, (int, float)):
         price_str = f"${last_price:0.2f}"
     else:
         price_str = str(last_price)
-    chg_str = last_change_pct or ""
+    # Format the percentage change using the helper defined in this module.
+    # Use +/-0.00% format when a numeric value is provided; otherwise return "n/a".
+    chg_str = _fmt_change(last_change_pct)
 
     # Score / sentiment (best‑effort).  Use classifier scores and, when
     # available, FMP sentiment and local fallback.
     sc = (scored or {}) if isinstance(scored, dict) else {}
-    # Local sentiment from classifier (VADER) or fallback.  Keep as string.
-    local_sent = (sc.get("sentiment") or sc.get("sent") or "") or "n/a"
+    # Local sentiment: prioritise the discrete label from local sentiment fallback.
+    # We look first for `sentiment_local_label` on the item or scored dict.
+    local_label: str | None = None
+    try:
+        # Prefer a pre‑attached sentiment label on the item.  When
+        # present, this comes from local_sentiment.attach_local_sentiment().
+        lbl_item = item_dict.get("sentiment_local_label")
+        if isinstance(lbl_item, str) and lbl_item:
+            local_label = lbl_item
+    except Exception:
+        pass
+    if not local_label:
+        try:
+            lbl_sc = sc.get("sentiment_local_label")
+            if isinstance(lbl_sc, str) and lbl_sc:
+                local_label = lbl_sc
+        except Exception:
+            pass
+    # Fallback: derive discrete label from the sentiment score if present.
+    if not local_label:
+        local_sent_raw = sc.get("sentiment") or sc.get("sent")
+        if local_sent_raw is not None and local_sent_raw != "n/a":
+            try:
+                # Attempt to convert to float
+                ls_val = float(local_sent_raw)
+                if ls_val >= 0.05:
+                    local_label = "Bullish"
+                elif ls_val <= -0.05:
+                    local_label = "Bearish"
+                else:
+                    local_label = "Neutral"
+            except Exception:
+                # If it's already a string, trust it
+                if isinstance(local_sent_raw, str) and local_sent_raw:
+                    local_label = local_sent_raw
+    # If still None, set to n/a
+    if not local_label:
+        local_label = "n/a"
+
     # FMP sentiment attached on the event (from fmp_sentiment.py).  Display as
-    # signed two‑digit value when present; otherwise n/a.  Some FMP feeds use
+    # signed two‑decimal value when present; otherwise omit.  Some FMP feeds use
     # integer sentiment values scaled 1–5; convert to float when possible.
     fmp_raw = item_dict.get("sentiment_fmp")
+    fmp_sent = None
     if fmp_raw is not None:
         try:
             fmp_val = float(fmp_raw)
             fmp_sent = f"{fmp_val:+.2f}"
         except Exception:
-            fmp_sent = str(fmp_raw)
+            if str(fmp_raw).strip():
+                fmp_sent = str(fmp_raw)
+    # Combine local and FMP sentiment when both available
+    if fmp_sent:
+        sent = f"{local_label} / {fmp_sent}"
     else:
-        fmp_sent = "n/a"
-    # Overall sentiment: combine local and FMP if both present
-    if fmp_sent != "n/a":
-        sent = f"{local_sent} / {fmp_sent}"
-    else:
-        sent = local_sent
+        sent = local_label
     # Score from classifier (raw relevance + sentiment)
     score = sc.get("score", sc.get("raw_score", None))
     if isinstance(score, (int, float)):
@@ -702,7 +741,7 @@ def _build_discord_embed(
 
     # Build the list of fields.  Combine price and change for a concise layout.
     fields = []
-    price_change_val = f"{price_str or 'n/a'} / {chg_str or 'n/a'}"
+    price_change_val = f"{price_str} / {chg_str}"
     fields.append({"name": "Price / Change", "value": price_change_val, "inline": True})
     fields.append({"name": "Sentiment", "value": sent, "inline": True})
     fields.append({"name": "Score", "value": score_str, "inline": True})

@@ -28,15 +28,19 @@ from .watchlist import load_watchlist_set
 try:
     from .local_sentiment import attach_local_sentiment  # type: ignore
 except Exception:
+
     def attach_local_sentiment(*_args, **_kwargs):  # type: ignore
         return None
+
 
 # Breakout scanner: optional importer; fall back to stub when missing
 try:
     from .scanner import scan_breakouts_under_10  # type: ignore
 except Exception:
+
     def scan_breakouts_under_10(*_args, **_kwargs):  # type: ignore
         return []
+
 
 # Import FMP sentiment helpers.  These are new in Phase‑C Patch 3.
 try:

@@ -86,6 +86,7 @@ def load_watchlist_csv(path: str) -> Dict[str, Dict[str, Optional[str]]]:
         return {}
     return watchlist
 
+
 # -----------------------------------------------------------------------------
 # Dynamic watchlist helpers
 #
@@ -94,6 +95,7 @@ def load_watchlist_csv(path: str) -> Dict[str, Dict[str, Optional[str]]]:
 # tickers without requiring a bot restart.  The helpers below operate on the
 # same CSV format expected by load_watchlist_csv().  They tolerate missing
 # files and attempt to preserve any existing metadata when updating rows.
+
 
 def _normalise_ticker(sym: str) -> str:
     """Return a normalised uppercase ticker, or an empty string on failure."""
