@@ -45,8 +45,8 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Tuple
+from datetime import datetime, timezone
+from typing import Dict
 
 STATE_VERSION = 1
 
@@ -168,7 +168,12 @@ def decay_state(
         # Demote state based on thresholds
         if st == "HOT" and hot_days >= 0 and days > hot_days:
             new_meta["state"] = "WARM"
-        elif st == "WARM" and hot_days >= 0 and warm_days >= 0 and days > (hot_days + warm_days):
+        elif (
+            st == "WARM"
+            and hot_days >= 0
+            and warm_days >= 0
+            and days > (hot_days + warm_days)
+        ):
             new_meta["state"] = "COOL"
         # Note: COOL entries stay COOL; removal logic could be added here
         out[tick] = new_meta
