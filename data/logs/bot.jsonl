@@ -11076,3 +11076,153 @@
 {"ts": "2025-09-17T12:46:24Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=235 deduped=235 tickers_present=154 tickers_missing=81 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\menza\\OneDrive\\Desktop\\Catalyst-Bot\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=None skipped_no_ticker=14 skipped_price_gate=0 skipped_instr=7 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=40", "taskName": null}
 {"ts": "2025-09-17T12:46:24Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=26.34s", "taskName": null}
 {"ts": "2025-09-17T12:46:24Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-17T14:46:32Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-17T14:46:32Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-17T14:46:33Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-17T14:46:44Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-17T14:46:45Z", "level": "WARNING", "name": "fmp_sentiment", "msg": "fmp_sentiment_http status=403", "taskName": null}
+{"ts": "2025-09-17T14:46:45Z", "level": "INFO", "name": "feeds", "msg": "{'feeds_summary': {'sources': 1, 'items': 0, 't_ms': 11951.2, 'by_source': {'mock': {'ok': 0, 'http4': 0, 'http5': 1, 'errors': 0, 'entries': 0, 't_ms': 11536.2}}}}", "taskName": null}
+{"ts": "2025-09-17T14:46:45Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-17T14:46:45Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.95s", "taskName": null}
+{"ts": "2025-09-17T14:46:45Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-17T14:47:36Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=True finviz_token=ok(status=200)", "taskName": null}
+{"ts": "2025-09-17T14:47:36Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-17T14:47:36Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-17T14:47:45Z", "level": "WARNING", "name": "feeds", "msg": "finviz_news_auth_failed status=401", "taskName": null}
+{"ts": "2025-09-17T14:47:49Z", "level": "WARNING", "name": "fmp_sentiment", "msg": "fmp_sentiment_http status=403", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=712.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "feeds", "msg": "{'feeds_summary': {'sources': 6, 'items': 237, 't_ms': 13439.2, 'by_source': {'finviz_news': {'ok': 0, 'http4': 1, 'http5': 0, 'errors': 0, 'entries_raw': 0, 'entries': 0, 't_ms': 8457.9}, 'globenewswire_public': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 20, 't_ms': 744.4}, 'sec_8k': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 100, 't_ms': 820.0}, 'sec_424b5': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 30, 't_ms': 380.5}, 'sec_fwp': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 100, 't_ms': 435.7}, 'sec_13d': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 0, 't_ms': 381.5}, 'sec_13g': {'ok': 1, 'http4': 0, 'http5': 0, 'errors': 0, 'entries': 0, 't_ms': 1009.5}}}}", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=251.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=globenewswire_public ticker=HERZ", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=402.0 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=167.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=globenewswire_public ticker=RELI", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=38.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:50Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=globenewswire_public ticker=SNYR", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=188.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=globenewswire_public ticker=VENU", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=globenewswire_public ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=sec_8k ticker=", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=164.0 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=TGEN", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=ATCHW", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=161.1 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:51Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=VANI", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=363.0 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=HLVX", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=280.6 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=CWD", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=UYSCU", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=290.6 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=ROYL", "taskName": null}
+{"ts": "2025-09-17T14:47:52Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=165.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:53Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=346.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:53Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=HMBL", "taskName": null}
+{"ts": "2025-09-17T14:47:53Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=366.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:53Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=VOR", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=296.4 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=PGRE", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=261.0 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=INBS", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=237.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:54Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=KAVL", "taskName": null}
+{"ts": "2025-09-17T14:47:55Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=407.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:55Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=237.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:55Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=362.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:55Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=BRCC", "taskName": null}
+{"ts": "2025-09-17T14:47:56Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=489.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:56Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=ELTX", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=365.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=228.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=IRBT", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=KIDZW", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=255.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=153.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=NSPR", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=RITM-PD", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=158.4 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:57Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=STT-PG", "taskName": null}
+{"ts": "2025-09-17T14:47:58Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=236.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:58Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=MNR", "taskName": null}
+{"ts": "2025-09-17T14:47:58Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=294.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:58Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=RLMD", "taskName": null}
+{"ts": "2025-09-17T14:47:59Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=412.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:59Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=IONQ-WT", "taskName": null}
+{"ts": "2025-09-17T14:47:59Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=329.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:47:59Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=ADTN", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=393.4 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=267.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=236.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=XFOR", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=146.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:00Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=OPEN", "taskName": null}
+{"ts": "2025-09-17T14:48:01Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=308.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:01Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=AVAI", "taskName": null}
+{"ts": "2025-09-17T14:48:01Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=DRMAW", "taskName": null}
+{"ts": "2025-09-17T14:48:01Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=314.1 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:01Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=XWEL", "taskName": null}
+{"ts": "2025-09-17T14:48:02Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=480.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:02Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=RYES", "taskName": null}
+{"ts": "2025-09-17T14:48:02Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=482.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:02Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=VERB", "taskName": null}
+{"ts": "2025-09-17T14:48:03Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=396.2 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:03Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=597.6 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:03Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=LUCK", "taskName": null}
+{"ts": "2025-09-17T14:48:04Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=234.7 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:04Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=WLLBW", "taskName": null}
+{"ts": "2025-09-17T14:48:04Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=615.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:04Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=TBMCR", "taskName": null}
+{"ts": "2025-09-17T14:48:05Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=144.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:05Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=BGSF", "taskName": null}
+{"ts": "2025-09-17T14:48:05Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=304.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:05Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=HOFV", "taskName": null}
+{"ts": "2025-09-17T14:48:05Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=190.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:06Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=353.9 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:06Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=441.4 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:06Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=199.8 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:06Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=LOOP", "taskName": null}
+{"ts": "2025-09-17T14:48:07Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=209.2 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:07Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=SGBX", "taskName": null}
+{"ts": "2025-09-17T14:48:07Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=BURUW", "taskName": null}
+{"ts": "2025-09-17T14:48:08Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=891.2 status=KeyError", "taskName": null}
+{"ts": "2025-09-17T14:48:08Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=435.1 status=no_data", "taskName": null}
+{"ts": "2025-09-17T14:48:08Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=BSMLP", "taskName": null}
+{"ts": "2025-09-17T14:48:09Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=229.0 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:09Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=591.4 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:09Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=HSONP", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=225.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=sec_8k ticker=", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=231.1 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=ORGS", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "runner", "msg": "item_parse_skip source=sec_8k ticker=", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=KITTW", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=394.5 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=WSR", "taskName": null}
+{"ts": "2025-09-17T14:48:10Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=DYNXU", "taskName": null}
+{"ts": "2025-09-17T14:48:11Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=231.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:11Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=HTLD", "taskName": null}
+{"ts": "2025-09-17T14:48:11Z", "level": "INFO", "name": "runner", "msg": "skip_instrument_like_ticker source=sec_8k ticker=NVACW", "taskName": null}
+{"ts": "2025-09-17T14:48:11Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=188.3 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:12Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=921.0 status=KeyError", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=418.3 status=no_data", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=TLNC", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=549.6 status=ok", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "alerts", "msg": "alert_record_only source=sec_8k ticker=LGNZZ", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "runner", "msg": "alert_cap_reached cap=40", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=237 deduped=237 tickers_present=155 tickers_missing=82 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=15.0 skipped_no_ticker=18 skipped_price_gate=18 skipped_instr=12 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=40", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=37.21s", "taskName": null}
+{"ts": "2025-09-17T14:48:13Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}

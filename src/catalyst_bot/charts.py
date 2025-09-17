@@ -378,7 +378,9 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                     json=payload,
                     timeout=10,
                 )
-                log.info("quickchart_post status=%s", resp.status_code)  # log after the original call
+                log.info(
+                    "quickchart_post status=%s", resp.status_code
+                )  # log after the original call
 
                 # Expect JSON {"success": true, "url": "https://..."}
                 if resp.ok:
