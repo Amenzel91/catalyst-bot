@@ -229,6 +229,22 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             watchlist_size = str(len(wl_set))
         except Exception:
             watchlist_size = "—"
+        # Watchlist cascade counts: when enabled, show counts of HOT/WARM/COOL.
+        cascade_counts = "—"
+        try:
+            if getattr(settings, "feature_watchlist_cascade", False):
+                from catalyst_bot.watchlist_cascade import get_counts, load_state
+
+                state_path = getattr(settings, "watchlist_state_file", "")
+                st = load_state(state_path)
+                counts = get_counts(st)
+                parts = []
+                for key in ("HOT", "WARM", "COOL"):
+                    if key in counts:
+                        parts.append(f"{key[0]}:{counts[key]}")
+                cascade_counts = " ".join(parts) if parts else "0"
+        except Exception:
+            cascade_counts = "—"
         # Provider order: comma-separated string or em dash when empty
         provider_order = getattr(settings, "market_provider_order", "") or "—"
         # Active feature flags: include QuickChart, Momentum, LocalSentiment and BreakoutScanner
@@ -244,6 +260,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             "FinvizChart": getattr(settings, "feature_finviz_chart", False),
             "LocalSent": getattr(settings, "feature_local_sentiment", False),
             "BreakoutScanner": getattr(settings, "feature_breakout_scanner", False),
+            "WatchlistCascade": getattr(settings, "feature_watchlist_cascade", False),
+            "LowScanner": getattr(settings, "feature_52w_low_scanner", False),
             "AdminEmbed": getattr(settings, "feature_admin_embed", False),
             "ApprovalLoop": getattr(settings, "feature_approval_loop", False),
             "AlpacaStream": getattr(settings, "feature_alpaca_stream", False),
@@ -251,7 +269,9 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         active_features = [name for name, enabled in feature_map.items() if enabled]
         features_value = ", ".join(active_features) if active_features else "—"
         # Gather last cycle metrics from global state; show dashes when unavailable
-        from .runner import LAST_CYCLE_STATS  # import within function to avoid circulars
+        from .runner import (  # import within function to avoid circulars
+            LAST_CYCLE_STATS,
+        )
 
         try:
             items_cnt = str(LAST_CYCLE_STATS.get("items", "—"))
@@ -278,6 +298,7 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     {"name": "Min |sent|", "value": min_sent, "inline": True},
                     {"name": "Price Ceiling", "value": price_ceiling, "inline": True},
                     {"name": "Watchlist", "value": watchlist_size, "inline": True},
+                    {"name": "Cascade", "value": cascade_counts, "inline": True},
                     {"name": "Providers", "value": provider_order, "inline": True},
                     {"name": "Features", "value": features_value, "inline": False},
                     # Patch‑2: include counts from the most recent cycle
@@ -585,6 +606,60 @@ def _cycle(log, settings) -> None:
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
 
+    # ------------------------------------------------------------------
+    # Watchlist cascade decay: demote HOT→WARM→COOL entries based on age
+    # before processing any new events.  This uses a JSON state file
+    # separate from the static watchlist CSV.  When the cascade feature
+    # is disabled, this call is a no‑op.  Any errors are silently ignored.
+    try:
+        if getattr(settings, "feature_watchlist_cascade", False):
+            from catalyst_bot.watchlist_cascade import (
+                decay_state,
+                load_state,
+                save_state,
+            )
+
+            state_path = getattr(settings, "watchlist_state_file", "")
+            state = load_state(state_path)
+            now = __import__(
+                "datetime", fromlist=["datetime", "timezone"]
+            ).datetime.now(__import__("datetime", fromlist=["timezone"]).timezone.utc)
+            state = decay_state(
+                state,
+                now,
+                hot_days=getattr(settings, "watchlist_hot_days", 7),
+                warm_days=getattr(settings, "watchlist_warm_days", 21),
+                cool_days=getattr(settings, "watchlist_cool_days", 60),
+            )
+            save_state(state_path, state)
+    except Exception:
+        # ignore decay errors
+        pass
+
+    # ------------------------------------------------------------------
+    # 52‑week low scanner: proactively add events for tickers trading
+    # near their 52‑week lows.  These events are treated like normal
+    # feed items and will be scored/classified below.  When the
+    # feature is disabled, this call returns an empty list.  Errors
+    # during scanning are caught to avoid crashing the cycle.
+    try:
+        if getattr(settings, "feature_52w_low_scanner", False):
+            from catalyst_bot.scanner import scan_52week_lows
+
+            low_events = scan_52week_lows(
+                min_avg_vol=getattr(settings, "low_min_avg_vol", 300000.0),
+                distance_pct=getattr(settings, "low_distance_pct", 5.0),
+            )
+            if low_events:
+                # Extend the deduped list; these events will be scored and
+                # classified like any other item.  No dedupe is applied to
+                # scanner events because their IDs include a timestamp and
+                # ticker, making collisions unlikely.
+                deduped.extend(low_events)
+    except Exception:
+        # Ignore scanner failures
+        pass
+
     # Enrich tickers where missing
     for it in deduped:
         enrich_ticker(it, it)
@@ -798,6 +873,26 @@ def _cycle(log, settings) -> None:
             # Optional: tiny jitter after success to avoid draining the bucket at once
             if jitter_ms > 0:
                 time.sleep(max(0.0, min(jitter_ms, 1000)) / 1000.0 * random.random())
+
+            # When the watchlist cascade feature is enabled, promote this
+            # ticker to HOT in the cascade state after sending an alert.  Any
+            # errors while updating the state are ignored.  Promotion
+            # timestamp is set by the helper.
+            try:
+                if getattr(settings, "feature_watchlist_cascade", False) and ticker:
+                    from catalyst_bot.watchlist_cascade import (
+                        load_state,
+                        promote_ticker,
+                        save_state,
+                    )
+
+                    state_path = getattr(settings, "watchlist_state_file", "")
+                    state = load_state(state_path)
+                    promote_ticker(state, ticker, state_name="HOT")
+                    save_state(state_path, state)
+            except Exception:
+                # ignore promotion errors
+                pass
 
             # Optional: subscribe to Alpaca stream after sending an alert.  Run
             # asynchronously so we do not block the runner loop.  The feature

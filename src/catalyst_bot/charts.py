@@ -305,8 +305,15 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
         df = market.get_intraday(
             nt, interval="5min", output_size="compact", prepost=True
         )
+        # If no intraday data is available from our primary providers, fall back to
+        # a yfinance-based helper.  Some illiquid tickers lack recent 5‑minute
+        # bars in the main feed; yfinance can often supply them.  See patch 03
+        # notes for details.
         if df is None or getattr(df, "empty", False):
-            return None
+            try:
+                return _quickchart_url_yfinance(nt, bars=bars)
+            except Exception:
+                return None
         # Ensure index is datetime for formatting
         if not isinstance(df.index, pd.DatetimeIndex):
             try:
@@ -350,7 +357,9 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
             # Determine threshold from env or default (1900)
             import os
 
-            threshold = int(os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "1900").strip() or 1900)
+            threshold = int(
+                os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "1900").strip() or 1900
+            )
         except Exception:
             threshold = 1900
         try:
@@ -358,14 +367,25 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                 # Use the QuickChart /chart/create endpoint to shorten the config.
                 import requests
 
+                # Include API key in the request body when provided.  The
+                # QUICKCHART_API_KEY improves rate limits on the hosted API.
+                api_key = os.getenv("QUICKCHART_API_KEY")
+                payload = {"chart": cfg}
+                if api_key:
+                    payload["key"] = api_key
                 resp = requests.post(
                     "https://quickchart.io/chart/create",
-                    json={"chart": cfg},
+                    json=payload,
                     timeout=10,
                 )
+                log.info("quickchart_post status=%s", resp.status_code)  # log after the original call
+
                 # Expect JSON {"success": true, "url": "https://..."}
                 if resp.ok:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        data = {}
                     url = data.get("url") or data.get("shortUrl") or None
                     if isinstance(url, str) and url.startswith("http"):
                         return url
