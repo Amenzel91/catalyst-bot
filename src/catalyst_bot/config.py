@@ -230,6 +230,81 @@ class Settings:
     # false.
     feature_local_sentiment: bool = _b("FEATURE_LOCAL_SENTIMENT", False)
 
+    # --- Phase‑D: External news sentiment sources ---
+    # When enabled, the bot will fetch news‑based sentiment signals from
+    # external providers (Alpha Vantage News Sentiment, Marketaux,
+    # StockNewsAPI and Finnhub) and aggregate them into a combined score.
+    # The aggregated score and discrete label are attached to each event as
+    # ``sentiment_ext_score`` and ``sentiment_ext_label``.  When this flag is
+    # off the external providers are skipped entirely.  Defaults to false.
+    feature_news_sentiment: bool = _b("FEATURE_NEWS_SENTIMENT", False)
+    # Per‑provider switches.  These allow fine‑grained control over which
+    # external feeds are consulted.  When a provider flag is false or the
+    # corresponding API key is blank, that provider will be ignored.
+    feature_alpha_sentiment: bool = _b("FEATURE_ALPHA_SENTIMENT", False)
+    feature_marketaux_sentiment: bool = _b("FEATURE_MARKETAUX_SENTIMENT", False)
+    feature_stocknews_sentiment: bool = _b("FEATURE_STOCKNEWS_SENTIMENT", False)
+    feature_finnhub_sentiment: bool = _b("FEATURE_FINNHUB_SENTIMENT", False)
+
+    # API keys for optional sentiment providers.  The Alpha Vantage key
+    # (ALPHAVANTAGE_API_KEY) defined above is reused for the news sentiment
+    # endpoint.  These additional keys are read here for completeness.
+    marketaux_api_key: str = os.getenv("MARKETAUX_API_KEY", "")
+    stocknews_api_key: str = os.getenv("STOCKNEWS_API_KEY", "")
+    finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
+
+    # Weights used when combining sentiment scores from multiple providers.
+    # Values should sum to 1.0, but no assumptions are made; the aggregator
+    # will normalise weights across providers that return a score.  Defaults
+    # allocate 0.4 to Alpha Vantage and 0.3 each to Marketaux and
+    # StockNewsAPI.  Finnhub is disabled by default (weight ignored when
+    # provider disabled).
+    sentiment_weight_alpha: float = float(
+        os.getenv("SENTIMENT_WEIGHT_ALPHA", "0.4").strip() or "0.4"
+    )
+    sentiment_weight_marketaux: float = float(
+        os.getenv("SENTIMENT_WEIGHT_MARKETAUX", "0.3").strip() or "0.3"
+    )
+    sentiment_weight_stocknews: float = float(
+        os.getenv("SENTIMENT_WEIGHT_STOCKNEWS", "0.3").strip() or "0.3"
+    )
+    sentiment_weight_finnhub: float = float(
+        os.getenv("SENTIMENT_WEIGHT_FINNHUB", "0").strip() or "0"
+    )
+
+    # Minimum total article count required across all providers before a
+    # combined sentiment score is considered valid.  When the sum of
+    # ``n_articles`` returned by the providers is less than this value, the
+    # aggregator returns ``None`` for score and label, and events fall
+    # back to local sentiment only.  Defaults to 2 to avoid single‑item
+    # noise dominating the signal.
+    sentiment_min_articles: int = int(
+        os.getenv("SENTIMENT_MIN_ARTICLES", "2").strip() or "2"
+    )
+
+    # --- Patch‑6: Analyst signals ---
+    # When enabled, the bot will fetch consensus analyst price targets
+    # and compute the implied return relative to the last price for each
+    # ticker.  The return is classified as Bullish, Neutral or Bearish
+    # depending on the ANALYST_RETURN_THRESHOLD.  Use
+    # FEATURE_ANALYST_SIGNALS=1 to enable.
+    feature_analyst_signals: bool = _b("FEATURE_ANALYST_SIGNALS", False)
+    # Percentage threshold used to determine bullish/bearish classification.
+    # A value of 10.0 means the implied return must be ≥ +10% to be
+    # considered Bullish and ≤ −10% to be considered Bearish.  Values in
+    # between are Neutral.
+    analyst_return_threshold: float = float(
+        os.getenv("ANALYST_RETURN_THRESHOLD", "10.0").strip() or "10.0"
+    )
+    # Provider used to fetch analyst signals.  Supported values:
+    # ``fmp`` – Financial Modeling Prep API (requires FMP_API_KEY or
+    # ANALYST_API_KEY).  ``yahoo`` – yfinance (no key required).  Defaults
+    # to ``fmp`` when unset.
+    analyst_provider: str = os.getenv("ANALYST_PROVIDER", "fmp").strip() or "fmp"
+    # Optional API key for the chosen provider.  When blank and
+    # provider=fmp, the bot falls back to FMP_API_KEY.  Ignored for yahoo.
+    analyst_api_key: str = os.getenv("ANALYST_API_KEY", "").strip()
+
     # --- Patch‑2: Breakout scanner flags and thresholds ---
     # When enabled, the bot will proactively scan for breakout
     # candidates using Finviz Elite’s screener export.  The scanner
@@ -305,6 +380,22 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     analyzer_utc_hour: int = int(os.getenv("ANALYZER_UTC_HOUR", "21"))
     analyzer_utc_minute: int = int(os.getenv("ANALYZER_UTC_MINUTE", "30"))
+
+    # --- Phase‑D: SEC filings digester ---
+    # Feature flag to enable classification and aggregation of SEC filings.
+    # When on, the bot will run the sec_digester to classify 8‑K/424B5/FWP/13D/G
+    # events as Bullish/Neutral/Bearish and attach recent filings context to
+    # news events.  Defaults to off.  Use FEATURE_SEC_DIGESTER=1 to enable.
+    feature_sec_digester: bool = _b("FEATURE_SEC_DIGESTER", False)
+    # Number of days to look back when aggregating SEC filings for sentiment.
+    # Older filings are dropped from the cache automatically.  Defaults to 7.
+    sec_lookback_days: int = int(os.getenv("SEC_LOOKBACK_DAYS", "7") or "7")
+    # Weight of SEC sentiment in the combined sentiment gauge.  When non‑zero
+    # and the SEC digester is enabled, the sentiment aggregator will include
+    # the SEC score using this weight.  Defaults to 0.2.
+    sentiment_weight_sec: float = float(
+        os.getenv("SENTIMENT_WEIGHT_SEC", "0.2") or "0.2"
+    )
 
     # --- Phase‑C Patch 9: Plain logging mode ---
     # When this flag is enabled (LOG_PLAIN=1), the bot will emit human‑readable

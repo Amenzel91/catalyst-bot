@@ -1,4 +1,4 @@
-# src/catalyst_bot/feeds.py
+﻿# src/catalyst_bot/feeds.py
 from __future__ import annotations
 
 import csv
@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from io import StringIO
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import feedparser  # type: ignore
@@ -682,6 +682,276 @@ def fetch_pr_feeds() -> List[Dict]:
     except Exception:
         pass
 
+    # -----------------------------------------------------------------
+    # Phase‑D: attach external news sentiment when enabled
+    #
+    # When FEATURE_NEWS_SENTIMENT=1 the bot will call the external sentiment
+    # aggregator for each unique ticker.  Results are memoised within this
+    # call to avoid redundant network requests.  The returned score and
+    # label are attached to the event as ``sentiment_ext_score`` and
+    # ``sentiment_ext_label``; per‑provider details are recorded under
+    # ``sentiment_ext_details``.  Errors from individual providers are
+    # swallowed to ensure smooth processing.
+    try:
+        from .sentiment_sources import get_combined_sentiment_for_ticker  # type: ignore
+    except Exception:
+        get_combined_sentiment_for_ticker = None  # type: ignore
+    if get_combined_sentiment_for_ticker:
+        # Only run when the global feature flag is enabled.  We check
+        # settings here to avoid repeated environment parsing inside the loop.
+        try:
+            news_enabled = False
+            if settings:
+                news_enabled = getattr(settings, "feature_news_sentiment", False)
+            else:
+                news_enabled = str(
+                    os.getenv("FEATURE_NEWS_SENTIMENT", "0")
+                ).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+        except Exception:
+            news_enabled = False
+        if news_enabled:
+            sent_cache: Dict[str, Optional[Tuple[float, str, Dict[str, Any]]]] = {}
+            for it in all_items:
+                try:
+                    # Determine the primary ticker for this event.  Prefer
+                    # explicit 'ticker'; fall back to first element of 'tickers'.
+                    tkr = it.get("ticker") or None
+                    if not tkr:
+                        tkrs = it.get("tickers")
+                        if isinstance(tkrs, list) and tkrs:
+                            tkr = tkrs[0]
+                    if not tkr or not isinstance(tkr, str):
+                        continue
+                    tkr_u = tkr.upper().strip()
+                    if not tkr_u:
+                        continue
+                    if tkr_u not in sent_cache:
+                        try:
+                            res = get_combined_sentiment_for_ticker(tkr_u)
+                        except Exception:
+                            res = None
+                        sent_cache[tkr_u] = res
+                    res = sent_cache.get(tkr_u)
+                    if not res:
+                        continue
+                    score, lbl, details = res
+                    # Only attach when a score is present
+                    if score is None or lbl is None:
+                        continue
+                    # Avoid overwriting previously attached values on the item
+                    if "sentiment_ext_score" not in it:
+                        it["sentiment_ext_score"] = score  # type: ignore
+                    if "sentiment_ext_label" not in it:
+                        it["sentiment_ext_label"] = lbl  # type: ignore
+                    if "sentiment_ext_details" not in it:
+                        it["sentiment_ext_details"] = details  # type: ignore
+                except Exception:
+                    continue
+
+    # -----------------------------------------------------------------
+    # Patch‑6: attach analyst signals when enabled
+    #
+    # Analyst consensus price targets and implied returns can influence
+    # trading behaviour.  When FEATURE_ANALYST_SIGNALS=1, call the
+    # analyst_signals.get_analyst_signal() helper for each unique ticker
+    # and attach the returned values to each event as ``analyst_target``,
+    # ``analyst_implied_return`` and ``analyst_label``.  Failures are
+    # silently ignored to avoid disrupting the ingestion pipeline.  A
+    # per‑ticker cache avoids redundant API calls.
+    try:
+        from .analyst_signals import get_analyst_signal  # type: ignore
+    except Exception:
+        get_analyst_signal = None  # type: ignore
+    if get_analyst_signal:
+        try:
+            ana_enabled = False
+            if settings:
+                ana_enabled = getattr(settings, "feature_analyst_signals", False)
+            else:
+                ana_enabled = str(
+                    os.getenv("FEATURE_ANALYST_SIGNALS", "0")
+                ).strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+        except Exception:
+            ana_enabled = False
+        if ana_enabled:
+            ana_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+            for it in all_items:
+                try:
+                    tkr = it.get("ticker") or None
+                    if not tkr:
+                        tkrs = it.get("tickers")
+                        if isinstance(tkrs, list) and tkrs:
+                            tkr = tkrs[0]
+                    if not tkr or not isinstance(tkr, str):
+                        continue
+                    tkr_u = tkr.upper().strip()
+                    if not tkr_u:
+                        continue
+                    if tkr_u not in ana_cache:
+                        try:
+                            res = get_analyst_signal(tkr_u)
+                        except Exception:
+                            res = None
+                        ana_cache[tkr_u] = res
+                    res = ana_cache.get(tkr_u)
+                    if not res:
+                        continue
+                    tar = res.get("target_mean")
+                    ir = res.get("implied_return")
+                    lbl = res.get("analyst_label")
+                    if tar is None or ir is None:
+                        continue
+                    # Avoid overwriting existing values on the event
+                    if "analyst_target" not in it:
+                        it["analyst_target"] = tar  # type: ignore
+                    if "analyst_implied_return" not in it:
+                        it["analyst_implied_return"] = ir  # type: ignore
+                    if "analyst_label" not in it and lbl:
+                        it["analyst_label"] = lbl  # type: ignore
+                    # Optional: attach details
+                    if "analyst_details" not in it:
+                        it["analyst_details"] = res  # type: ignore
+                except Exception:
+                    continue
+
+    # -----------------------------------------------------------------
+    # Phase‑E: attach SEC filing sentiment and recent filing context
+    #
+    # When FEATURE_SEC_DIGESTER=1 the bot classifies each SEC filing
+    # (8‑K, 424B5, FWP, 13D/G) and records it in a per‑ticker cache.  For
+    # every event in the cycle (including non‑SEC headlines) the digester
+    # attaches a list of recent filings and an aggregated sentiment label
+    # and score.  When the watchlist cascade is enabled the ticker is
+    # promoted based on the filing sentiment.
+    try:
+        from .sec_digester import classify_filing as _sec_classify  # type: ignore
+        from .sec_digester import get_combined_sentiment as _sec_get_combined
+        from .sec_digester import get_recent_filings as _sec_get_recent
+        from .sec_digester import record_filing as _sec_record
+        from .sec_digester import update_watchlist_for_filing as _sec_update_watchlist
+    except Exception:
+        _sec_classify = None  # type: ignore
+        _sec_record = None  # type: ignore
+        _sec_get_recent = None  # type: ignore
+        _sec_get_combined = None  # type: ignore
+        _sec_update_watchlist = None  # type: ignore
+    try:
+        sec_enabled = False
+        if settings:
+            sec_enabled = getattr(settings, "feature_sec_digester", False)
+        else:
+            sec_enabled = str(
+                os.getenv("FEATURE_SEC_DIGESTER", "0")
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+    except Exception:
+        sec_enabled = False
+    if sec_enabled and _sec_classify and _sec_record:
+        # First pass: classify SEC filings and record them
+        for it in all_items:
+            try:
+                src_key = str(it.get("source") or "").lower()
+                # Only consider explicit SEC feeds
+                if not src_key.startswith("sec_"):
+                    continue
+                # Determine ticker
+                tkr = it.get("ticker") or None
+                if not tkr:
+                    tkrs = it.get("tickers")
+                    if isinstance(tkrs, list) and tkrs:
+                        tkr = tkrs[0]
+                if not isinstance(tkr, str):
+                    continue
+                tkr_u = tkr.upper().strip()
+                if not tkr_u:
+                    continue
+                # Classify
+                score, lbl, reason = _sec_classify(
+                    src_key, it.get("title"), it.get("summary")
+                )
+                if lbl:
+                    # Attach to the item
+                    if "sec_label" not in it:
+                        it["sec_label"] = lbl  # type: ignore
+                    if "sec_reason" not in it and reason:
+                        it["sec_reason"] = reason  # type: ignore
+                    # Parse timestamp for record; fall back to now
+                    ts_str = it.get("ts")
+                    try:
+                        dt = datetime.fromisoformat(ts_str)  # type: ignore[arg-type]
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        dt = datetime.now(timezone.utc)
+                    _sec_record(tkr_u, dt, lbl, reason or "")
+                    # Update watchlist cascade
+                    if _sec_update_watchlist:
+                        _sec_update_watchlist(tkr_u, lbl)
+            except Exception:
+                continue
+        # Second pass: attach recent filing context and combined sentiment to each event
+        for it in all_items:
+            try:
+                tkr = it.get("ticker") or None
+                if not tkr:
+                    tkrs = it.get("tickers")
+                    if isinstance(tkrs, list) and tkrs:
+                        tkr = tkrs[0]
+                if not isinstance(tkr, str):
+                    continue
+                tkr_u = tkr.upper().strip()
+                if not tkr_u:
+                    continue
+                if _sec_get_recent:
+                    recs = _sec_get_recent(tkr_u)  # type: ignore[arg-type]
+                else:
+                    recs = None
+                if recs:
+                    # Convert datetime to ISO for JSON serialisation
+                    simple = []
+                    for rec in recs[:]:
+                        ts = rec.get("ts")
+                        if isinstance(ts, datetime):
+                            ts_str = ts.isoformat()
+                        else:
+                            ts_str = str(ts) if ts else ""
+                        simple.append(
+                            {
+                                "ts": ts_str,
+                                "label": rec.get("label"),
+                                "reason": rec.get("reason"),
+                            }
+                        )
+                    if "recent_sec_filings" not in it:
+                        it["recent_sec_filings"] = simple  # type: ignore
+                # Attach combined sentiment if available
+                if _sec_get_combined:
+                    comb = _sec_get_combined(tkr_u)  # type: ignore[arg-type]
+                else:
+                    comb = None
+                if comb:
+                    s_score, s_lbl = comb  # type: ignore[misc]
+                    if s_lbl and "sec_sentiment_label" not in it:
+                        it["sec_sentiment_label"] = s_lbl  # type: ignore
+                    if s_score is not None and "sec_sentiment_score" not in it:
+                        it["sec_sentiment_score"] = s_score  # type: ignore
+            except Exception:
+                continue
+
     # ---------------------------------------------------------------------
     # Filtering & metadata enrichment
     #
@@ -850,7 +1120,43 @@ def fetch_pr_feeds() -> List[Dict]:
 
     summary["items"] = len(all_items)
     summary["t_ms"] = round((time.time() - t0) * 1000.0, 1)
-    log.info("%s", {"feeds_summary": summary})
+    # Emit a concise summary line instead of dumping the entire dictionary.
+    try:
+        parts: list[str] = []
+        by_source = summary.get("by_source") or {}
+        for src_name, stats in by_source.items():
+            try:
+                ok = stats.get("ok", 0)
+                entries = stats.get("entries", stats.get("entries_raw", 0))
+                http4 = stats.get("http4", 0)
+                http5 = stats.get("http5", 0)
+                errors = stats.get("errors", 0)
+                tms = stats.get("t_ms", 0)
+                parts.append(
+                    (
+                        f"{src_name}=ok:{ok} entries:{entries} err:{errors} "
+                        f"h4:{http4} h5:{http5} t_ms:{tms}"
+                    )
+                )
+            except Exception:
+                # Fallback to a simple representation when stats is malformed
+                parts.append(f"{src_name}")
+        by_src_str = " ".join(parts)
+        log.info(
+            "feeds_summary sources=%s items=%s t_ms=%s %s",
+            summary.get("sources"),
+            summary.get("items"),
+            summary.get("t_ms"),
+            by_src_str,
+        )
+    except Exception:
+        # On any error, log only the high-level counts
+        log.info(
+            "feeds_summary sources=%s items=%s t_ms=%s",
+            summary.get("sources"),
+            summary.get("items"),
+            summary.get("t_ms"),
+        )
     return _apply_refined_dedup(all_items)
 
 
