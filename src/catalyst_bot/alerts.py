@@ -5,7 +5,8 @@ import base64
 import os
 import threading
 import time
-from typing import Any, Dict, Iterable, Optional, Tuple
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -668,11 +669,39 @@ def _build_discord_embed(
         except Exception:
             if str(fmp_raw).strip():
                 fmp_sent = str(fmp_raw)
-    # Combine local and FMP sentiment when both available
+    # Determine any external news sentiment label attached on the event.
+    ext_label: str | None = None
+    try:
+        lbl_ext = item_dict.get("sentiment_ext_label")
+        if isinstance(lbl_ext, str) and lbl_ext:
+            ext_label = lbl_ext
+    except Exception:
+        ext_label = None
+    # Build the sentiment string.  Start with the local label when present,
+    # append the external label when available, then append the FMP score.  The
+    # ``fmp_sent`` variable has already been computed above from
+    # ``sentiment_fmp``.
+    parts: List[str] = []
+    if local_label and local_label != "n/a":
+        parts.append(local_label)
+    if ext_label and ext_label != "n/a":
+        parts.append(ext_label)
+    # Append SEC sentiment label when present.  Prefer the aggregated
+    # sec_sentiment_label over per‑filing sec_label to avoid multiple
+    # entries.  Only include when non‑empty and not "n/a".
+    try:
+        sec_lbl = item_dict.get("sec_sentiment_label") or item_dict.get("sec_label")
+        if isinstance(sec_lbl, str) and sec_lbl and sec_lbl.lower() != "n/a":
+            parts.append(sec_lbl)
+    except Exception:
+        pass
     if fmp_sent:
-        sent = f"{local_label} / {fmp_sent}"
+        parts.append(fmp_sent)
+    if parts:
+        sent = " / ".join(parts)
     else:
-        sent = local_label
+        # Fall back to n/a when nothing present
+        sent = "n/a"
     # Score from classifier (raw relevance + sentiment)
     score = sc.get("score", sc.get("raw_score", None))
     if isinstance(score, (int, float)):
@@ -745,6 +774,35 @@ def _build_discord_embed(
     fields.append({"name": "Price / Change", "value": price_change_val, "inline": True})
     fields.append({"name": "Sentiment", "value": sent, "inline": True})
     fields.append({"name": "Score", "value": score_str, "inline": True})
+
+    # Analyst signals: attach when analyst target and implied return are present.
+    try:
+        tar = item_dict.get("analyst_target")
+        imp_ret = item_dict.get("analyst_implied_return")
+        albl = item_dict.get("analyst_label")
+        if tar is not None and imp_ret is not None:
+            # Format target as currency when numeric
+            try:
+                t_float = float(tar)
+                t_str = f"${t_float:.2f}"
+            except Exception:
+                t_str = str(tar)
+            # Format return with sign and one decimal place
+            try:
+                r_float = float(imp_ret)
+                r_str = f"{r_float:+.1f}%"
+            except Exception:
+                r_str = str(imp_ret)
+            lbl_str = f" ({albl})" if isinstance(albl, str) and albl else ""
+            fields.append(
+                {
+                    "name": "Analyst Target / Return",
+                    "value": f"{t_str} / {r_str}{lbl_str}",
+                    "inline": True,
+                }
+            )
+    except Exception:
+        pass
     # Summarise momentum indicators when available
     if momentum:
         parts: list[str] = []
@@ -790,6 +848,50 @@ def _build_discord_embed(
             fields.append(
                 {"name": "Indicators", "value": "; ".join(parts), "inline": False}
             )
+
+    # Summarise recent SEC filings when present.  Show up to three
+    # items with relative age.  Each line is formatted as
+    # ``<reason> (Xd ago)`` or ``<label> (Xh ago)``.  This field is
+    # appended before source/tickers so it appears near the bottom of
+    # the embed but above metadata.
+    try:
+        recs = item_dict.get("recent_sec_filings")
+        if isinstance(recs, list) and recs:
+            lines: List[str] = []
+            now_ts = datetime.now(timezone.utc)
+            for entry in recs[:3]:
+                ts_str = entry.get("ts")  # type: ignore[attr-defined]
+                lbl = entry.get("label")  # type: ignore[attr-defined]
+                reason = entry.get("reason")  # type: ignore[attr-defined]
+                ago = ""
+                try:
+                    dt = (
+                        datetime.fromisoformat(ts_str)
+                        if isinstance(ts_str, str)
+                        else None
+                    )
+                    if dt is not None:
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        delta = now_ts - dt
+                        if delta.days >= 1:
+                            ago = f"{delta.days}d"
+                        else:
+                            hrs = int(delta.total_seconds() // 3600)
+                            if hrs > 0:
+                                ago = f"{hrs}h"
+                except Exception:
+                    ago = ""
+                line = str(reason or lbl or "Filing")
+                if ago:
+                    line = f"{line} ({ago} ago)"
+                lines.append(line)
+            if lines:
+                fields.append(
+                    {"name": "SEC Filings", "value": "\n".join(lines), "inline": False}
+                )
+    except Exception:
+        pass
     # Always include source and tickers fields last
     fields.append({"name": "Source", "value": src or "-", "inline": True})
     fields.append({"name": "Tickers", "value": tval, "inline": False})

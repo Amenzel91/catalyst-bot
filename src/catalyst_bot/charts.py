@@ -48,11 +48,18 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         import yfinance as yf  # noqa: F401
 
         # Fetch 1‑day, 5‑minute intraday data.  Suppress progress bar.
+        # Fetch 1‑day, 5‑minute intraday data.  Explicitly pass
+        # ``auto_adjust=False`` to avoid future warnings from yfinance.  In
+        # yfinance >= 0.2 the default for auto_adjust will change to True,
+        # which causes the OHLC values to be returned as single‑element
+        # Series instead of scalars.  Explicitly disabling auto adjustment
+        # keeps the API stable across versions.
         data = yf.download(
             tickers=ticker,
             period="1d",
             interval="5m",
             progress=False,
+            auto_adjust=False,
         )
         if data is None or data.empty:
             return None
@@ -62,15 +69,24 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         for ts, row in df.iterrows():
             try:
                 x = ts.strftime("%Y-%m-%d %H:%M")
-                dataset.append(
-                    {
-                        "x": x,
-                        "o": float(row["Open"]),
-                        "h": float(row["High"]),
-                        "l": float(row["Low"]),
-                        "c": float(row["Close"]),
-                    }
-                )
+
+                # yfinance may return single‑element Series for each OHLC value
+                # when auto_adjust is enabled in future versions.  To guard
+                # against this and silence FutureWarning, extract the scalar via
+                # ``iloc[0]`` when the value exposes that attribute.
+                def _scalar(val: Any) -> Any:
+                    if hasattr(val, "iloc"):
+                        try:
+                            return val.iloc[0]
+                        except Exception:
+                            pass
+                    return val
+
+                o = float(_scalar(row["Open"]))
+                h = float(_scalar(row["High"]))
+                low = float(_scalar(row["Low"]))
+                c = float(_scalar(row["Close"]))
+                dataset.append({"x": x, "o": o, "h": h, "l": low, "c": c})
             except Exception:
                 # Skip malformed rows but continue processing others
                 continue

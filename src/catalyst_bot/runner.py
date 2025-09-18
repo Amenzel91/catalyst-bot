@@ -265,9 +265,20 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             "AdminEmbed": getattr(settings, "feature_admin_embed", False),
             "ApprovalLoop": getattr(settings, "feature_approval_loop", False),
             "AlpacaStream": getattr(settings, "feature_alpaca_stream", False),
+            # External news sentiment flags
+            "NewsSent": getattr(settings, "feature_news_sentiment", False),
+            "AlphaSent": getattr(settings, "feature_alpha_sentiment", False),
+            "MarketauxSent": getattr(settings, "feature_marketaux_sentiment", False),
+            "StockNewsSent": getattr(settings, "feature_stocknews_sentiment", False),
+            "FinnhubSent": getattr(settings, "feature_finnhub_sentiment", False),
+            # Analyst signals flag
+            "AnalystSignals": getattr(settings, "feature_analyst_signals", False),
+            # SEC filings digester flag
+            "SecDigester": getattr(settings, "feature_sec_digester", False),
         }
         active_features = [name for name, enabled in feature_map.items() if enabled]
-        features_value = ", ".join(active_features) if active_features else "—"
+        # Present active features one per line for readability
+        features_value = "\n".join(active_features) if active_features else "—"
         # Gather last cycle metrics from global state; show dashes when unavailable
         from .runner import (  # import within function to avoid circulars
             LAST_CYCLE_STATS,
