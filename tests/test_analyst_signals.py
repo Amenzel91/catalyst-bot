@@ -32,6 +32,7 @@ def test_get_analyst_signal_classification(monkeypatch: pytest.MonkeyPatch) -> N
         "catalyst_bot.analyst_signals.get_last_price_snapshot",
         lambda ticker: (10.0, 9.5),
     )
+
     # Stub settings object with feature enabled, threshold=10, provider=fmp
     class StubSettings:
         feature_analyst_signals = True

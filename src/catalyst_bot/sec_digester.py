@@ -54,6 +54,174 @@ _SEC_CACHE: Dict[str, List[Dict[str, object]]] = {}
 # aggregating multiple filings into a single score.
 _LABEL_SCORE = {"Bullish": 1.0, "Neutral": 0.0, "Bearish": -1.0}
 
+# ---------------------------------------------------------------------------
+# Heuristic summarisation for SEC filings
+#
+# Discord embeds have strict character limits; including the full filing title
+# in the alert embed can easily exceed these limits, especially when the
+# bot attaches a history of recent filings.  To reduce noise and avoid
+# HTTP 400 errors from Discord, we summarise each filing title into a
+# concise keyword or category.  This helper attempts to map known
+# phrases (e.g. offerings, buybacks, resignations) into a single word.
+# When no known patterns match, it falls back to extracting the first
+# few significant tokens from the title after removing common stopwords.
+
+# Common stopwords and corporate suffixes to ignore when extracting
+# keywords from filing titles.  Tokens shorter than 3 characters or
+# appearing in this set will be skipped during summarisation.
+_STOPWORDS: set[str] = {
+    "inc",
+    "inc.",
+    "incorporated",
+    "corporation",
+    "corp",
+    "corp.",
+    "company",
+    "co",
+    "co.",
+    "plc",
+    "plc.",
+    "llc",
+    "ltd",
+    "ltd.",
+    "the",
+    "a",
+    "an",
+    "for",
+    "and",
+    "with",
+    "of",
+    "to",
+    "in",
+    "on",
+    "by",
+    "as",
+    "from",
+    "at",
+    "its",
+    "it's",
+    "was",
+    "were",
+    "their",
+    "his",
+    "her",
+    "over",
+    "into",
+    "about",
+    "after",
+    "before",
+    "via",
+}
+
+
+def summarize_title(title: Optional[str]) -> str:
+    """Return a short summary of the SEC filing title.
+
+    The summary is either a predefined category (e.g. "offering",
+    "buyback", "resignation") when a keyword is detected, or a
+    slash‑separated list of up to three significant tokens extracted
+    from the title.  When no title is supplied, an empty string is
+    returned.
+
+    Parameters
+    ----------
+    title : Optional[str]
+        The filing title from the SEC feed.
+
+    Returns
+    -------
+    str
+        A concise summary suitable for display in Discord embeds.
+    """
+    t = _clean(title)
+    if not t:
+        return ""
+    # Pattern → summary mappings for common filing types.  Keywords are
+    # checked in order; the first match wins.  All comparisons are
+    # case‑insensitive due to _clean().
+    patterns = [
+        (  # Dilutive offerings and equity financings
+            [
+                "offering",
+                "registered direct",
+                "atm",
+                "equity financing",
+                "dilutive",
+            ],
+            "offering",
+        ),
+        (  # Buybacks and repurchases
+            ["buyback", "repurchase"],
+            "buyback",
+        ),
+        (  # Leadership departures
+            ["resignation", "retire", "termination", "fired"],
+            "resignation",
+        ),
+        (  # Legal or compliance issues
+            [
+                "investigation",
+                "lawsuit",
+                "class action",
+                "legal",
+                "compliance notice",
+                "deficiency",
+            ],
+            "legal",
+        ),
+        (  # Mergers and acquisitions
+            ["merger", "acquisition"],
+            "merger",
+        ),
+        (  # Clinical trial updates
+            [
+                "phase 2",
+                "phase 3",
+                "clinical",
+                "trial",
+                "fast track",
+                "designation",
+            ],
+            "clinical",
+        ),
+        (  # Guidance changes and restatements
+            ["guidance", "cut", "restatement"],
+            "guidance",
+        ),
+        (  # Contracts and awards
+            [
+                "contract",
+                "partnership",
+                "agreement",
+                "license",
+                "award",
+                "win",
+            ],
+            "contract",
+        ),
+    ]
+    for kws, summary in patterns:
+        for kw in kws:
+            if kw in t:
+                return summary
+    # Fallback: extract up to three significant tokens from the title.  We
+    # split on non‑alphanumeric characters and filter out stopwords and
+    # short tokens.  Use a simple regular expression to identify words.
+    import re
+
+    tokens = re.findall(r"[a-z0-9]+", t)
+    keywords: list[str] = []
+    for tok in tokens:
+        if tok in _STOPWORDS or len(tok) < 3:
+            continue
+        keywords.append(tok)
+        if len(keywords) >= 3:
+            break
+    if keywords:
+        return "/".join(keywords)
+    # As a last resort return the first token (if any)
+    return tokens[0] if tokens else ""
+
 
 def _clean(s: Optional[str]) -> str:
     """Return a lowercase version of ``s`` or an empty string when None."""
@@ -267,7 +435,7 @@ def update_watchlist_for_filing(ticker: str, label: str) -> None:
         settings = get_settings()
         if not getattr(settings, "feature_watchlist_cascade", False):
             return
-        from .watchlist_cascade import load_state, save_state, promote_ticker
+        from .watchlist_cascade import load_state, promote_ticker, save_state
 
         state = load_state(settings.watchlist_state_file)
         # Map sentiment to cascade state

@@ -27,7 +27,6 @@ registering it in ``_PROVIDERS`` below.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -97,7 +96,9 @@ def _majority_label(labels: Iterable[str]) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
-def _fetch_alpha_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+def _fetch_alpha_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
     """Fetch sentiment from Alpha Vantage's NEWS_SENTIMENT endpoint.
 
     Returns a tuple (score, label, n_articles, details) or ``None`` on
@@ -118,7 +119,9 @@ def _fetch_alpha_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, s
         "apikey": api_key,
     }
     try:
-        resp = requests.get("https://www.alphavantage.co/query", params=params, timeout=8)
+        resp = requests.get(
+            "https://www.alphavantage.co/query", params=params, timeout=8
+        )
     except Exception as e:
         log.debug("alpha_sentiment_request error=%s", e.__class__.__name__)
         return None
@@ -153,7 +156,9 @@ def _fetch_alpha_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, s
                     sym = ""
                 if sym == ticker.upper():
                     ts_score = _safe_float(ts.get("ticker_sentiment_score"))
-                    ts_label = ts.get("ticker_sentiment_label") or ts.get("ticker_sentiment_code")
+                    ts_label = ts.get("ticker_sentiment_label") or ts.get(
+                        "ticker_sentiment_code"
+                    )
                     break
             score = ts_score
             label = ts_label
@@ -178,7 +183,9 @@ def _fetch_alpha_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, s
     return avg, final_label, len(scores), details
 
 
-def _fetch_marketaux_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+def _fetch_marketaux_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
     """Fetch sentiment for ``ticker`` using the Marketaux API.
 
     The endpoint returns a list of news articles with entity sentiment scores
@@ -238,7 +245,9 @@ def _fetch_marketaux_sentiment(ticker: str, api_key: str) -> Optional[Tuple[floa
     return avg, final_label, len(scores), details
 
 
-def _fetch_stocknews_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+def _fetch_stocknews_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
     """Fetch sentiment from StockNewsAPI.
 
     This helper attempts to call the StockNewsAPI endpoint and parse a
@@ -320,7 +329,9 @@ def _fetch_stocknews_sentiment(ticker: str, api_key: str) -> Optional[Tuple[floa
     return avg, final_label, len(scores), details
 
 
-def _fetch_finnhub_sentiment(ticker: str, api_key: str) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+def _fetch_finnhub_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
     """Fetch sentiment from Finnhub.
 
     Finnhub provides a news sentiment endpoint keyed by symbol.  The
@@ -438,11 +449,24 @@ def get_combined_sentiment_for_ticker(
         # Finnhub uses finnhub_api_key; handle special case
         if name == "alpha":
             # Alpha uses existing alphavantage_api_key; weight attr still correct
-            key_val = getattr(settings, "alphavantage_api_key", "") if settings else os.getenv("ALPHAVANTAGE_API_KEY", "")
+            key_val = (
+                getattr(settings, "alphavantage_api_key", "")
+                if settings
+                else os.getenv("ALPHAVANTAGE_API_KEY", "")
+            )
         else:
-            key_val = getattr(settings, key_attr, "") if settings else os.getenv(key_attr.upper(), "")
+            key_val = (
+                getattr(settings, key_attr, "")
+                if settings
+                else os.getenv(key_attr.upper(), "")
+            )
         # Flag gating; default false when missing
-        flag_val = getattr(settings, flag_attr, False) if settings else os.getenv(flag_attr.upper(), "0").strip().lower() in {"1", "true", "yes", "on"}
+        flag_val = (
+            getattr(settings, flag_attr, False)
+            if settings
+            else os.getenv(flag_attr.upper(), "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
         if not flag_val:
             continue
         if not key_val:
@@ -471,7 +495,11 @@ def get_combined_sentiment_for_ticker(
         }
         total_articles += n_articles
         try:
-            weight = float(getattr(settings, weight_attr, 0.0)) if settings else float(os.getenv(weight_attr.upper(), "0") or 0.0)
+            weight = (
+                float(getattr(settings, weight_attr, 0.0))
+                if settings
+                else float(os.getenv(weight_attr.upper(), "0") or 0.0)
+            )
         except Exception:
             weight = 0.0
         weighted_sum += score * weight
@@ -486,7 +514,10 @@ def get_combined_sentiment_for_ticker(
     # number of recent filings as the article count.  Errors are
     # swallowed to avoid disrupting the main sentiment pipeline.
     try:
-        from .sec_digester import get_combined_sentiment as _get_sec_sent, get_recent_filings as _get_sec_recs  # type: ignore
+        from .sec_digester import (
+            get_combined_sentiment as _get_sec_sent,  # type: ignore
+        )
+        from .sec_digester import get_recent_filings as _get_sec_recs
     except Exception:
         _get_sec_sent = None  # type: ignore
         _get_sec_recs = None  # type: ignore
@@ -529,8 +560,61 @@ def get_combined_sentiment_for_ticker(
                         total_articles += n_recs
     except Exception:
         pass
+
+    # ---------------------------------------------------------------
+    # Include earnings sentiment when enabled
+    #
+    # The earnings module supplies a single score per ticker derived from
+    # the most recent EPS surprise (past earnings) or 0.0 for upcoming
+    # reports.  We treat each earnings sentiment as one “article” for
+    # purposes of the minimum article threshold.  Errors are swallowed
+    # quietly; the pipeline continues even when the provider fails.
+    try:
+        from .earnings import get_earnings_sentiment as _get_earn_sent  # type: ignore
+    except Exception:
+        _get_earn_sent = None  # type: ignore
+    try:
+        earn_enabled = False
+        if settings:
+            earn_enabled = getattr(settings, "feature_earnings_alerts", False)
+        else:
+            earn_enabled = os.getenv(
+                "FEATURE_EARNINGS_ALERTS", "0"
+            ).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        if earn_enabled and _get_earn_sent is not None:
+            earn_score, earn_label, earn_details = _get_earn_sent(ticker_upper)
+            if earn_score is not None:
+                # treat as single article
+                provider_results["earnings"] = {
+                    "score": earn_score,
+                    "label": earn_label,
+                    "n_articles": 1,
+                }
+                try:
+                    w_earn = float(
+                        getattr(settings, "sentiment_weight_earnings", 0.0)
+                        if settings
+                        else os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0") or 0.0
+                    )
+                except Exception:
+                    w_earn = 0.0
+                if w_earn and w_earn != 0.0:
+                    weighted_sum += earn_score * w_earn
+                    total_weight += w_earn
+                    total_articles += 1
+    except Exception:
+        pass
     # Insufficient data
-    min_articles = getattr(settings, "sentiment_min_articles", 0) if settings else int(os.getenv("SENTIMENT_MIN_ARTICLES", "0") or 0)
+    min_articles = (
+        getattr(settings, "sentiment_min_articles", 0)
+        if settings
+        else int(os.getenv("SENTIMENT_MIN_ARTICLES", "0") or 0)
+    )
     if total_articles < max(1, min_articles) or total_weight <= 0.0:
         return None
     combined_score = weighted_sum / total_weight

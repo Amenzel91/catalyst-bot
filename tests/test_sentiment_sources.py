@@ -1,7 +1,3 @@
-import os
-import types
-
-
 def test_combined_sentiment_weighting(monkeypatch):
     """The aggregator should compute a weighted mean across providers."""
     from catalyst_bot import sentiment_sources as ss
