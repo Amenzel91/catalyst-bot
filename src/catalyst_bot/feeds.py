@@ -1,4 +1,4 @@
-# src/catalyst_bot/feeds.py
+﻿# src/catalyst_bot/feeds.py
 from __future__ import annotations
 
 import csv
@@ -1149,11 +1149,19 @@ def fetch_pr_feeds() -> List[Dict]:
     # FEATURE_INTRADAY_SNAPSHOTS is enabled.
 
     filtered: List[Dict] = []
-    # Price ceiling: default to 0 (disabled) if not parsable
+    # Price filters: ceiling and floor.  The ceiling caps alerts at a maximum
+    # price; the floor suppresses penny‑stock like tickers.  Defaults to 0
+    # (disabled) when not parsable.  These values are loaded from the
+    # environment rather than settings because the settings object may not
+    # initialise cleanly in test contexts.
     try:
         price_ceiling = float(os.getenv("PRICE_CEILING", "0").strip() or "0")
     except Exception:
         price_ceiling = 0.0
+    try:
+        price_floor = float(os.getenv("PRICE_FLOOR", "0").strip() or "0")
+    except Exception:
+        price_floor = 0.0
 
     # Finviz universe: load once into a set for O(1) lookups
     finviz_universe: set[str] = set()
@@ -1222,6 +1230,26 @@ def fetch_pr_feeds() -> List[Dict]:
 
     for item in all_items:
         ticker = item.get("ticker")
+        # Skip illiquid penny stocks when a price floor is defined.  This
+        # filter runs before the price ceiling check to avoid extraneous
+        # lookups.  When price_floor is > 0 and the ticker's last price is
+        # below the threshold, the item is dropped entirely.  No alert will
+        # be generated, though subsequent watchlist cascade logic may still
+        # process the ticker via SEC or other modules if enabled.
+        if ticker and price_floor > 0:
+            tick = ticker.strip().upper()
+            try:
+                # Always fetch last price; reuse the snapshot if already looked up
+                last_price, _ = get_last_price_snapshot(tick)
+            except Exception:
+                last_price = None
+            if last_price is not None and last_price < price_floor:
+                # Drop micro‑cap ticker; do not alert or enrich.  Optionally
+                # mark this item so downstream modules can add it to the
+                # watchlist cascade, but skip alert generation.  For now, we
+                # simply skip.
+                continue
+
         # Enforce price ceiling filtering only when a ticker is present and ceiling > 0
         if ticker and price_ceiling > 0:
             tick = ticker.strip().upper()

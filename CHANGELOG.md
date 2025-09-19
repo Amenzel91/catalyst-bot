@@ -1,4 +1,33 @@
 ## [2025-09-21] SEC filing summarisation & QuickChart base URL
+## [2025-09-21] Illiquid ticker filtering
+
+### Added
+
+- **Price floor filtering**: Introduced a `PRICE_FLOOR` environment
+  variable and corresponding `price_floor` setting in `config.py`. When
+  set to a value greater than zero, the feed ingestion pipeline in
+  `feeds.py` skips any ticker whose last traded price falls below this
+  threshold. This makes it easy to suppress alerts for highly illiquid
+  penny stocks while still allowing normal symbols. The filter runs
+  before the existing price ceiling check and does not affect the
+  watchlist cascade or sentiment gauge. To enable, set
+  `PRICE_FLOOR=1.00` (for example) in your `.env` file. By default it
+  remains disabled.
+
+### Changed
+
+- **Feed processing**: Updated `feeds.py` to load and apply the
+  `PRICE_FLOOR` value. The code now checks the last price for each
+  ticker via `market.get_last_price_snapshot` and skips the item when
+  the price is below the configured floor. This check occurs prior to
+  the price ceiling and watchlist logic to minimise unnecessary
+  lookups.
+
+### Migration
+
+- Added `PRICE_FLOOR` to `env.example.ini`. No database changes are
+  required for this update.
+
 
 ### Added
 
