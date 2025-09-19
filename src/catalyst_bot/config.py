@@ -431,6 +431,15 @@ class Settings:
         os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.1") or "0.1"
     )
 
+    # --- Liquidity filtering ---
+    # Minimum last price threshold for tickers.  When greater than zero, any
+    # ticker whose last traded price falls below this value will be skipped
+    # during feed ingestion.  Use this to suppress alerts on highly illiquid
+    # penny stocks while still allowing reasonably priced symbols.  Set
+    # PRICE_FLOOR in your environment, e.g. ``PRICE_FLOOR=1.00`` to ignore
+    # tickers trading below $1.  Defaults to 0 (disabled).
+    price_floor: float = float(os.getenv("PRICE_FLOOR", "0") or "0")
+
     # --- Phase‑C Patch 9: Plain logging mode ---
     # When this flag is enabled (LOG_PLAIN=1), the bot will emit human‑readable
     # one‑line logs to the console.  The log messages will include a timestamp,

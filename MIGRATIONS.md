@@ -46,6 +46,8 @@ sufficient.
 
 | `QUICKCHART_BASE_URL` | Base URL for the QuickChart API.  Override this to point to a self‑hosted QuickChart server (e.g. `http://localhost:3400/chart`).  When unset, the bot uses `https://quickchart.io/chart`. | — |
 
+| `PRICE_FLOOR` | Minimum price threshold for tickers.  When set to a positive value, tickers with a last price below this threshold are skipped during feed ingestion.  Use this to ignore penny stocks. | `0` |
+
 All new variables are optional; leaving them unset will disable the
 corresponding provider or use sensible defaults.  When disabled or when
 providers fail to return a score, the bot falls back to the local
