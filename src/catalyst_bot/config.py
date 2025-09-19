@@ -216,6 +216,15 @@ class Settings:
     # chart rendering (FEATURE_RICH_ALERTS) or Finviz static charts.
     feature_quickchart: bool = _b("FEATURE_QUICKCHART", False)
 
+    # Base URL for the QuickChart API.  Override this via the
+    # QUICKCHART_BASE_URL environment variable to point to a self‑hosted
+    # QuickChart server (e.g. ``http://localhost:3400/chart``).  When
+    # unspecified, the bot uses the hosted ``https://quickchart.io/chart``
+    # endpoint.  This variable should include the ``/chart`` path.
+    quickchart_base_url: str = os.getenv(
+        "QUICKCHART_BASE_URL", "https://quickchart.io/chart"
+    )
+
     # When FEATURE_MOMENTUM_INDICATORS is enabled (in addition to
     # FEATURE_INDICATORS), the bot will compute MACD, EMA crossovers
     # and VWAP deltas from intraday data and include these metrics in
@@ -279,7 +288,7 @@ class Settings:
     # back to local sentiment only.  Defaults to 2 to avoid single‑item
     # noise dominating the signal.
     sentiment_min_articles: int = int(
-        os.getenv("SENTIMENT_MIN_ARTICLES", "2").strip() or "2"
+        os.getenv("SENTIMENT_MIN_ARTICLES", "1").strip() or "1"
     )
 
     # --- Patch‑6: Analyst signals ---
@@ -395,6 +404,31 @@ class Settings:
     # the SEC score using this weight.  Defaults to 0.2.
     sentiment_weight_sec: float = float(
         os.getenv("SENTIMENT_WEIGHT_SEC", "0.2") or "0.2"
+    )
+
+    # --- Patch‑6: Earnings alerts ---
+    # Enable earnings alerts and sentiment integration.  When this flag is
+    # enabled, the bot will fetch the next scheduled earnings announcement
+    # and the most recent EPS estimate/actual via the configured provider
+    # (currently ``yfinance``).  Upcoming earnings are attached to events
+    # when they fall within the lookahead window.  Past earnings surprises
+    # contribute to the sentiment gauge via the weight below.  Defaults to
+    # off.  Set FEATURE_EARNINGS_ALERTS=1 to enable.
+    feature_earnings_alerts: bool = _b("FEATURE_EARNINGS_ALERTS", False)
+    # Number of days ahead to consider upcoming earnings for alerting and
+    # sentiment.  Earnings further in the future will not be attached.  For
+    # example, a value of 14 means that earnings scheduled within the next
+    # two weeks are considered.  Defaults to 14 days.
+    earnings_lookahead_days: int = int(
+        os.getenv("EARNINGS_LOOKAHEAD_DAYS", "14") or "14"
+    )
+    # Weight of earnings sentiment in the combined sentiment gauge.  When
+    # non‑zero and earnings alerts are enabled, the sentiment aggregator will
+    # include the earnings score using this weight.  A modest default of
+    # 0.1 gives earnings surprises some influence without overwhelming other
+    # signals.
+    sentiment_weight_earnings: float = float(
+        os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.1") or "0.1"
     )
 
     # --- Phase‑C Patch 9: Plain logging mode ---

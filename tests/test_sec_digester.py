@@ -1,5 +1,4 @@
-import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -42,7 +41,11 @@ def test_classify_ownership_and_dilution():
 
 def test_aggregate_sentiment_tie_break():
     """Aggregation should return neutral when bullish and bearish counts tie."""
-    from catalyst_bot.sec_digester import record_filing, get_combined_sentiment, _SEC_CACHE
+    from catalyst_bot.sec_digester import (
+        _SEC_CACHE,
+        get_combined_sentiment,
+        record_filing,
+    )
 
     # Clear global cache for the test
     _SEC_CACHE.clear()
@@ -58,7 +61,11 @@ def test_aggregate_sentiment_tie_break():
 
 def test_aggregate_sentiment_majority():
     """Majority label should prevail when counts differ."""
-    from catalyst_bot.sec_digester import record_filing, get_combined_sentiment, _SEC_CACHE
+    from catalyst_bot.sec_digester import (
+        _SEC_CACHE,
+        get_combined_sentiment,
+        record_filing,
+    )
 
     _SEC_CACHE.clear()
     now = datetime.now(timezone.utc)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -105,7 +106,12 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         }
         cfg_json = json.dumps(cfg, separators=(",", ":"))
         encoded = urllib.parse.quote(cfg_json, safe="")
-        return f"https://quickchart.io/chart?c={encoded}"
+        # Allow overriding the QuickChart base URL via environment.  The
+        # QUICKCHART_BASE_URL environment variable should include the
+        # ``/chart`` path (e.g. ``http://localhost:3400/chart``).  If
+        # unspecified, default to the hosted quickchart.io endpoint.
+        base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
+        return f"{base}?c={encoded}"
     except Exception:
         return None
 

@@ -702,12 +702,50 @@ def _build_discord_embed(
     else:
         # Fall back to n/a when nothing present
         sent = "n/a"
-    # Score from classifier (raw relevance + sentiment)
-    score = sc.get("score", sc.get("raw_score", None))
-    if isinstance(score, (int, float)):
-        score_str = f"{score:.2f}"
-    else:
-        score_str = "n/a" if score is None else str(score)
+    # Build a numeric sentiment score string from available sources.  When
+    # local or external sentiment scores exist, we display them; otherwise
+    # fall back to the classifier relevance score.  Each value is shown
+    # with sign and two decimal places.  This helps troubleshoot when
+    # sentiments appear blank in embeds.
+    score_values: List[str] = []
+    # Local sentiment score
+    try:
+        local_sent_raw = sc.get("sentiment") or sc.get("sent") or None
+        if local_sent_raw is not None and local_sent_raw != "n/a":
+            ls_val = float(local_sent_raw)
+            score_values.append(f"{ls_val:+.2f}")
+    except Exception:
+        pass
+    # External sentiment score attached on the event
+    try:
+        ext_score = item_dict.get("sentiment_ext_score")
+        if ext_score is not None:
+            # ext_score can be a tuple (score, label, n_articles, details)
+            if isinstance(ext_score, (int, float)):
+                score_values.append(f"{float(ext_score):+.2f}")
+            elif isinstance(ext_score, (list, tuple)) and ext_score:
+                try:
+                    score_val = float(ext_score[0])
+                    score_values.append(f"{score_val:+.2f}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # FMP sentiment score (when present) has been formatted above as fmp_sent
+    # We add it here as an additional numeric component when available.
+    if fmp_sent:
+        try:
+            score_values.append(str(fmp_sent))
+        except Exception:
+            pass
+    # Fallback: classifier relevance score when no sentiments are present.
+    if not score_values:
+        raw_score = sc.get("score", sc.get("raw_score", None))
+        if isinstance(raw_score, (int, float)):
+            score_values.append(f"{raw_score:.2f}")
+        elif raw_score is not None:
+            score_values.append(str(raw_score))
+    score_str = " / ".join(score_values) if score_values else "n/a"
 
     # Color: green for up, red for down; fallback to Discord blurple.  When
     # momentum indicators are available, override colour to reflect the
@@ -839,6 +877,81 @@ def _build_discord_embed(
         if isinstance(ema_cross, int) and ema_cross != 0:
             ema_str = "Bullish" if ema_cross > 0 else "Bearish"
             parts.append(f"EMA9/21: {ema_str}")
+    # Earnings information: attach next earnings date and surprise metrics.
+    try:
+        # Next earnings date (if any and within lookahead window)
+        next_dt = item_dict.get("next_earnings_date")
+        eps_est = item_dict.get("earnings_eps_estimate")
+        eps_rep = item_dict.get("earnings_reported_eps")
+        surprise = item_dict.get("earnings_surprise_pct")
+        earn_lbl = item_dict.get("earnings_label")
+        # Build a human‑readable next earnings string (relative days)
+        next_str = None
+        if isinstance(next_dt, datetime):
+            try:
+                now = datetime.now(timezone.utc)
+                delta = next_dt - now
+                if delta.total_seconds() >= 0:
+                    # upcoming
+                    days = delta.days
+                    hrs = int(delta.total_seconds() // 3600)
+                    if days >= 1:
+                        next_str = f"{next_dt.date()} ({days}d)"
+                    else:
+                        next_str = f"{next_dt.date()} (today)"
+                else:
+                    # past but still within lookback: show days ago
+                    days_ago = abs(delta.days)
+                    next_str = f"{next_dt.date()} ({days_ago}d ago)"
+            except Exception:
+                try:
+                    next_str = next_dt.isoformat()[:10]
+                except Exception:
+                    next_str = None
+        # Build surprise string: estimate vs reported
+        surprise_str = None
+        try:
+            if eps_est is not None or eps_rep is not None:
+                est_str = (
+                    f"{float(eps_est):.2f}"
+                    if isinstance(eps_est, (int, float))
+                    else str(eps_est)
+                )
+                rep_str = (
+                    f"{float(eps_rep):.2f}"
+                    if isinstance(eps_rep, (int, float))
+                    else str(eps_rep)
+                )
+                # Combine estimate/actual
+                surprise_str = f"Est/Rep: {est_str} / {rep_str}"
+                # Add surprise percentage when available
+                if surprise is not None and surprise == surprise:
+                    try:
+                        s_pct = float(surprise) * 100.0
+                        sign = "+" if s_pct >= 0 else ""
+                        surprise_str += f" | Surprise: {sign}{s_pct:.1f}%"
+                    except Exception:
+                        pass
+                # Append label when present
+                if isinstance(earn_lbl, str) and earn_lbl:
+                    surprise_str += f" ({earn_lbl})"
+        except Exception:
+            surprise_str = None
+        if next_str or surprise_str:
+            val_lines: List[str] = []
+            if next_str:
+                val_lines.append(f"Next: {next_str}")
+            if surprise_str:
+                val_lines.append(surprise_str)
+            fields.append(
+                {
+                    "name": "Earnings",
+                    "value": "\n".join(val_lines),
+                    "inline": True,
+                }
+            )
+    except Exception:
+        pass
         # VWAP delta
         vwap_d = momentum.get("vwap_delta")
         if isinstance(vwap_d, (int, float)):
@@ -849,17 +962,18 @@ def _build_discord_embed(
                 {"name": "Indicators", "value": "; ".join(parts), "inline": False}
             )
 
-    # Summarise recent SEC filings when present.  Show up to three
-    # items with relative age.  Each line is formatted as
-    # ``<reason> (Xd ago)`` or ``<label> (Xh ago)``.  This field is
-    # appended before source/tickers so it appears near the bottom of
-    # the embed but above metadata.
+    # Summarise recent SEC filings when present.  To avoid exceeding Discord
+    # embed length limits (6 kB total, 1024 characters per field), we
+    # truncate both the number of filings and the length of each line.  At
+    # most two filings are shown.  Each reason is shortened to ~80
+    # characters and suffixed with a relative age (days or hours).  See
+    # https://discord.com/developers/docs/resources/channel#embed-object
     try:
         recs = item_dict.get("recent_sec_filings")
         if isinstance(recs, list) and recs:
             lines: List[str] = []
             now_ts = datetime.now(timezone.utc)
-            for entry in recs[:3]:
+            for entry in recs[:2]:
                 ts_str = entry.get("ts")  # type: ignore[attr-defined]
                 lbl = entry.get("label")  # type: ignore[attr-defined]
                 reason = entry.get("reason")  # type: ignore[attr-defined]
@@ -882,14 +996,20 @@ def _build_discord_embed(
                                 ago = f"{hrs}h"
                 except Exception:
                     ago = ""
-                line = str(reason or lbl or "Filing")
+                text = str(reason or lbl or "Filing").strip()
+                # Truncate long reasons to ~80 characters (Discord truncation is
+                # per-field; we truncate manually to avoid 400 errors)
+                if len(text) > 80:
+                    text = text[:77] + "..."
                 if ago:
-                    line = f"{line} ({ago} ago)"
-                lines.append(line)
+                    text = f"{text} ({ago} ago)"
+                lines.append(text)
             if lines:
-                fields.append(
-                    {"name": "SEC Filings", "value": "\n".join(lines), "inline": False}
-                )
+                value = "\n".join(lines)
+                # Discord fields cannot exceed 1024 characters
+                if len(value) > 1024:
+                    value = value[:1021] + "..."
+                fields.append({"name": "SEC Filings", "value": value, "inline": False})
     except Exception:
         pass
     # Always include source and tickers fields last
@@ -930,9 +1050,12 @@ def _build_discord_embed(
                             img_attached = True
                     except Exception:
                         pass
-                # Fallback to local chart rendering when rich alerts are on
+                # Only attempt local charts when QuickChart is disabled.  When
+                # QuickChart is enabled but fails, skip mplfinance and fall
+                # back to Finviz instead of raising repeated import errors.
                 if (
                     not img_attached
+                    and not getattr(s, "feature_quickchart", False)
                     and getattr(s, "feature_rich_alerts", False)
                     and CHARTS_OK
                 ):
@@ -953,7 +1076,6 @@ def _build_discord_embed(
                 # Finviz static chart fallback when no image attached
                 if (
                     not img_attached
-                    and (not getattr(s, "feature_rich_alerts", False) or not CHARTS_OK)
                     and getattr(s, "feature_finviz_chart", False)
                     and "image" not in embed
                 ):

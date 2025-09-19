@@ -1,4 +1,4 @@
-﻿# src/catalyst_bot/feeds.py
+# src/catalyst_bot/feeds.py
 from __future__ import annotations
 
 import csv
@@ -22,6 +22,62 @@ from .config import get_settings
 from .logging_utils import get_logger
 from .market import get_last_price_snapshot, get_volatility
 from .watchlist import load_watchlist_set
+
+
+# --- Noise filtering -------------------------------------------------------
+def _is_finviz_noise(title: str, summary: str) -> bool:
+    """
+    Heuristic filter for Finviz news headlines that are legal notices or
+    shareholder investigation advertisements rather than actionable news.
+
+    Returns ``True`` when the headline or summary contains phrases commonly
+    associated with class‑action law firms (e.g. "recover your losses",
+    "class action", "lawsuit", "contact the firm", "deadline alert") or
+    when the headline mentions law firms by name (Rosen, Portnoy,
+    Pomerantz, etc.).
+
+    Parameters
+    ----------
+    title : str
+        The news headline from Finviz.
+    summary : str
+        The optional summary or description.
+
+    Returns
+    -------
+    bool
+        ``True`` if the item should be filtered out, ``False`` otherwise.
+    """
+    try:
+        text = f"{title} {summary}".lower()
+        # Common spam/phishing/law‑firm keywords.  Each entry represents a
+        # pattern associated with legal notices or shareholder
+        # investigations that are unlikely to move the stock price.
+        keywords = [
+            "recover your losses",
+            "class action",
+            "class‑action",
+            "lawsuit",
+            "llp",
+            "law firm",
+            "investigation",
+            "shareholder investigation",
+            "securities investigation",
+            "legal notice",
+            "recover losses",
+            "pomerantz",
+            "rosen law",
+            "portnoy",
+            "deadline alert",
+            "deadline reminder",
+        ]
+        for kw in keywords:
+            if kw in text:
+                return True
+        return False
+    except Exception:
+        return False
+
 
 # Local sentiment fallback: optional.  If import fails (no module), attach
 # sentiment is a no-op so that pipeline continues smoothly.
@@ -879,16 +935,29 @@ def fetch_pr_feeds() -> List[Dict]:
                 tkr_u = tkr.upper().strip()
                 if not tkr_u:
                     continue
-                # Classify
+                # Classify the filing
                 score, lbl, reason = _sec_classify(
                     src_key, it.get("title"), it.get("summary")
                 )
                 if lbl:
-                    # Attach to the item
+                    # Generate a concise summary of the filing title to avoid
+                    # overly long embed fields.  When summarisation fails or
+                    # returns an empty string, fall back to the classifier
+                    # reason.  We import here to avoid cyclic imports at
+                    # module load time.
+                    try:
+                        from .sec_digester import (
+                            summarize_title as _sec_summarise,  # type: ignore
+                        )
+
+                        summary = _sec_summarise(it.get("title")) or reason or ""
+                    except Exception:
+                        summary = reason or ""
+                    # Attach classification label and summary to the item
                     if "sec_label" not in it:
                         it["sec_label"] = lbl  # type: ignore
-                    if "sec_reason" not in it and reason:
-                        it["sec_reason"] = reason  # type: ignore
+                    if "sec_reason" not in it and summary:
+                        it["sec_reason"] = summary  # type: ignore
                     # Parse timestamp for record; fall back to now
                     ts_str = it.get("ts")
                     try:
@@ -897,7 +966,11 @@ def fetch_pr_feeds() -> List[Dict]:
                             dt = dt.replace(tzinfo=timezone.utc)
                     except Exception:
                         dt = datetime.now(timezone.utc)
-                    _sec_record(tkr_u, dt, lbl, reason or "")
+                    # Record the filing using the summary instead of the raw
+                    # classifier reason.  This reduces the storage size and
+                    # ensures that recent filings presented in alerts remain
+                    # concise.
+                    _sec_record(tkr_u, dt, lbl, summary)
                     # Update watchlist cascade
                     if _sec_update_watchlist:
                         _sec_update_watchlist(tkr_u, lbl)
@@ -951,6 +1024,118 @@ def fetch_pr_feeds() -> List[Dict]:
                         it["sec_sentiment_score"] = s_score  # type: ignore
             except Exception:
                 continue
+
+    # -----------------------------------------------------------------
+    # Patch‑6: attach earnings information when enabled
+    #
+    # The earnings module retrieves the next scheduled earnings date and
+    # historical EPS data from the configured provider (currently
+    # yfinance).  When FEATURE_EARNINGS_ALERTS=1 the bot attaches
+    # earnings info to each event, including the next earnings date (if
+    # within the lookahead window), EPS estimate, reported EPS and
+    # surprise percentage.  The sentiment aggregator consumes the
+    # earnings score separately.  We use a per‑ticker cache to avoid
+    # redundant network calls in a single cycle.
+    try:
+        from .earnings import fetch_earnings_info  # type: ignore
+    except Exception:
+        fetch_earnings_info = None  # type: ignore
+    if fetch_earnings_info:
+        try:
+            earn_enabled = False
+            lookahead_days = 14
+            if settings:
+                earn_enabled = getattr(settings, "feature_earnings_alerts", False)
+                lookahead_days = int(getattr(settings, "earnings_lookahead_days", 14))
+            else:
+                env_val = str(os.getenv("FEATURE_EARNINGS_ALERTS", "0")).strip().lower()
+                earn_enabled = env_val in {"1", "true", "yes", "on"}
+                try:
+                    lookahead_days = int(
+                        os.getenv("EARNINGS_LOOKAHEAD_DAYS", "14") or "14"
+                    )
+                except Exception:
+                    lookahead_days = 14
+        except Exception:
+            earn_enabled = False
+            lookahead_days = 14
+        if earn_enabled:
+            earn_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+            # Precompute cutoff date; only include upcoming earnings within this window
+            now_utc = datetime.now(timezone.utc)
+            cutoff = now_utc + timedelta(days=lookahead_days)
+            for it in all_items:
+                try:
+                    tkr = it.get("ticker") or None
+                    if not tkr:
+                        tkrs = it.get("tickers")
+                        if isinstance(tkrs, list) and tkrs:
+                            tkr = tkrs[0]
+                    if not tkr or not isinstance(tkr, str):
+                        continue
+                    tkr_u = tkr.upper().strip()
+                    if not tkr_u:
+                        continue
+                    if tkr_u not in earn_cache:
+                        try:
+                            info = fetch_earnings_info(tkr_u)
+                        except Exception:
+                            info = None
+                        earn_cache[tkr_u] = info
+                    info = earn_cache.get(tkr_u)
+                    if not info:
+                        continue
+                    # Decide whether to attach upcoming earnings; skip if beyond lookahead
+                    next_date = info.get("next_date")
+                    if next_date and isinstance(next_date, datetime):
+                        if next_date > cutoff:
+                            # Skip attaching far future earnings
+                            info_to_attach = info.copy()
+                            info_to_attach["next_date"] = None
+                        else:
+                            info_to_attach = info
+                    else:
+                        info_to_attach = info
+                    # Attach fields if not already present
+                    if "next_earnings_date" not in it and info_to_attach.get(
+                        "next_date"
+                    ):
+                        it["next_earnings_date"] = info_to_attach.get("next_date")  # type: ignore
+                    if (
+                        "earnings_eps_estimate" not in it
+                        and info_to_attach.get("eps_estimate") is not None
+                    ):
+                        it["earnings_eps_estimate"] = info_to_attach.get(
+                            "eps_estimate"
+                        )  # type: ignore
+
+                    if (
+                        "earnings_reported_eps" not in it
+                        and info_to_attach.get("reported_eps") is not None
+                    ):
+                        it["earnings_reported_eps"] = info_to_attach.get(
+                            "reported_eps"
+                        )  # type: ignore
+
+                    if (
+                        "earnings_surprise_pct" not in it
+                        and info_to_attach.get("surprise_pct") is not None
+                    ):
+                        it["earnings_surprise_pct"] = info_to_attach.get(
+                            "surprise_pct"
+                        )  # type: ignore
+
+                    if "earnings_label" not in it and info_to_attach.get("label"):
+                        it["earnings_label"] = info_to_attach.get("label")  # type: ignore
+                    if (
+                        "earnings_score" not in it
+                        and info_to_attach.get("score") is not None
+                    ):
+                        it["earnings_score"] = info_to_attach.get("score")  # type: ignore
+                    if "earnings_details" not in it:
+                        it["earnings_details"] = info_to_attach  # type: ignore
+                except Exception:
+                    continue
 
     # ---------------------------------------------------------------------
     # Filtering & metadata enrichment
@@ -1132,11 +1317,11 @@ def fetch_pr_feeds() -> List[Dict]:
                 http5 = stats.get("http5", 0)
                 errors = stats.get("errors", 0)
                 tms = stats.get("t_ms", 0)
+                # Compose a per‑source summary string.  Break the long f‑string across
+                # two literals to satisfy line length guidelines (flake8 E501).
                 parts.append(
-                    (
-                        f"{src_name}=ok:{ok} entries:{entries} err:{errors} "
-                        f"h4:{http4} h5:{http5} t_ms:{tms}"
-                    )
+                    f"{src_name}=ok:{ok} entries:{entries} err:{errors} h4:{http4} "
+                    f"h5:{http5} t_ms:{tms}"
                 )
             except Exception:
                 # Fallback to a simple representation when stats is malformed
@@ -1425,6 +1610,13 @@ def _fetch_finviz_news_from_env() -> list[dict]:
                 "ticker": _primary,
                 "tickers": _tkr_list,
             }
+            # Skip Finviz headlines that appear to be class‑action or law‑firm
+            # promotional notices.  These often contain phrases like "recover
+            # your losses", "lawsuit", "LLP", etc., and do not convey
+            # actionable trading information.  See issue #noise_filter for
+            # details.
+            if _is_finviz_noise(title, (low.get("summary") or "")):
+                continue
             out.append(item)
 
             if len(out) >= max_items:
@@ -1584,6 +1776,16 @@ def _fetch_finviz_news_export(url: str) -> list[dict]:
             "ticker": None,
             "tickers": [],
         }
+        # Apply the same noise filter as for the standard Finviz feed.  The
+        # export feed contains only a title; pass an empty summary to the
+        # helper.  If the headline appears to be a law‑firm notice or
+        # shareholder investigation ad, skip it.
+        try:
+            if _is_finviz_noise(title, ""):
+                continue
+        except Exception:
+            # If the filter errors, fall through and include the item
+            pass
         out.append(item)
     return out
 

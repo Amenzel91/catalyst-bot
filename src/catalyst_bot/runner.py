@@ -275,15 +275,31 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             "AnalystSignals": getattr(settings, "feature_analyst_signals", False),
             # SEC filings digester flag
             "SecDigester": getattr(settings, "feature_sec_digester", False),
+            # Earnings alerts flag
+            "EarningsAlerts": getattr(settings, "feature_earnings_alerts", False),
         }
+        # Select which features to display based on the heartbeat reason.  At
+        # boot we list all active features; during interval heartbeats we only
+        # surface features that were enabled in the config but failed to
+        # initialise (e.g. missing deps or keys).  See #heartbeat_verbose.
         active_features = [name for name, enabled in feature_map.items() if enabled]
-        # Present active features one per line for readability
-        features_value = "\n".join(active_features) if active_features else "—"
-        # Gather last cycle metrics from global state; show dashes when unavailable
-        from .runner import (  # import within function to avoid circulars
-            LAST_CYCLE_STATS,
-        )
-
+        if reason == "boot":
+            features_value = "\n".join(active_features) if active_features else "—"
+        else:
+            # Show failing features only: those that are expected to be on
+            # (settings.feature_X) but are not active in feature_map.
+            failing: list[str] = []
+            for name, enabled in feature_map.items():
+                # Build the attribute name on settings: feature_momentum for "Momentum"
+                attr = f"feature_{name.lower()}"
+                try:
+                    if getattr(settings, attr, False) and not enabled:
+                        failing.append(name)
+                except Exception:
+                    pass
+            features_value = "\n".join(failing) if failing else "—"
+        # Gather last cycle metrics from the global LAST_CYCLE_STATS dict.  Do not
+        # re-import from this module to avoid stale copies.
         try:
             items_cnt = str(LAST_CYCLE_STATS.get("items", "—"))
             dedup_cnt = str(LAST_CYCLE_STATS.get("deduped", "—"))
@@ -764,13 +780,18 @@ def _cycle(log, settings) -> None:
         # Do not classify when there's no ticker
         if not ticker:
             skipped_no_ticker += 1
-            log.info("item_parse_skip source=%s ticker=%s", source, ticker)
+            # Reduce log noise from tickerless items.  Use debug level so
+            # these messages do not clutter normal logs.  See issue
+            # #noise_filter.  The source and empty ticker are still captured
+            # via metrics (skipped_no_ticker) but not logged as info.
+            log.debug("item_parse_skip source=%s ticker=%s", source, ticker)
             continue
 
         # Drop warrants/units/etc (refined)
         if ignore_instr and _is_instrument_like(ticker):
             skipped_instr += 1
-            log.info("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
+            # Use debug level for instrument‑like tickers to reduce log spam.
+            log.debug("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
             continue
 
         # Classify (uses analyzer weights if present); fallback if needed

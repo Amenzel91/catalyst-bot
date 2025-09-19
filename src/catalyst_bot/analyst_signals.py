@@ -172,14 +172,18 @@ def get_analyst_signal(ticker: str) -> Optional[Dict[str, Any]]:
             "on",
         }:
             return None
+
         # Construct a minimal settings object stub
         class S:
             pass
+
         settings = S()
         settings.analyst_return_threshold = float(
             os.getenv("ANALYST_RETURN_THRESHOLD", "10.0").strip() or "10.0"
         )
-        settings.analyst_provider = os.getenv("ANALYST_PROVIDER", "fmp").strip() or "fmp"
+        settings.analyst_provider = (
+            os.getenv("ANALYST_PROVIDER", "fmp").strip() or "fmp"
+        )
         settings.analyst_api_key = os.getenv("ANALYST_API_KEY", "").strip()
         # FMP key fallback
         settings.fmp_api_key = os.getenv("FMP_API_KEY", "").strip()
@@ -188,7 +192,9 @@ def get_analyst_signal(ticker: str) -> Optional[Dict[str, Any]]:
     if not sym:
         return None
     provider = getattr(settings, "analyst_provider", "fmp") or "fmp"
-    api_key = getattr(settings, "analyst_api_key", "") or getattr(settings, "fmp_api_key", "")
+    api_key = getattr(settings, "analyst_api_key", "") or getattr(
+        settings, "fmp_api_key", ""
+    )
 
     # Fetch target depending on provider
     if provider.lower() == "fmp":
