@@ -8,30 +8,27 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Data and output directories (created at runtime)
-data/
-out/
+# Log files
+*.log
+*.log.*
+run*.log
 
-# Ignore generated databases anywhere
+# Temporary and output files
+out.txt
+hello.txt
+
+# Generated databases
 *.db
 *.sqlite*
 *.sqlite3
 
-# Ignore data by default, then selectively allow certain files
+# Data directory - ignore generated/runtime files but keep structure and reference data
 data/
 !data/
 !data/.gitkeep
 !data/README.md
+!data/sec/
 !data/sec/**
-data/logs/bot.jsonl
-data/analyzer/pending_66b8ecf7.json
-data/logs/bot.jsonl
-data/watchlist_state.json
-data/logs/bot.jsonl
-run.log
-data/logs/bot.jsonl
-data/logs/bot.jsonl
-/data/analyzer
-/data/analyzer
-/data/logs
-data/logs/bot.jsonl
+
+# Output directories (created at runtime)
+out/
