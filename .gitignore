@@ -11,6 +11,11 @@ Thumbs.db
 # Data and output directories (created at runtime)
 data/
 out/
+out.txt
+
+# Log files
+*.log
+run*.log
 
 # Ignore generated databases anywhere
 *.db
@@ -23,12 +28,7 @@ data/
 !data/.gitkeep
 !data/README.md
 !data/sec/**
-data/logs/bot.jsonl
-data/analyzer/pending_66b8ecf7.json
-data/logs/bot.jsonl
-data/watchlist_state.json
-data/logs/bot.jsonl
-run.log
-data/logs/bot.jsonl
-data/logs/bot.jsonl
-data/logs/bot.jsonl
+
+# Temporary and generated files
+temp/
+tmp/
