@@ -13048,3 +13048,192 @@
 {"ts": "2025-09-18T06:16:19Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\menza\\OneDrive\\Desktop\\Catalyst-Bot\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
 {"ts": "2025-09-18T06:16:19Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=78.16s", "taskName": null}
 {"ts": "2025-09-18T06:17:21Z", "level": "INFO", "name": "catalyst_bot.finviz_elite", "msg": "finviz_screener_rows", "taskName": null, "headers": []}
+{"ts": "2025-09-19T21:03:36Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T21:03:36Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T21:03:37Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T21:03:48Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T21:03:48Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11353.6 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11353.6", "taskName": null}
+{"ts": "2025-09-19T21:03:48Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T21:03:48Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.36s", "taskName": null}
+{"ts": "2025-09-19T21:03:48Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T22:21:28Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T22:21:28Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T22:21:28Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T22:21:40Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T22:21:40Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11346.4 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11346.4", "taskName": null}
+{"ts": "2025-09-19T22:21:40Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T22:21:40Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.35s", "taskName": null}
+{"ts": "2025-09-19T22:21:40Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T22:32:43Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T22:32:43Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T22:32:43Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T22:32:55Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T22:32:55Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11515.8 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11515.8", "taskName": null}
+{"ts": "2025-09-19T22:32:55Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T22:32:55Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.52s", "taskName": null}
+{"ts": "2025-09-19T22:32:55Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T22:38:56Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T22:38:56Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T22:38:56Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T22:39:08Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T22:39:08Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11333.6 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11333.6", "taskName": null}
+{"ts": "2025-09-19T22:39:08Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T22:39:08Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.33s", "taskName": null}
+{"ts": "2025-09-19T22:39:08Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T22:52:49Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T22:52:49Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T22:52:49Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T22:53:00Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T22:53:00Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11412.9 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11412.9", "taskName": null}
+{"ts": "2025-09-19T22:53:00Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T22:53:00Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.41s", "taskName": null}
+{"ts": "2025-09-19T22:53:00Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T22:53:01Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:01:20Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T23:01:20Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T23:01:20Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:01:31Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T23:01:31Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11288.6 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11288.6", "taskName": null}
+{"ts": "2025-09-19T23:01:31Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T23:01:31Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.29s", "taskName": null}
+{"ts": "2025-09-19T23:01:31Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T23:01:32Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:09:13Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T23:09:13Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T23:09:13Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:09:24Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T23:09:24Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11316.0 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11316.0", "taskName": null}
+{"ts": "2025-09-19T23:09:24Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T23:09:24Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.32s", "taskName": null}
+{"ts": "2025-09-19T23:09:24Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T23:09:25Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:32:41Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-19T23:32:41Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-19T23:32:42Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11420.6 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11420.6", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.42s", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-19T23:32:53Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-19T23:32:54Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=306.3 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:32:54Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=319.6 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:32:55Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=285.0 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:32:57Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=261.5 status=KeyError", "taskName": null}
+{"ts": "2025-09-19T23:32:58Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=622.6 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:32:58Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=288.6 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:32:59Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=284.4 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:33:00Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=464.6 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:33:01Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=496.8 status=KeyError", "taskName": null}
+{"ts": "2025-09-19T23:33:02Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=770.6 status=no_data", "taskName": null}
+{"ts": "2025-09-19T23:33:02Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=9103.3 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:0.0", "taskName": null}
+{"ts": "2025-09-20T00:13:24Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T00:13:24Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T00:13:25Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11362.3 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11362.3", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.37s", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T00:13:36Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:13:37Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=309.9 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:37Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=302.8 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:38Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=294.1 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:40Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=410.6 status=KeyError", "taskName": null}
+{"ts": "2025-09-20T00:13:41Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=895.0 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:42Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=311.9 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:42Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=302.0 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:43Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=alpha t_ms=293.5 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:45Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=392.0 status=KeyError", "taskName": null}
+{"ts": "2025-09-20T00:13:46Z", "level": "INFO", "name": "market", "msg": "provider_usage provider=yf t_ms=776.2 status=no_data", "taskName": null}
+{"ts": "2025-09-20T00:13:46Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=9296.6 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:0.0", "taskName": null}
+{"ts": "2025-09-20T00:31:27Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T00:31:27Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T00:31:27Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11325.0 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11325.0", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.33s", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:31:38Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=1 t_ms=1.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.0", "taskName": null}
+{"ts": "2025-09-20T00:51:37Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T00:51:37Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T00:51:37Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:51:48Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T00:51:48Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11423.4 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11423.4", "taskName": null}
+{"ts": "2025-09-20T00:51:48Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T00:51:48Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.43s", "taskName": null}
+{"ts": "2025-09-20T00:51:48Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T00:51:49Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:51:49Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=1 t_ms=1.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:0.0", "taskName": null}
+{"ts": "2025-09-20T00:54:53Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T00:54:53Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T00:54:54Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11183.2 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11182.1", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.19s", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:55:05Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=1 t_ms=1.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:0.0", "taskName": null}
+{"ts": "2025-09-20T00:57:06Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T00:57:06Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T00:57:06Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11156.0 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11156.0", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.16s", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T00:57:18Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=1 t_ms=3.5 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.5", "taskName": null}
+{"ts": "2025-09-20T01:33:55Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T01:33:55Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T01:33:55Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11496.7 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11494.7", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.50s", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T01:34:07Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=2 t_ms=3.5 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.0", "taskName": null}
+{"ts": "2025-09-20T03:09:02Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T03:09:02Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T03:09:03Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11399.1 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11396.9", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.41s", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:09:15Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=2 t_ms=3.1 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.0", "taskName": null}
+{"ts": "2025-09-20T03:22:50Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T03:22:50Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T03:22:50Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11420.1 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11420.1", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.42s", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:23:02Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=2 t_ms=2.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.1", "taskName": null}
+{"ts": "2025-09-20T03:50:14Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T03:50:14Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T03:50:14Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:50:25Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T03:50:25Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11345.8 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11344.5", "taskName": null}
+{"ts": "2025-09-20T03:50:25Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T03:50:25Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.35s", "taskName": null}
+{"ts": "2025-09-20T03:50:25Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T03:50:26Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T03:50:26Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=2 t_ms=1.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:0.0", "taskName": null}
+{"ts": "2025-09-20T04:00:21Z", "level": "INFO", "name": "runner", "msg": "boot_start alerts_enabled=True webhook=set record_only=False finviz_token=missing", "taskName": null}
+{"ts": "2025-09-20T04:00:21Z", "level": "INFO", "name": "runner", "msg": "boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs=", "taskName": null}
+{"ts": "2025-09-20T04:00:21Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "WARNING", "name": "feeds", "msg": "feed_http status=599 source=mock url=http://mock.local/rss", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=0 t_ms=11179.6 mock=ok:0 entries:0 err:0 h4:0 h5:1 t_ms:11177.4", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "runner", "msg": "cycle_metrics items=0 deduped=0 tickers_present=0 tickers_missing=0 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\\Users\\amenzel\\Desktop\\catalyst-bot\\data\\analyzer\\keyword_stats.json' price_ceiling=10.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "runner", "msg": "CYCLE_DONE took=11.19s", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "runner", "msg": "boot_end", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "runner", "msg": "heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb...", "taskName": null}
+{"ts": "2025-09-20T04:00:33Z", "level": "INFO", "name": "feeds", "msg": "feeds_summary sources=1 items=2 t_ms=3.0 mock=ok:1 entries:2 err:0 h4:0 h5:0 t_ms:1.0", "taskName": null}

@@ -23,9 +23,7 @@ def test_alpha_primary_short_circuits_yf(monkeypatch):
 
     # Track whether yfinance fallback would be used
     def _boom(*a, **k):
-        raise AssertionError(
-            "yfinance should not be called when Alpha returns both values"
-        )
+        raise AssertionError("yfinance should not be called when Alpha returns both values")
 
     class FakeTicker:
         def __init__(self, t):
@@ -62,9 +60,7 @@ def test_yfinance_fallback_when_alpha_none(monkeypatch):
     # Force Alpha path on, but make it return nothing usable
     monkeypatch.setattr(market, "_AV_KEY", "demo", raising=False)
     monkeypatch.setattr(market, "_SKIP_ALPHA", False, raising=False)
-    monkeypatch.setattr(
-        market, "_alpha_last_prev", lambda *a, **k: (None, None), raising=True
-    )
+    monkeypatch.setattr(market, "_alpha_last_prev", lambda *a, **k: (None, None), raising=True)
 
     # Provide a tiny yfinance stub
     class FakeFI(dict):
@@ -102,9 +98,7 @@ def test_yfinance_history_fallback_when_fast_info_partial(monkeypatch):
     # Alpha gives partial (last only)
     monkeypatch.setattr(market, "_AV_KEY", "demo", raising=False)
     monkeypatch.setattr(market, "_SKIP_ALPHA", False, raising=False)
-    monkeypatch.setattr(
-        market, "_alpha_last_prev", lambda *a, **k: (50.0, None), raising=True
-    )
+    monkeypatch.setattr(market, "_alpha_last_prev", lambda *a, **k: (50.0, None), raising=True)
 
     # yfinance fast_info missing prev, but history provides both days
     class FakeHist:

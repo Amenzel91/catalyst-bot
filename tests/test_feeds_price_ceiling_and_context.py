@@ -35,9 +35,7 @@ def test_price_ceiling_enrichment_and_intraday(monkeypatch, tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    (d / "data" / "finviz" / "universe.csv").write_text(
-        "ticker\nCHEAP\n", encoding="utf-8"
-    )
+    (d / "data" / "finviz" / "universe.csv").write_text("ticker\nCHEAP\n", encoding="utf-8")
     monkeypatch.chdir(d)
 
     # Env flags
@@ -52,9 +50,7 @@ def test_price_ceiling_enrichment_and_intraday(monkeypatch, tmp_path):
         "https://x/1",
         "2025-09-08T12:00:00Z",
     )
-    expen = _make_entry(
-        "Expensive Co Update (NYSE:EXPEN)", "https://x/2", "2025-09-08T13:00:00Z"
-    )
+    expen = _make_entry("Expensive Co Update (NYSE:EXPEN)", "https://x/2", "2025-09-08T13:00:00Z")
 
     # Stub feedparser.parse to return our entries
     import feedparser
@@ -71,9 +67,7 @@ def test_price_ceiling_enrichment_and_intraday(monkeypatch, tmp_path):
     # Patch network fetcher used by feeds to avoid HTTP
     import catalyst_bot.feeds as feeds
 
-    monkeypatch.setattr(
-        feeds, "_get_multi", lambda urls: (200, "<rss/>", urls[0]), raising=True
-    )
+    monkeypatch.setattr(feeds, "_get_multi", lambda urls: (200, "<rss/>", urls[0]), raising=True)
 
     # Limit FEEDS to a single mock source for determinism
     feeds.FEEDS = {"mock": ["http://mock.local/rss"]}
@@ -89,9 +83,7 @@ def test_price_ceiling_enrichment_and_intraday(monkeypatch, tmp_path):
     )
 
     # Stub volatility
-    monkeypatch.setattr(
-        feeds, "get_volatility", lambda _t, days=14: 18.5, raising=False
-    )
+    monkeypatch.setattr(feeds, "get_volatility", lambda _t, days=14: 18.5, raising=False)
 
     # Stub intraday snapshots
     monkeypatch.setattr(

@@ -1,15 +1,22 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.black]
+line-length = 100
+target-version = ["py312"]
 
-[project]
-name = "catalyst-bot"
-version = "0.0.0"
-requires-python = ">=3.11"
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E","F","W","I","UP","B","A","C4","SIM","S","Q","PL"]
+ignore = ["S101"]
+src = ["src","tests"]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["catalyst_bot*"]
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.flake8]
+max-complexity = 12

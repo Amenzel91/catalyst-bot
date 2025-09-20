@@ -84,11 +84,7 @@ def main():
         rows = export_latest_filings(ticker=tk)
         log.info("ingested_filings")
         # keep only recent
-        rows = [
-            r
-            for r in rows
-            if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)
-        ]
+        rows = [r for r in rows if r.get("filing_date") and _is_recent(r["filing_date"], cutoff)]
 
         with conn:
             for r in rows:

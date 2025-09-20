@@ -1,4 +1,0 @@
-src/
-  catalyst_bot/
-    __init__.py     # can be empty (or put __version__ here)
-    runner.py       # the module you run with: python -m catalyst_bot.runner

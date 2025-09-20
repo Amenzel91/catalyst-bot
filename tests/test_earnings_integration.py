@@ -14,9 +14,7 @@ def test_earnings_sentiment_aggregation(monkeypatch):
         return 0.3, "Bullish", {"next_date": None, "surprise_pct": 0.3}
 
     # Disable settings lookup to force environment usage
-    monkeypatch.setattr(
-        ss, "get_settings", lambda: (_ for _ in ()).throw(Exception("no settings"))
-    )
+    monkeypatch.setattr(ss, "get_settings", lambda: (_ for _ in ()).throw(Exception("no settings")))
     # Enable news and earnings sentiment via env
     monkeypatch.setenv("FEATURE_NEWS_SENTIMENT", "1")
     monkeypatch.setenv("FEATURE_EARNINGS_ALERTS", "1")
@@ -32,9 +30,7 @@ def test_earnings_sentiment_aggregation(monkeypatch):
     # earnings module stub lacks get_earnings_sentiment in the test env).
     import catalyst_bot.earnings as earnings
 
-    monkeypatch.setattr(
-        earnings, "get_earnings_sentiment", fake_earnings_sent, raising=False
-    )
+    monkeypatch.setattr(earnings, "get_earnings_sentiment", fake_earnings_sent, raising=False)
 
     res = ss.get_combined_sentiment_for_ticker("TEST")
     assert res is not None, "Expected a result when earnings sentiment is enabled"

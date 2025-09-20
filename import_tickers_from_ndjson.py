@@ -32,9 +32,7 @@ def iter_records(input_path: str):
 
 def main():
     if len(sys.argv) < 3:
-        print(
-            "Usage: python import_tickers_from_ndjson.py <input.ndjson|.json> <output.db>"
-        )
+        print("Usage: python import_tickers_from_ndjson.py <input.ndjson|.json> <output.db>")
         sys.exit(2)
 
     in_path = sys.argv[1]

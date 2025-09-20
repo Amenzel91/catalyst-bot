@@ -27,12 +27,8 @@ def test_backtest_provider_prefers_tiingo(monkeypatch):
     import catalyst_bot.market as market
 
     # Patch market providers: Tiingo returns data; AV returns none; yfinance not invoked
-    monkeypatch.setattr(
-        market, "_tiingo_last_prev", lambda t, key, timeout=8: (10.0, 9.0)
-    )
-    monkeypatch.setattr(
-        market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (None, None)
-    )
+    monkeypatch.setattr(market, "_tiingo_last_prev", lambda t, key, timeout=8: (10.0, 9.0))
+    monkeypatch.setattr(market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (None, None))
     # Ensure yfinance is not consulted by ordering; even if consulted it returns none
     monkeypatch.setattr(sim, "yf", None, raising=False)
     monkeypatch.setenv("BACKTEST_PROVIDER_ORDER", "tiingo,av,yf")
@@ -51,12 +47,8 @@ def test_backtest_provider_falls_back_to_av(monkeypatch):
     import catalyst_bot.market as market
 
     # Tiingo returns none; AV returns data
-    monkeypatch.setattr(
-        market, "_tiingo_last_prev", lambda t, key, timeout=8: (None, None)
-    )
-    monkeypatch.setattr(
-        market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (20.0, 19.0)
-    )
+    monkeypatch.setattr(market, "_tiingo_last_prev", lambda t, key, timeout=8: (None, None))
+    monkeypatch.setattr(market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (20.0, 19.0))
     monkeypatch.setattr(sim, "yf", None, raising=False)
     monkeypatch.setenv("BACKTEST_PROVIDER_ORDER", "tiingo,av,yf")
 
@@ -73,12 +65,8 @@ def test_backtest_provider_uses_yfinance(monkeypatch):
     import catalyst_bot.market as market
 
     # Force providers to return none
-    monkeypatch.setattr(
-        market, "_tiingo_last_prev", lambda t, key, timeout=8: (None, None)
-    )
-    monkeypatch.setattr(
-        market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (None, None)
-    )
+    monkeypatch.setattr(market, "_tiingo_last_prev", lambda t, key, timeout=8: (None, None))
+    monkeypatch.setattr(market, "_alpha_last_prev_cached", lambda t, key, timeout=8: (None, None))
 
     # Mock yfinance to return non-empty history via fast_info
     class DummyTicker:

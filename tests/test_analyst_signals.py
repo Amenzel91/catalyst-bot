@@ -40,9 +40,7 @@ def test_get_analyst_signal_classification(monkeypatch: pytest.MonkeyPatch) -> N
         analyst_provider = "fmp"
         analyst_api_key = "dummy"
 
-    monkeypatch.setattr(
-        "catalyst_bot.analyst_signals.get_settings", lambda: StubSettings
-    )
+    monkeypatch.setattr("catalyst_bot.analyst_signals.get_settings", lambda: StubSettings)
     res = get_analyst_signal("XYZ")
     assert res is not None
     # Check numeric fields
@@ -58,9 +56,7 @@ def test_get_analyst_signal_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     class StubSettings:
         feature_analyst_signals = False
 
-    monkeypatch.setattr(
-        "catalyst_bot.analyst_signals.get_settings", lambda: StubSettings
-    )
+    monkeypatch.setattr("catalyst_bot.analyst_signals.get_settings", lambda: StubSettings)
     # Even if we monkeypatch the fetchers, the function should short‑circuit
     res = get_analyst_signal("XYZ")
     assert res is None

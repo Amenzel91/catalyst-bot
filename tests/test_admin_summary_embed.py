@@ -16,7 +16,5 @@ def test_post_admin_summary_md_noop_without_flag(tmp_path: Path, monkeypatch):
 
 def test_post_admin_summary_md_path_missing_returns_false(monkeypatch):
     monkeypatch.setenv("FEATURE_ADMIN_EMBED", "1")
-    monkeypatch.setenv(
-        "DISCORD_ADMIN_WEBHOOK", "https://discord.com/api/webhooks/TEST/TEST"
-    )
+    monkeypatch.setenv("DISCORD_ADMIN_WEBHOOK", "https://discord.com/api/webhooks/TEST/TEST")
     assert post_admin_summary_md("does_not_exist.md") is False

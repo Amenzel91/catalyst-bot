@@ -32,9 +32,7 @@ def test_classify_ownership_and_dilution():
     assert label == "Neutral"
     assert score == 0.0
     # Stake increase triggers bullish
-    score, label, reason = classify_filing(
-        "sec_13d", "Investor increases stake in XYZ Corp", ""
-    )
+    score, label, reason = classify_filing("sec_13d", "Investor increases stake in XYZ Corp", "")
     assert label == "Bullish"
     assert score == 1.0
 

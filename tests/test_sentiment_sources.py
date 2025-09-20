@@ -3,9 +3,7 @@ def test_combined_sentiment_weighting(monkeypatch):
     from catalyst_bot import sentiment_sources as ss
 
     # Stub out provider fetchers to return predictable values.
-    monkeypatch.setattr(
-        ss, "_fetch_alpha_sentiment", lambda ticker, key: (0.5, "Bullish", 3, {})
-    )
+    monkeypatch.setattr(ss, "_fetch_alpha_sentiment", lambda ticker, key: (0.5, "Bullish", 3, {}))
     monkeypatch.setattr(
         ss, "_fetch_marketaux_sentiment", lambda ticker, key: (0.2, "Neutral", 2, {})
     )
@@ -53,9 +51,7 @@ def test_combined_sentiment_gating(monkeypatch):
     from catalyst_bot import sentiment_sources as ss
 
     # Only one provider returns a single article; others return nothing.
-    monkeypatch.setattr(
-        ss, "_fetch_alpha_sentiment", lambda ticker, key: (0.8, "Bullish", 1, {})
-    )
+    monkeypatch.setattr(ss, "_fetch_alpha_sentiment", lambda ticker, key: (0.8, "Bullish", 1, {}))
     monkeypatch.setattr(ss, "_fetch_marketaux_sentiment", lambda ticker, key: None)
     monkeypatch.setattr(ss, "_fetch_stocknews_sentiment", lambda ticker, key: None)
     monkeypatch.setattr(ss, "_fetch_finnhub_sentiment", lambda ticker, key: None)

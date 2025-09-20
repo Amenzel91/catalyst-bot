@@ -95,9 +95,7 @@ def test_fetch_fmp_sentiment_parses_sample(monkeypatch):
         return res
 
     # Override the feedparser used inside fmp_sentiment
-    monkeypatch.setattr(
-        fmp_sentiment, "feedparser", types.SimpleNamespace(parse=mock_parse)
-    )
+    monkeypatch.setattr(fmp_sentiment, "feedparser", types.SimpleNamespace(parse=mock_parse))
 
     # Ensure the feature flag is enabled via settings fallback.  We bypass
     # get_settings by clearing FEATURE_FMP_SENTIMENT in settings and using env.

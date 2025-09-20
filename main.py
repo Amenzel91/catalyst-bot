@@ -35,8 +35,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Catalyst bot CLI. Use this entrypoint to run the live bot or the"
-            " analyzer."
+            "Catalyst bot CLI. Use this entrypoint to run the live bot or the" " analyzer."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
