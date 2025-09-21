@@ -27,7 +27,7 @@ silently return empty structures on errors.
 from __future__ import annotations
 
 import csv
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 
 def load_watchlist_csv(path: str) -> Dict[str, Dict[str, Optional[str]]]:
@@ -85,6 +85,71 @@ def load_watchlist_csv(path: str) -> Dict[str, Dict[str, Optional[str]]]:
         # Fail silently; return empty watchlist on any error
         return {}
     return watchlist
+
+
+# -----------------------------------------------------------------------------
+# Screener support
+#
+# Wave‑3 introduces optional support for loading tickers from a Finviz screener
+# CSV.  The screener CSV may contain many columns; this loader extracts
+# uppercase ticker symbols from either a "Ticker"/"Symbol" column (case
+# insensitive) or from the first column when no standard header is present.
+# Unreadable files or malformed rows yield an empty set.  See
+# :class:`catalyst_bot.config.Settings` for environment knobs controlling
+# screener boosting.
+
+
+def load_screener_set(path: str) -> Set[str]:
+    """Load a Finviz screener CSV and return a set of uppercase tickers.
+
+    Parameters
+    ----------
+    path : str
+        Path to the CSV file containing screener entries.  If the file
+        cannot be read, an empty set is returned.
+
+    Returns
+    -------
+    Set[str]
+        Uppercase ticker symbols extracted from the CSV.
+    """
+    tickers: Set[str] = set()
+    if not path:
+        return tickers
+    try:
+        with open(path, mode="r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            # Determine candidate columns for ticker values
+            fieldnames = [fn.strip() for fn in (reader.fieldnames or [])]
+            candidate_cols: List[str] = []
+            for col in ("Ticker", "ticker", "Symbol", "symbol"):
+                if col in fieldnames:
+                    candidate_cols.append(col)
+                    break
+            for row in reader:
+                if not row:
+                    continue
+                tick: Optional[str] = None
+                for col in candidate_cols:
+                    val = row.get(col) or ""
+                    if val:
+                        tick = val.strip().upper()
+                        break
+                # Fallback: use first value in the row if no header matched
+                if not tick:
+                    # Convert to list of values; avoid header names
+                    values = list(row.values())
+                    if values:
+                        first_val = values[0] or ""
+                        if first_val:
+                            tick = str(first_val).strip().upper()
+                if tick:
+                    # Strip invalid tickers (non-alphanumeric or too long)
+                    if tick.isalnum() and 1 <= len(tick) <= 6:
+                        tickers.add(tick)
+        return tickers
+    except Exception:
+        return set()
 
 
 # -----------------------------------------------------------------------------

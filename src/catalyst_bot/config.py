@@ -148,6 +148,26 @@ class Settings:
     # weighting for watchlisted tickers. Defaults to false.
     feature_watchlist: bool = _b("FEATURE_WATCHLIST", False)
 
+    # -- Wave‑3: Screener boost support --
+    # Path to the Finviz screener CSV used to boost tickers.  When
+    # feature_screener_boost is enabled, this file will be loaded once per
+    # cycle and tickers appearing in it will bypass the price ceiling
+    # filter just like the static watchlist.  The CSV is expected to have
+    # a column named "Ticker" (case insensitive) but will fall back to
+    # using the first column if the standard header is missing.  Defaults
+    # to ``data/finviz.csv`` relative to the project root.  Override via
+    # the SCREENER_CSV environment variable.
+    screener_csv: str = os.getenv("SCREENER_CSV", "data/finviz.csv")
+
+    # Feature flag to enable screener boost.  When true, the bot will
+    # combine the tickers loaded from the file specified by ``screener_csv``
+    # with the static watchlist (if feature_watchlist is also enabled) and
+    # treat them as one unified watchlist.  Tickers on this combined set
+    # bypass the price ceiling filter during feed processing.  This flag
+    # does not modify classification weights; it only affects gating.  It
+    # defaults to false.
+    feature_screener_boost: bool = _b("FEATURE_SCREENER_BOOST", False)
+
     # Helpers
     def _env_first(*names: str) -> str:
         import os
@@ -184,8 +204,11 @@ class Settings:
     feature_verbose_logging: bool = _b("FEATURE_VERBOSE_LOGGING", True)
 
     # --- Phase-B feature flags (default: OFF) ---
-    # Use classify.classify() bridge in feeds/analyzer instead of legacy classifier.py
-    feature_classifier_unify: bool = _b("FEATURE_CLASSIFIER_UNIFY", False)
+    # Use classify.classify() bridge in feeds/analyzer instead of the legacy
+    # classifier.py.  Enabling this flag unifies classification logic across
+    # modules and paves the way for removal of ``classifier.py`` in a future
+    # release.  Default to True so the new classifier is used out of the box.
+    feature_classifier_unify: bool = _b("FEATURE_CLASSIFIER_UNIFY", True)
     # Post analyzer summary markdown to admin webhook via alerts helper
     feature_admin_embed: bool = _b("FEATURE_ADMIN_EMBED", False)
     # Add intraday indicators (VWAP/RSI14) into alert embeds
@@ -366,6 +389,54 @@ class Settings:
     # LOW_MIN_AVG_VOL=300000 to require at least 300k shares.  Defaults
     # to 300k shares.
     low_min_avg_vol: float = float(os.getenv("LOW_MIN_AVG_VOL", "300000") or "300000")
+
+    # -------------------------------------------------------------------
+    # Patch‑Wave‑1: Bullishness gauge and sentiment logging
+    #
+    # When enabled, the bot will compute a single combined "bullishness" score
+    # by aggregating multiple sentiment inputs (local sentiment, external
+    # news sentiment, SEC filings, analyst signals and earnings surprises).
+    # The combined score is normalised to the range [‑1, 1] and classified
+    # as Bullish, Neutral or Bearish.  The result is displayed in alerts
+    # when FEATURE_BULLISHNESS_GAUGE is turned on.  Set this flag via
+    # FEATURE_BULLISHNESS_GAUGE=1 in your environment.  Defaults to off.
+    feature_bullishness_gauge: bool = _b("FEATURE_BULLISHNESS_GAUGE", False)
+
+    # When enabled, the bot will emit a JSONL log for each event capturing
+    # the individual sentiment components (local, external, SEC, analyst and
+    # earnings) as well as the final combined score.  Logs are written to
+    # ``data/sentiment_logs/YYYY‑MM‑DD.jsonl`` relative to ``data_dir``.
+    # Use FEATURE_SENTIMENT_LOGGING=1 to enable.  Defaults to off.
+    feature_sentiment_logging: bool = _b("FEATURE_SENTIMENT_LOGGING", False)
+
+    # Comma‑separated list of exchange codes that are allowed during feed
+    # ingestion.  Tickers whose headlines specify an exchange not in this
+    # list will be dropped before price/volatility filtering.  Valid
+    # values include NASDAQ, NYSE, AMEX and OTCMKTS variants.  Values are
+    # compared case‑insensitively.  The default whitelist allows
+    # Nasdaq, NYSE and AMEX listings while filtering out OTC/Pink sheet
+    # symbols.  Example: ``ALLOWED_EXCHANGES=nasdaq,nyse,amex``.
+    allowed_exchanges: str = os.getenv("ALLOWED_EXCHANGES", "nasdaq,nyse,amex")
+
+    # Weights applied when combining different sentiment sources into the
+    # bullishness gauge.  Each weight should be a non‑negative float.  The
+    # aggregator will normalise weights across sources that return a
+    # non‑null score.  You can adjust these values to tune the relative
+    # influence of each component.  When a weight is zero, that component
+    # is excluded from the combined score.  The defaults favour the
+    # local VADER sentiment and external news sentiment while giving
+    # modest weight to SEC filings, analyst signals and earnings surprises.
+    sentiment_weight_local: float = float(
+        os.getenv("SENTIMENT_WEIGHT_LOCAL", "0.4") or "0.4"
+    )
+    sentiment_weight_ext: float = float(
+        os.getenv("SENTIMENT_WEIGHT_EXT", "0.3") or "0.3"
+    )
+    # sentiment_weight_sec already defined further down; reused by gauge
+    sentiment_weight_analyst: float = float(
+        os.getenv("SENTIMENT_WEIGHT_ANALYST", "0.1") or "0.1"
+    )
+    # sentiment_weight_earnings defined in Patch‑6 section is reused
 
     # --- Phase-C Patch 8: Admin digest & approval loop ---
     # When this flag is enabled, the analyzer will write pending plan files

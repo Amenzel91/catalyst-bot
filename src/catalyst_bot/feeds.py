@@ -17,10 +17,24 @@ import feedparser  # type: ignore
 import requests
 from dateutil import parser as dtparse
 
+# NOTE: Import the entire market module instead of directly importing
+# get_last_price_snapshot.  This allows tests to monkeypatch the
+# get_last_price_snapshot function on the market module without
+# affecting the name bound in this module.  get_volatility is still
+# imported directly because it is not monkeypatched by tests.
+from . import market
 from .classify_bridge import classify_text
-from .config import get_settings
+
+# Import both the cached settings accessor and the dataclass itself.  The
+# dataclass allows us to instantiate a fresh Settings object to pick up
+# environment variable changes during tests or runtime.  When using
+# get_settings(), the instance is created at import time and may not
+# reflect subsequent changes in os.environ.  See below where we
+# preferentially instantiate Settings() for watchlist and screener
+# configuration.
+from .config import Settings, get_settings
 from .logging_utils import get_logger
-from .market import get_last_price_snapshot, get_volatility
+from .market import get_volatility
 from .watchlist import load_watchlist_set
 
 
@@ -31,10 +45,13 @@ def _is_finviz_noise(title: str, summary: str) -> bool:
     shareholder investigation advertisements rather than actionable news.
 
     Returns ``True`` when the headline or summary contains phrases commonly
-    associated with class‑action law firms (e.g. "recover your losses",
-    "class action", "lawsuit", "contact the firm", "deadline alert") or
-    when the headline mentions law firms by name (Rosen, Portnoy,
-    Pomerantz, etc.).
+    associated with class‑action law firms (e.g. ``"recover your losses"``,
+    ``"class action"``, ``"lawsuit"``, ``"contact the firm"``, ``"deadline alert"``)
+    or when the headline mentions law firms by name (Rosen, Portnoy,
+    Pomerantz, etc.).  The keyword list is extensible: additional phrases
+    can be placed in ``data/filters/finviz_noise.txt`` (one per line) and
+    will be loaded at runtime.  Lines beginning with ``#`` in that file
+    are treated as comments.
 
     Parameters
     ----------
@@ -49,11 +66,14 @@ def _is_finviz_noise(title: str, summary: str) -> bool:
         ``True`` if the item should be filtered out, ``False`` otherwise.
     """
     try:
+        # Combine title and summary for unified pattern matching.  Use
+        # lower‑case comparison to make checks case‑insensitive.
         text = f"{title} {summary}".lower()
-        # Common spam/phishing/law‑firm keywords.  Each entry represents a
-        # pattern associated with legal notices or shareholder
-        # investigations that are unlikely to move the stock price.
-        keywords = [
+        # Base keyword set.  These patterns are derived from common
+        # shareholder lawsuit notices and legal advertisements that rarely
+        # provide actionable trading information.  See the updated technical
+        # guide for examples.
+        keywords: list[str] = [
             "recover your losses",
             "class action",
             "class‑action",
@@ -70,12 +90,46 @@ def _is_finviz_noise(title: str, summary: str) -> bool:
             "portnoy",
             "deadline alert",
             "deadline reminder",
+            # Expanded phrases for refined noise filtering
+            "free consultation",
+            "class action lawsuit",
+            "securities class action",
+            "contact the firm",
+            "shareholder rights",
+            "attorney advertising",
+            "class period",
+            "schedule update",
+            "investor alert",
+            "investor notice",
         ]
+        # Attempt to load additional filter terms from a custom file.  The
+        # file should reside at ``data/filters/finviz_noise.txt`` relative to
+        # the project root.  Each non‑blank, non‑comment line is added to
+        # the keyword list.  Errors during file loading are silently
+        # ignored so that the absence of the file does not break runtime.
+        try:
+            from pathlib import Path
+
+            # Determine the project root (two levels up from this file).
+            # feeds.py lives at src/catalyst_bot/feeds.py, so parents[2]
+            # resolves to the repository root containing the ``data`` folder.
+            base_dir = Path(__file__).resolve().parents[2]
+            noise_path = base_dir / "data" / "filters" / "finviz_noise.txt"
+            if noise_path.exists():
+                with noise_path.open("r", encoding="utf-8") as nf:
+                    for line in nf:
+                        kw = line.strip().lower()
+                        if kw and not kw.startswith("#"):
+                            keywords.append(kw)
+        except Exception:
+            # Do not propagate file loading errors; continue with default list
+            pass
         for kw in keywords:
             if kw in text:
                 return True
         return False
     except Exception:
+        # Conservative default: do not mark as noise on unexpected errors
         return False
 
 
@@ -419,6 +473,49 @@ def extract_ticker(title: str) -> Optional[str]:
                 return tick
 
     return None
+
+
+# ----------------------- Exchange extraction ----------------------------
+#
+# Helper to extract the exchange code from a headline.  Many PR wire
+# announcements qualify the ticker with an exchange prefix, e.g.
+# ``(NASDAQ: XYZ)`` or ``NYSE: ABC``.  This function scans for common
+# exchange patterns and returns a canonicalised lower‑case code when
+# found.  Synonyms and long form names map to a few standard codes
+# recognised by the whitelist filter (nasdaq, nyse, amex, otc).  If no
+# exchange qualifier is detected, ``None`` is returned so the caller
+# can decide whether to apply a default or skip filtering entirely.
+def extract_exchange(title: str) -> Optional[str]:
+    if not title:
+        return None
+    try:
+        t = title.upper()
+        # Mapping of known exchange identifiers to canonical codes.  Keys
+        # include both the short form (NASDAQ) and longer variants used
+        # in some PRs (NASDAQ CAPITAL MARKET, NYSE AMERICAN, OTCMKTS, etc.).
+        mapping = {
+            "NASDAQ CAPITAL MARKET": "nasdaq",
+            "NASDAQCM": "nasdaq",
+            "NASDAQ CAP MARKET": "nasdaq",
+            "NASDAQ": "nasdaq",
+            "NYSE AMERICAN": "nyse",
+            "NYSE MKT": "nyse",
+            "NYSE": "nyse",
+            "AMEX": "amex",
+            "OTCQX": "otc",
+            "OTCQB": "otc",
+            "OTCMKTS": "otc",
+            "OTC MARKETS": "otc",
+            "OTC": "otc",
+        }
+        for key, canon in mapping.items():
+            # Look for patterns like "(KEY:" or "KEY: " in the title.  Use
+            # uppercase comparison for robustness.
+            if f"({key}:" in t or f"{key}:" in t or f"({key} " in t:
+                return canon
+        return None
+    except Exception:
+        return None
 
 
 # --------------------- Normalization & parsing -------------------------------
@@ -1211,25 +1308,95 @@ def fetch_pr_feeds() -> List[Dict]:
         "on",
     }
 
+    # Attempt to load settings dynamically.  Use a fresh Settings() instance
+    # when possible so environment variables set after module import are
+    # reflected.  Fall back to the cached get_settings() on failure.
     settings = None
     try:
-        settings = get_settings()
+        settings = Settings()
     except Exception:
-        settings = None
-
-    # Load watchlist set once per cycle if the feature flag is enabled. If
-    # WATCHLIST_CSV cannot be loaded, fall back to an empty set. This is used
-    # to bypass the price ceiling for watchlisted tickers during filtering.
-    watchlist_set: set[str] = set()
-    if settings and getattr(settings, "feature_watchlist", False):
         try:
-            wl_path = getattr(settings, "watchlist_csv", "") or ""
-            watchlist_set = load_watchlist_set(wl_path)
+            settings = get_settings()
         except Exception:
-            watchlist_set = set()
+            settings = None
+
+    # Load a unified watchlist set once per cycle.  Tickers appearing in
+    # the static watchlist (when FEATURE_WATCHLIST is truthy) and/or in
+    # the Finviz screener CSV (when FEATURE_SCREENER_BOOST is truthy)
+    # bypass the price ceiling filter.  Environment variables override
+    # values defined on the Settings instance.  Errors are swallowed.
+    watchlist_set: set[str] = set()
+    try:
+        # Helper to parse boolean env vars.  Returns default when not set.
+        def _env_bool(name: str, default: bool) -> bool:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        # Determine whether to enable the static watchlist.  Env overrides settings.
+        enable_watchlist = _env_bool(
+            "FEATURE_WATCHLIST", bool(getattr(settings, "feature_watchlist", False))
+        )
+        # Determine the path to the watchlist CSV.  Env overrides settings.
+        wl_path = os.getenv(
+            "WATCHLIST_CSV", getattr(settings, "watchlist_csv", "") or ""
+        )
+        if enable_watchlist and wl_path:
+            try:
+                watchlist_set |= load_watchlist_set(wl_path)  # type: ignore[operator]
+            except Exception:
+                watchlist_set = watchlist_set or set()
+
+        # Determine whether to enable screener boost.  Env overrides settings.
+        enable_screener = _env_bool(
+            "FEATURE_SCREENER_BOOST",
+            bool(getattr(settings, "feature_screener_boost", False)),
+        )
+        # Determine the path to the screener CSV.  Env overrides settings.
+        sc_path = os.getenv("SCREENER_CSV", getattr(settings, "screener_csv", "") or "")
+        if enable_screener and sc_path:
+            try:
+                from .watchlist import load_screener_set
+
+                watchlist_set |= load_screener_set(sc_path)  # type: ignore[operator]
+            except Exception:
+                watchlist_set = watchlist_set or set()
+    except Exception:
+        # On any unexpected error, leave watchlist_set empty
+        watchlist_set = set()
+
+    # Prepare allowed exchange list once per cycle.  When non‑empty, items whose
+    # headlines specify an exchange not in this set will be dropped before
+    # price/volatility filtering.  Exchanges are compared case‑insensitively.
+    # Determine allowed exchanges from environment or settings.  Env takes precedence.
+    allowed_exch: set[str] = set()
+    try:
+        raw_ex = os.getenv("ALLOWED_EXCHANGES")
+        if raw_ex is None:
+            raw_ex = getattr(settings, "allowed_exchanges", "") or ""
+        allowed_exch = {
+            ex.strip().lower() for ex in (raw_ex or "").split(",") if ex.strip()
+        }
+    except Exception:
+        allowed_exch = set()
 
     for item in all_items:
         ticker = item.get("ticker")
+
+        # Exchange whitelist filter: if the headline specifies an exchange and
+        # allowed_exch is non‑empty, drop the item when it is not in the
+        # whitelist.  Unknown or missing exchanges pass through.  Extraction
+        # uses the helper defined above and canonicalises synonyms like
+        # OTCQB/OTCMKTS to 'otc'.
+        if allowed_exch:
+            try:
+                ex = extract_exchange(item.get("title") or "")
+            except Exception:
+                ex = None
+            if ex and ex.lower() not in allowed_exch:
+                continue
+
         # Skip illiquid penny stocks when a price floor is defined.  This
         # filter runs before the price ceiling check to avoid extraneous
         # lookups.  When price_floor is > 0 and the ticker's last price is
@@ -1240,7 +1407,9 @@ def fetch_pr_feeds() -> List[Dict]:
             tick = ticker.strip().upper()
             try:
                 # Always fetch last price; reuse the snapshot if already looked up
-                last_price, _ = get_last_price_snapshot(tick)
+                # Always fetch last price; reuse the snapshot if already looked up
+                # Use the market module so tests can monkeypatch this function
+                last_price, _ = market.get_last_price_snapshot(tick)
             except Exception:
                 last_price = None
             if last_price is not None and last_price < price_floor:
@@ -1264,7 +1433,8 @@ def fetch_pr_feeds() -> List[Dict]:
                 else:
                     # avoid repeated lookups for the same ticker
                     try:
-                        last_price, _ = get_last_price_snapshot(tick)
+                        # Use the market module so tests can monkeypatch this function
+                        last_price, _ = market.get_last_price_snapshot(tick)
                     except Exception:
                         last_price = None
                     if last_price is not None and last_price <= price_ceiling:

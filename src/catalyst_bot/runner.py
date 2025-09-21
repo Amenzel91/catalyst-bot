@@ -81,6 +81,11 @@ _PX_CACHE: Dict[str, Tuple[float, float]] = {}
 # cycle), the heartbeat will display dashes instead of numbers.
 LAST_CYCLE_STATS: Dict[str, Any] = {}
 
+# Accumulate totals across all cycles to provide new/total counters on
+# heartbeats.  Keys mirror LAST_CYCLE_STATS; values start at zero and
+# are incremented at the end of each cycle.  See update in _cycle().
+TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts": 0}
+
 
 def _sig_handler(signum, frame):
     # graceful exit on Ctrl+C / SIGTERM
@@ -308,6 +313,49 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         except Exception:
             items_cnt = dedup_cnt = skipped_cnt = alerted_cnt = "—"
 
+        # Build counters that show new and cumulative totals.  Use the global
+        # TOTAL_STATS mapping; if unavailable, fall back to the per‑cycle
+        # values only.  Format as "new | total" so operators can see both
+        # the current cycle and cumulative counts at a glance.  When totals
+        # are missing, just display the new value.
+        def _fmt_counter(new_val: Any, total_key: str) -> str:
+            """Return a formatted string showing the per‑cycle value and the
+            cumulative total.  When the TOTAL_STATS mapping is unavailable or
+            missing the requested key, only the new value is shown.
+
+            Parameters
+            ----------
+            new_val : Any
+                The count for the current cycle (string or int).
+            total_key : str
+                The key to look up in the TOTAL_STATS dict for the
+                cumulative count.
+
+            Returns
+            -------
+            str
+                A string formatted as ``"new | total"`` or just ``"new"`` if
+                totals are unavailable.
+            """
+            try:
+                # Access the module-level TOTAL_STATS dict directly.  No
+                # import is needed because this helper lives in the same
+                # module.  Use getattr to guard against missing globals.
+                tot_map = globals().get("TOTAL_STATS")
+                tot = None
+                if isinstance(tot_map, dict):
+                    tot = tot_map.get(total_key)
+            except Exception:
+                tot = None
+            if tot is None:
+                return str(new_val)
+            return f"{new_val} | {tot}"
+
+        items_val = _fmt_counter(items_cnt, "items")
+        dedup_val = _fmt_counter(dedup_cnt, "deduped")
+        skipped_val = _fmt_counter(skipped_cnt, "skipped")
+        alerts_val = _fmt_counter(alerted_cnt, "alerts")
+
         payload["embeds"] = [
             {
                 "title": f"Catalyst-Bot heartbeat ({reason})",
@@ -328,11 +376,11 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     {"name": "Cascade", "value": cascade_counts, "inline": True},
                     {"name": "Providers", "value": provider_order, "inline": True},
                     {"name": "Features", "value": features_value, "inline": False},
-                    # Patch‑2: include counts from the most recent cycle
-                    {"name": "Items", "value": items_cnt, "inline": True},
-                    {"name": "Deduped", "value": dedup_cnt, "inline": True},
-                    {"name": "Skipped", "value": skipped_cnt, "inline": True},
-                    {"name": "Alerts", "value": alerted_cnt, "inline": True},
+                    # Patch‑2: include counts from the most recent cycle and cumulative totals
+                    {"name": "Items", "value": items_val, "inline": True},
+                    {"name": "Deduped", "value": dedup_val, "inline": True},
+                    {"name": "Skipped", "value": skipped_val, "inline": True},
+                    {"name": "Alerts", "value": alerts_val, "inline": True},
                 ],
                 "footer": {"text": "Catalyst-Bot"},
             }
@@ -979,9 +1027,9 @@ def _cycle(log, settings) -> None:
         skipped_cat_gate,
         alerted,
     )
-    # Patch‑2: update global cycle stats for heartbeat
+    # Patch‑2: update global cycle stats for heartbeat and accumulate totals.
     try:
-        global LAST_CYCLE_STATS
+        global LAST_CYCLE_STATS, TOTAL_STATS
         skipped_total = (
             skipped_no_ticker
             + skipped_price_gate
@@ -992,12 +1040,22 @@ def _cycle(log, settings) -> None:
             + skipped_cat_gate
             + skipped_seen
         )
+        # Per‑cycle snapshot for immediate heartbeat display
         LAST_CYCLE_STATS = {
             "items": len(items),
             "deduped": len(deduped),
             "skipped": skipped_total,
             "alerts": alerted,
         }
+        # Add this cycle’s counts to the cumulative totals
+        try:
+            TOTAL_STATS["items"] += len(items)
+            TOTAL_STATS["deduped"] += len(deduped)
+            TOTAL_STATS["skipped"] += skipped_total
+            TOTAL_STATS["alerts"] += alerted
+        except Exception:
+            # ensure totals exist; fallback silently
+            pass
     except Exception:
         # ignore any errors when updating stats
         pass
@@ -1118,6 +1176,14 @@ def runner_main(
                 next_heartbeat_ts = time.time() + HEARTBEAT_INTERVAL_S
 
     log.info("boot_end")
+    # At the end of the run, send a final heartbeat summarising totals.  This
+    # "endday" heartbeat includes the same metrics as the interval heartbeat
+    # but signals that the loop has finished.  Useful when running once or
+    # when shutting down after a scheduled end‑of‑day analyzer run.
+    try:
+        _send_heartbeat(log, settings, reason="endday")
+    except Exception:
+        pass
     return 0
 
 
