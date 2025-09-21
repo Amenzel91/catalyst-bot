@@ -32,3 +32,6 @@ data/
 
 # Output directories (created at runtime)
 out/
+data/analyzer/pending_66b8ecf7.json
+data/analyzer/pending_b201af2f.json
+data/watchlist_state.json
