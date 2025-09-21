@@ -33,13 +33,12 @@ CHARTS_OK = bool(HAS_MATPLOTLIB and HAS_MPLFINANCE)
 def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
     """
     Build a QuickChart URL for a candlestick chart of the most recent
-    intraday trading session.
-
-    This helper fetches 5‑minute OHLC data for the past day using yfinance,
-    constructs a Chart.js candlestick configuration and encodes it for
-    QuickChart.  It returns None if data cannot be fetched or an error
-    occurs.  The "bars" parameter limits the number of candles in the
-    output (default 50).
+    intraday trading session.  When intraday data is unavailable, fall back
+    to a daily line chart covering the past month.  This helper uses
+    ``yfinance`` to download OHLC data and constructs a Chart.js
+    configuration accordingly.  The resulting config is URL‑encoded and
+    returned as a link to the QuickChart API.  If no data can be
+    retrieved, ``None`` is returned.
     """
     try:
         import json
@@ -48,71 +47,104 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         import pandas as pd  # noqa: F401
         import yfinance as yf  # noqa: F401
 
-        # Fetch 1‑day, 5‑minute intraday data.  Suppress progress bar.
-        # Fetch 1‑day, 5‑minute intraday data.  Explicitly pass
-        # ``auto_adjust=False`` to avoid future warnings from yfinance.  In
-        # yfinance >= 0.2 the default for auto_adjust will change to True,
-        # which causes the OHLC values to be returned as single‑element
-        # Series instead of scalars.  Explicitly disabling auto adjustment
-        # keeps the API stable across versions.
+        nt = (ticker or "").strip().upper()
+        if not nt:
+            return None
+
+        # Helper to assemble a QuickChart URL from a Chart.js config.  Always
+        # respect QUICKCHART_BASE_URL if provided; otherwise default to
+        # https://quickchart.io/chart.  The config dict must be JSON‑serializable.
+        def _encode_config(cfg: Dict[str, Any]) -> str:
+            cfg_json = json.dumps(cfg, separators=(",", ":"))
+            encoded = urllib.parse.quote(cfg_json, safe="")
+            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
+            return f"{base}?c={encoded}"
+
+        # Attempt to fetch 1‑day, 5‑minute intraday data.  Explicitly disable
+        # auto adjustment to avoid Series return types.  This call may
+        # return an empty DataFrame for illiquid tickers or during extended
+        # hours.
         data = yf.download(
-            tickers=ticker,
+            tickers=nt,
             period="1d",
             interval="5m",
             progress=False,
             auto_adjust=False,
         )
-        if data is None or data.empty:
-            return None
-        df = data.tail(bars)
-        dataset = []
-        # Iterate in chronological order; df is already sorted by index.
-        for ts, row in df.iterrows():
-            try:
-                x = ts.strftime("%Y-%m-%d %H:%M")
+        dataset: list[Dict[str, Any]] = []
+        if data is not None and not data.empty:
+            df = data.tail(bars)
+            for ts, row in df.iterrows():
+                try:
+                    x = ts.strftime("%Y-%m-%d %H:%M")
 
-                # yfinance may return single‑element Series for each OHLC value
-                # when auto_adjust is enabled in future versions.  To guard
-                # against this and silence FutureWarning, extract the scalar via
-                # ``iloc[0]`` when the value exposes that attribute.
-                def _scalar(val: Any) -> Any:
-                    if hasattr(val, "iloc"):
-                        try:
-                            return val.iloc[0]
-                        except Exception:
-                            pass
-                    return val
+                    # Extract scalar values; handle Series fallback
+                    def _scalar(val: Any) -> Any:
+                        if hasattr(val, "iloc"):
+                            try:
+                                return val.iloc[0]
+                            except Exception:
+                                pass
+                        return val
 
-                o = float(_scalar(row["Open"]))
-                h = float(_scalar(row["High"]))
-                low = float(_scalar(row["Low"]))
-                c = float(_scalar(row["Close"]))
-                dataset.append({"x": x, "o": o, "h": h, "l": low, "c": c})
-            except Exception:
-                # Skip malformed rows but continue processing others
-                continue
-        if not dataset:
-            return None
-        cfg = {
-            "type": "candlestick",
-            "data": {"datasets": [{"label": ticker.upper(), "data": dataset}]},
-            "options": {
-                "title": {"display": True, "text": f"{ticker.upper()} Intraday"},
-                # Hide legend for clarity
-                "legend": {"display": False},
-                # Minimal padding
-                "layout": {"padding": {"left": 0, "right": 0, "top": 0, "bottom": 0}},
-            },
-        }
-        cfg_json = json.dumps(cfg, separators=(",", ":"))
-        encoded = urllib.parse.quote(cfg_json, safe="")
-        # Allow overriding the QuickChart base URL via environment.  The
-        # QUICKCHART_BASE_URL environment variable should include the
-        # ``/chart`` path (e.g. ``http://localhost:3400/chart``).  If
-        # unspecified, default to the hosted quickchart.io endpoint.
-        base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
-        return f"{base}?c={encoded}"
+                    o = float(_scalar(row["Open"]))
+                    h = float(_scalar(row["High"]))
+                    low = float(_scalar(row["Low"]))
+                    c = float(_scalar(row["Close"]))
+                    dataset.append({"x": x, "o": o, "h": h, "l": low, "c": c})
+                except Exception:
+                    continue
+        # Build candlestick config when intraday bars exist
+        if dataset:
+            cfg = {
+                "type": "candlestick",
+                "data": {"datasets": [{"label": nt, "data": dataset}]},
+                "options": {
+                    "title": {"display": True, "text": f"{nt} Intraday"},
+                    "legend": {"display": False},
+                    "layout": {
+                        "padding": {"left": 0, "right": 0, "top": 0, "bottom": 0}
+                    },
+                },
+            }
+            return _encode_config(cfg)
+        # Intraday failed: attempt daily close prices for the past month
+        try:
+            daily = yf.download(
+                tickers=nt,
+                period="1mo",
+                interval="1d",
+                progress=False,
+                auto_adjust=False,
+            )
+        except Exception:
+            daily = None
+        line_data: list[Dict[str, Any]] = []
+        if daily is not None and not daily.empty:
+            for ts, row in daily.iterrows():
+                try:
+                    # Use date string (without time) for the x‑axis
+                    dstr = ts.strftime("%Y-%m-%d")
+                    close = float(row["Close"])
+                    line_data.append({"x": dstr, "y": close})
+                except Exception:
+                    continue
+        if line_data:
+            cfg = {
+                "type": "line",
+                "data": {"datasets": [{"label": nt, "data": line_data}]},
+                "options": {
+                    "title": {"display": True, "text": f"{nt} Daily"},
+                    "legend": {"display": False},
+                    "layout": {
+                        "padding": {"left": 0, "right": 0, "top": 0, "bottom": 0}
+                    },
+                },
+            }
+            return _encode_config(cfg)
+        return None
     except Exception:
+        # Propagate as None on unexpected errors
         return None
 
 

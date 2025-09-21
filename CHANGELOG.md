@@ -1,3 +1,167 @@
+## [2025-09-23] Heartbeat refinements, QuickChart fallback & classifier unification
+
+### Added
+
+- **End‑of‑day heartbeat and cumulative counters**: The bot now emits a final
+  heartbeat (reason `endday`) at shutdown summarising the total number of
+  items processed, deduped, skipped and alerted across all cycles.  Each
+  interval heartbeat also displays both the counts from the most recent
+  cycle and the cumulative totals (formatted as `new | total`).  No
+  configuration is required; the feature is controlled by existing
+  heartbeat flags.
+
+- **Refined Finviz noise filter**: Expanded the built‑in keyword list used
+  to filter out law‑firm spam and shareholder investigation adverts from
+  Finviz feeds.  The noise filter now loads additional phrases from
+  `data/filters/finviz_noise.txt` when this file exists (one keyword
+  per line, `#` comments supported).  Users can customise noise
+  filtering by editing this file without modifying code.
+
+### Changed
+
+- **QuickChart fallback**: When intraday (5‑minute) OHLC data is
+  unavailable, QuickChart now falls back to rendering a daily line chart
+  covering the past month.  All QuickChart URLs honour
+  `QUICKCHART_BASE_URL`.  This reduces missing charts for illiquid
+  tickers and after‑hours events.
+
+- **Unified classifier default**: The `FEATURE_CLASSIFIER_UNIFY` flag
+  now defaults to `1`, enabling the new dynamic classification bridge in
+  feeds and analyzer modules.  This consolidates the scoring logic on
+  `classify.classify()` and prepares for removal of the legacy
+  `classifier.py`.  You can set `FEATURE_CLASSIFIER_UNIFY=0` in your
+  `.env` to revert to the old classifier.
+
+### Environment
+
+- **Feature flags**: Updated `env.example.ini` to set
+  `FEATURE_CLASSIFIER_UNIFY=1` by default.  No new environment variables
+  are required for the heartbeat or chart changes.  To opt out of the
+  unified classifier, set `FEATURE_CLASSIFIER_UNIFY=0`.
+
+## [2025-09-24] Watchlist & screener boost
+
+### Added
+
+- **Screener boost support**: Introduced a new feature flag
+  `FEATURE_SCREENER_BOOST`.  When enabled, the bot loads a Finviz
+  screener CSV specified by `SCREENER_CSV` once per cycle and treats the
+  tickers found in that file as part of the watchlist.  This allows
+  operators to import their Finviz custom screens (e.g. high volume
+  breakouts) and bypass the price ceiling filter for those names.  By
+  default, `SCREENER_CSV` points to `data/finviz.csv`.
+
+### Changed
+
+- **Unified watchlist loading**: The feed pipeline now combines tickers
+  from both the static watchlist (`WATCHLIST_CSV`) and the Finviz
+  screener (`SCREENER_CSV`) when their respective flags (`FEATURE_WATCHLIST`
+  and `FEATURE_SCREENER_BOOST`) are enabled.  The unified set is
+  loaded once per cycle and used to bypass the price ceiling filter.
+  Events whose ticker is in this combined set are marked with
+  `watchlist=True` in the returned item dict.
+
+### Environment
+
+- Added `FEATURE_SCREENER_BOOST` and `SCREENER_CSV` to
+  `env.example.ini`.  See that file for default values and usage.
+
+## [2025-09-25] Watchlist & screener boost bug fixes
+
+### Fixed
+
+- **Screener loader crash**: `load_screener_set()` referenced the
+  `List` type without importing it, leading to a `NameError` and a
+  silent failure to load any tickers from Finviz screener CSVs.  This
+  prevented the screener boost from taking effect.  We now import
+  `List` from `typing` in `watchlist.py`.
+- **Price ceiling bypass**: Tests monkeypatching
+  `market.get_last_price_snapshot()` did not work because
+  `feeds.py` imported the function directly, bypassing the patched
+  attribute on the `market` module.  We now import the entire
+  `market` module and call `market.get_last_price_snapshot()`, so
+  monkeypatching the function in tests behaves correctly and avoids
+  unnecessary network calls.
+
+- **Stale settings in feeds**: `fetch_pr_feeds()` previously relied on
+  `get_settings()`, which returns a cached `Settings` instance created
+  at module import time.  When environment variables were modified in
+  tests (e.g. enabling `FEATURE_SCREENER_BOOST`), the cached instance
+  did not reflect these changes.  The function now instantiates a
+  fresh `Settings()` object at runtime, falling back to the cached
+  instance only on failure.  This ensures that watchlist and screener
+  flags defined via environment variables are honoured during feed
+  processing.
+
+- **Environment‑first watchlist flags**: To better support test scenarios
+  where environment variables override defaults, `fetch_pr_feeds()` now
+  reads `FEATURE_WATCHLIST`, `WATCHLIST_CSV`, `FEATURE_SCREENER_BOOST`
+  and `SCREENER_CSV` directly from the environment with fallbacks to
+  settings.  This ensures that screener tickers are loaded even when
+  `get_settings()` returns a stale instance.  Allowed exchanges are
+  similarly read from the `ALLOWED_EXCHANGES` environment variable when
+  present.
+
+### Environment
+
+There are no new environment variables or changes to existing defaults
+for this bug‑fix release.
+
+## [2025-09-22] Bullishness gauge, sentiment logging & exchange filter
+
+### Added
+
+- **Bullishness sentiment gauge**: Introduced a new feature flag
+  `FEATURE_BULLISHNESS_GAUGE` and accompanying weight knobs
+  (`SENTIMENT_WEIGHT_LOCAL`, `SENTIMENT_WEIGHT_EXT`,
+  `SENTIMENT_WEIGHT_SEC`, `SENTIMENT_WEIGHT_ANALYST`,
+  `SENTIMENT_WEIGHT_EARNINGS`) to compute a single composite
+  bullishness score for each alert.  The gauge aggregates sentiment from
+  local VADER analysis, external news providers, SEC filing sentiment,
+  analyst signals and earnings surprises, then normalises the result to
+  the range [–1, 1] and classifies it as Bullish/Neutral/Bearish.  When
+  the feature flag is enabled, alerts include a **Bullishness** field
+  showing the numeric score and label.
+- **Sentiment logging**: Added a `FEATURE_SENTIMENT_LOGGING` flag.  When
+  enabled, the bot writes a JSONL record to
+  `data/sentiment_logs/YYYY-MM-DD.jsonl` for each processed event.
+  Records capture the individual component scores (local, external,
+  SEC, analyst, earnings) along with the final weighted score and
+  discrete label.  Logging is off by default.
+- **Exchange whitelist filter**: Added an `ALLOWED_EXCHANGES` setting
+  to `config.py` and implemented a filter in `feeds.py`.  During feed
+  ingestion, the bot extracts the exchange identifier from headline
+  prefixes such as `(NASDAQ: XYZ)` and drops items whose exchange is
+  not in the comma‑separated whitelist.  The default whitelist allows
+  Nasdaq, NYSE and AMEX symbols while filtering out OTC markets.
+- **Earnings field gating**: The earnings section of alert embeds is now
+  displayed only when `FEATURE_EARNINGS_ALERTS=1`.  This prevents
+  earnings information from appearing when earnings integration is
+  disabled.
+
+### Changed
+
+- **Alert embeds**: Updated `_build_discord_embed()` in
+  `alerts.py` to compute and display the bullishness gauge when
+  enabled, to log sentiment components when logging is active, and to
+  respect the `FEATURE_EARNINGS_ALERTS` flag when attaching the
+  earnings field.  The function continues to fall back gracefully
+  when sentiment data are incomplete.
+- **Feed processing**: Added an exchange whitelist check early in
+  `feeds.py`.  The filter canonicalises exchange names (e.g. OTCQB,
+  OTCMKTS→`otc`) and skips any item whose exchange is not in
+  `ALLOWED_EXCHANGES` before applying price ceiling/floor logic.
+
+### Environment
+
+- Added `FEATURE_BULLISHNESS_GAUGE`, `FEATURE_SENTIMENT_LOGGING`,
+  `ALLOWED_EXCHANGES`, `SENTIMENT_WEIGHT_LOCAL`,
+  `SENTIMENT_WEIGHT_EXT` and `SENTIMENT_WEIGHT_ANALYST` to
+  `env.example.ini`.  See the file for default values and usage
+  guidelines.  Existing weights (`SENTIMENT_WEIGHT_SEC`,
+  `SENTIMENT_WEIGHT_EARNINGS`) are reused by the gauge when the
+  corresponding features are enabled.
+
 ## [2025-09-21] SEC filing summarisation & QuickChart base URL
 ## [2025-09-21] Illiquid ticker filtering
 

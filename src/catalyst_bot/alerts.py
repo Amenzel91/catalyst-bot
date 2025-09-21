@@ -813,6 +813,217 @@ def _build_discord_embed(
     fields.append({"name": "Sentiment", "value": sent, "inline": True})
     fields.append({"name": "Score", "value": score_str, "inline": True})
 
+    # -----------------------------------------------------------------
+    # Patch‑Wave‑1: Bullishness gauge
+    #
+    # When FEATURE_BULLISHNESS_GAUGE=1, compute a single combined
+    # sentiment score by aggregating local, external, SEC, analyst and
+    # earnings signals.  The score is normalised to the range [‑1, 1]
+    # according to per‑component weights defined in config.py.  The
+    # resulting value and discrete label are displayed in the embed.  If
+    # FEATURE_SENTIMENT_LOGGING=1, the individual components and final
+    # score are appended to a JSONL log under data/sentiment_logs.
+    try:
+        s = get_settings()
+    except Exception:
+        s = None
+    try:
+        if s and getattr(s, "feature_bullishness_gauge", False):
+            # Helper to normalise analyst implied return into [-1,1].  We
+            # scale by twice the return threshold so that a move of
+            # ±threshold results in ±0.5 and ±2×threshold saturates at ±1.
+            def _analyst_to_score(
+                ret: Optional[float], thresh: float
+            ) -> Optional[float]:
+                if ret is None:
+                    return None
+                try:
+                    r = float(ret)
+                    t = float(thresh) if thresh > 0 else 1.0
+                    # scale by 2 * threshold; clamp to [-1,1]
+                    val = r / (t * 2.0)
+                    if val > 1.0:
+                        return 1.0
+                    if val < -1.0:
+                        return -1.0
+                    return val
+                except Exception:
+                    return None
+
+            # Extract per‑component scores
+            comp: Dict[str, Optional[float]] = {
+                "local": None,
+                "ext": None,
+                "sec": None,
+                "analyst": None,
+                "earnings": None,
+            }
+            # Local sentiment – prefer the numeric score on the item/scored dict
+            try:
+                # item_dict may already contain a numeric local score
+                ls = item_dict.get("sentiment_local")
+                if ls is None and isinstance(scored, dict):
+                    ls = scored.get("sentiment") or scored.get("sent")
+                if ls is not None and ls != "n/a":
+                    comp["local"] = float(ls)
+            except Exception:
+                comp["local"] = None
+            # External sentiment, SEC and earnings – derive from the details dict
+            details = item_dict.get("sentiment_ext_details")
+            if isinstance(details, dict):
+                # External providers: alpha, marketaux, stocknews, finnhub
+                ext_sum = 0.0
+                ext_wt = 0.0
+                # provider‑specific weights from settings
+                prov_weights: Dict[str, float] = {
+                    "alpha": getattr(s, "sentiment_weight_alpha", 0.0),
+                    "marketaux": getattr(s, "sentiment_weight_marketaux", 0.0),
+                    "stocknews": getattr(s, "sentiment_weight_stocknews", 0.0),
+                    "finnhub": getattr(s, "sentiment_weight_finnhub", 0.0),
+                }
+                for prov, info in details.items():
+                    try:
+                        if prov in prov_weights:
+                            score = float(info.get("score"))
+                            w = float(prov_weights.get(prov, 0.0))
+                            if w > 0:
+                                ext_sum += score * w
+                                ext_wt += w
+                        elif prov == "sec":
+                            comp["sec"] = float(info.get("score"))
+                        elif prov == "earnings":
+                            comp["earnings"] = float(info.get("score"))
+                    except Exception:
+                        continue
+                if ext_wt > 0.0:
+                    comp["ext"] = ext_sum / ext_wt
+            # Fallback: when details unavailable, use the aggregated external score
+            if comp["ext"] is None:
+                try:
+                    es = item_dict.get("sentiment_ext_score")
+                    if isinstance(es, (int, float)):
+                        comp["ext"] = float(es)
+                    elif isinstance(es, (list, tuple)) and es:
+                        comp["ext"] = float(es[0])
+                except Exception:
+                    comp["ext"] = None
+            # Analyst – derive from implied return and threshold
+            try:
+                imp_ret = item_dict.get("analyst_implied_return")
+                thr = getattr(s, "analyst_return_threshold", 10.0)
+                if isinstance(imp_ret, (int, float)):
+                    comp["analyst"] = _analyst_to_score(float(imp_ret), thr)
+                elif isinstance(imp_ret, str) and imp_ret.strip():
+                    comp["analyst"] = _analyst_to_score(float(imp_ret), thr)
+            except Exception:
+                comp["analyst"] = None
+            # Weights for the final aggregation
+            try:
+                w_local = float(getattr(s, "sentiment_weight_local", 0.0))
+            except Exception:
+                w_local = 0.0
+            try:
+                w_ext = float(getattr(s, "sentiment_weight_ext", 0.0))
+            except Exception:
+                w_ext = 0.0
+            try:
+                w_sec = float(getattr(s, "sentiment_weight_sec", 0.0))
+            except Exception:
+                w_sec = 0.0
+            try:
+                w_an = float(getattr(s, "sentiment_weight_analyst", 0.0))
+            except Exception:
+                w_an = 0.0
+            try:
+                w_earn = float(getattr(s, "sentiment_weight_earnings", 0.0))
+            except Exception:
+                w_earn = 0.0
+            # Combine weighted components
+            weighted_total = 0.0
+            total_w = 0.0
+            if comp["local"] is not None and w_local > 0:
+                weighted_total += comp["local"] * w_local
+                total_w += w_local
+            if comp["ext"] is not None and w_ext > 0:
+                weighted_total += comp["ext"] * w_ext
+                total_w += w_ext
+            if comp["sec"] is not None and w_sec > 0:
+                weighted_total += comp["sec"] * w_sec
+                total_w += w_sec
+            if comp["analyst"] is not None and w_an > 0:
+                weighted_total += comp["analyst"] * w_an
+                total_w += w_an
+            if comp["earnings"] is not None and w_earn > 0:
+                weighted_total += comp["earnings"] * w_earn
+                total_w += w_earn
+            bullish_score: Optional[float] = None
+            bullish_label: str = "n/a"
+            if total_w > 0:
+                bullish_score = weighted_total / total_w
+                # classify into Bullish/Neutral/Bearish using simple thresholds
+                try:
+                    val = float(bullish_score)
+                    if val >= 0.05:
+                        bullish_label = "Bullish"
+                    elif val <= -0.05:
+                        bullish_label = "Bearish"
+                    else:
+                        bullish_label = "Neutral"
+                except Exception:
+                    bullish_label = "Neutral"
+            # Add the Bullishness field to the embed when a score was computed
+            if bullish_score is not None:
+                fields.append(
+                    {
+                        "name": "Bullishness",
+                        "value": f"{bullish_score:+.2f} • {bullish_label}",
+                        "inline": True,
+                    }
+                )
+            # Optionally log the components and final score when sentiment logging is on
+            try:
+                if s and getattr(s, "feature_sentiment_logging", False):
+                    import json
+                    from datetime import datetime as _dt
+
+                    # Prepare log record
+                    rec = {
+                        "timestamp": _dt.utcnow().isoformat(),
+                        "ticker": primary,
+                        "local": comp["local"],
+                        "ext": comp["ext"],
+                        "sec": comp["sec"],
+                        "analyst": comp["analyst"],
+                        "earnings": comp["earnings"],
+                        "score": bullish_score,
+                        "label": bullish_label,
+                    }
+                    # Determine path under data_dir/sentiment_logs/YYYY-MM-DD.jsonl
+                    try:
+                        base_dir = getattr(s, "data_dir", None)
+                        if not base_dir:
+                            # fallback to current working directory
+                            from pathlib import Path
+
+                            base_dir = Path(os.getcwd())
+                        day_str = _dt.utcnow().strftime("%Y-%m-%d")
+                        log_dir = (base_dir / "sentiment_logs").resolve()
+                        try:
+                            log_dir.mkdir(parents=True, exist_ok=True)
+                        except Exception:
+                            pass
+                        log_path = log_dir / f"{day_str}.jsonl"
+                        with open(log_path, "a", encoding="utf-8") as lf:
+                            lf.write(json.dumps(rec, ensure_ascii=False))
+                            lf.write("\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        # If any unexpected error occurs, do not break the embed builder
+        pass
+
     # Analyst signals: attach when analyst target and implied return are present.
     try:
         tar = item_dict.get("analyst_target")
@@ -877,79 +1088,92 @@ def _build_discord_embed(
         if isinstance(ema_cross, int) and ema_cross != 0:
             ema_str = "Bullish" if ema_cross > 0 else "Bearish"
             parts.append(f"EMA9/21: {ema_str}")
-    # Earnings information: attach next earnings date and surprise metrics.
+    # Earnings information: attach next earnings date and surprise metrics when
+    # the earnings alerts feature is enabled.  When FEATURE_EARNINGS_ALERTS=0
+    # the earnings field is suppressed entirely.  Missing data or parsing
+    # errors are silently ignored to avoid breaking the embed.
     try:
-        # Next earnings date (if any and within lookahead window)
-        next_dt = item_dict.get("next_earnings_date")
-        eps_est = item_dict.get("earnings_eps_estimate")
-        eps_rep = item_dict.get("earnings_reported_eps")
-        surprise = item_dict.get("earnings_surprise_pct")
-        earn_lbl = item_dict.get("earnings_label")
-        # Build a human‑readable next earnings string (relative days)
-        next_str = None
-        if isinstance(next_dt, datetime):
-            try:
-                now = datetime.now(timezone.utc)
-                delta = next_dt - now
-                if delta.total_seconds() >= 0:
-                    # upcoming
-                    days = delta.days
-                    hrs = int(delta.total_seconds() // 3600)
-                    if days >= 1:
-                        next_str = f"{next_dt.date()} ({days}d)"
-                    else:
-                        next_str = f"{next_dt.date()} (today)"
-                else:
-                    # past but still within lookback: show days ago
-                    days_ago = abs(delta.days)
-                    next_str = f"{next_dt.date()} ({days_ago}d ago)"
-            except Exception:
-                try:
-                    next_str = next_dt.isoformat()[:10]
-                except Exception:
-                    next_str = None
-        # Build surprise string: estimate vs reported
-        surprise_str = None
+        settings_local = None
         try:
-            if eps_est is not None or eps_rep is not None:
-                est_str = (
-                    f"{float(eps_est):.2f}"
-                    if isinstance(eps_est, (int, float))
-                    else str(eps_est)
-                )
-                rep_str = (
-                    f"{float(eps_rep):.2f}"
-                    if isinstance(eps_rep, (int, float))
-                    else str(eps_rep)
-                )
-                # Combine estimate/actual
-                surprise_str = f"Est/Rep: {est_str} / {rep_str}"
-                # Add surprise percentage when available
-                if surprise is not None and surprise == surprise:
-                    try:
-                        s_pct = float(surprise) * 100.0
-                        sign = "+" if s_pct >= 0 else ""
-                        surprise_str += f" | Surprise: {sign}{s_pct:.1f}%"
-                    except Exception:
-                        pass
-                # Append label when present
-                if isinstance(earn_lbl, str) and earn_lbl:
-                    surprise_str += f" ({earn_lbl})"
+            settings_local = get_settings()
         except Exception:
-            surprise_str = None
-        if next_str or surprise_str:
-            val_lines: List[str] = []
-            if next_str:
-                val_lines.append(f"Next: {next_str}")
-            if surprise_str:
-                val_lines.append(surprise_str)
-            fields.append(
-                {
-                    "name": "Earnings",
-                    "value": "\n".join(val_lines),
-                    "inline": True,
-                }
-            )
+            settings_local = None
+        # If the feature is disabled, skip adding the earnings field
+        if settings_local and not getattr(
+            settings_local, "feature_earnings_alerts", False
+        ):
+            pass
+        else:
+            # Next earnings date (if any and within lookahead window)
+            next_dt = item_dict.get("next_earnings_date")
+            eps_est = item_dict.get("earnings_eps_estimate")
+            eps_rep = item_dict.get("earnings_reported_eps")
+            surprise = item_dict.get("earnings_surprise_pct")
+            earn_lbl = item_dict.get("earnings_label")
+            # Build a human‑readable next earnings string (relative days)
+            next_str: Optional[str] = None
+            if isinstance(next_dt, datetime):
+                try:
+                    now = datetime.now(timezone.utc)
+                    delta = next_dt - now
+                    if delta.total_seconds() >= 0:
+                        # upcoming
+                        days = delta.days
+                        if days >= 1:
+                            next_str = f"{next_dt.date()} ({days}d)"
+                        else:
+                            next_str = f"{next_dt.date()} (today)"
+                    else:
+                        # past but still within lookback: show days ago
+                        days_ago = abs(delta.days)
+                        next_str = f"{next_dt.date()} ({days_ago}d ago)"
+                except Exception:
+                    try:
+                        next_str = next_dt.isoformat()[:10]
+                    except Exception:
+                        next_str = None
+            # Build surprise string: estimate vs reported
+            surprise_str: Optional[str] = None
+            try:
+                if eps_est is not None or eps_rep is not None:
+                    est_str = (
+                        f"{float(eps_est):.2f}"
+                        if isinstance(eps_est, (int, float))
+                        else str(eps_est)
+                    )
+                    rep_str = (
+                        f"{float(eps_rep):.2f}"
+                        if isinstance(eps_rep, (int, float))
+                        else str(eps_rep)
+                    )
+                    # Combine estimate/actual
+                    surprise_str = f"Est/Rep: {est_str} / {rep_str}"
+                    # Add surprise percentage when available
+                    if surprise is not None and surprise == surprise:
+                        try:
+                            s_pct = float(surprise) * 100.0
+                            sign = "+" if s_pct >= 0 else ""
+                            surprise_str += f" | Surprise: {sign}{s_pct:.1f}%"
+                        except Exception:
+                            pass
+                    # Append label when present
+                    if isinstance(earn_lbl, str) and earn_lbl:
+                        surprise_str += f" ({earn_lbl})"
+            except Exception:
+                surprise_str = None
+            if next_str or surprise_str:
+                val_lines: List[str] = []
+                if next_str:
+                    val_lines.append(f"Next: {next_str}")
+                if surprise_str:
+                    val_lines.append(surprise_str)
+                fields.append(
+                    {
+                        "name": "Earnings",
+                        "value": "\n".join(val_lines),
+                        "inline": True,
+                    }
+                )
     except Exception:
         pass
         # VWAP delta
