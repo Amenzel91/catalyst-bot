@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from catalyst_bot import alerts, config
+from catalyst_bot import alerts
 
 
 def test_dummy_alert_embed_features(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,6 +29,7 @@ def test_dummy_alert_embed_features(monkeypatch: pytest.MonkeyPatch) -> None:
         sentiment_weight_marketaux = 0.0
         sentiment_weight_stocknews = 0.0
         sentiment_weight_finnhub = 0.0
+
     monkeypatch.setattr(alerts, "get_settings", lambda: DummySettings)
     next_earnings = datetime.now(timezone.utc) + timedelta(days=5)
     dummy_event: Dict[str, Any] = {
@@ -63,7 +64,9 @@ def test_dummy_alert_embed_features(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert bull_field is not None
     bull_val = str(bull_field.get("value"))
-    assert "•" in bull_val and any(lbl in bull_val for lbl in {"Bullish", "Neutral", "Bearish"})
+    assert "•" in bull_val and any(
+        lbl in bull_val for lbl in {"Bullish", "Neutral", "Bearish"}
+    )
     earn_field: Optional[Dict[str, Any]] = next(
         (f for f in fields if f.get("name") == "Earnings"), None
     )
