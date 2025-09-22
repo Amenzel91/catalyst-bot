@@ -9,7 +9,6 @@ should be retained despite exceeding the PRICE_CEILING when the
 screener boost feature is on.
 """
 
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -28,7 +27,9 @@ def _make_entry(title: str, link: str, ts_iso: str, summary: str = "") -> Any:
     return e
 
 
-def test_screener_boost_bypasses_price_ceiling(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_screener_boost_bypasses_price_ceiling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     """
     When FEATURE_SCREENER_BOOST=1 and a screener CSV contains a ticker,
     events for that ticker should bypass the price ceiling filter.  This
