@@ -56,10 +56,16 @@ except ImportError as e:
     )
     sys.exit(2)
 
+from datetime import datetime, timezone
+
+from . import alerts as _alerts  # used to post log digests as embeds
 from .alerts import send_alert_safe
 from .analyzer import run_analyzer_once_if_scheduled
+from .auto_analyzer import run_scheduled_tasks  # Wave‑4 auto analyzer
 from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
+from .config_extras import LOG_REPORT_CATEGORIES
+from .log_reporter import deliver_report
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
 from .seen_store import should_filter  # persistent seen store for cross-run dedupe
@@ -74,6 +80,10 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 STOP = False
 _PX_CACHE: Dict[str, Tuple[float, float]] = {}
+
+# Global log accumulator for auto analyzer & log reporter.  Each entry
+# should be a dict with keys ``timestamp`` (datetime) and ``category`` (str).
+LOG_ENTRIES: List[Dict[str, object]] = []
 
 # Patch‑2: Expose last cycle statistics for heartbeat embeds.  Each cycle
 # updates this mapping with counts of items processed, deduped items,
@@ -1060,12 +1070,100 @@ def _cycle(log, settings) -> None:
         # ignore any errors when updating stats
         pass
 
-    # Analyzer: run at the scheduled UTC time (no-op if not time)
+    # ---------------------------------------------------------------------
+    # Wave‑4: accumulate per-category log entries for the auto analyzer.
+    # Each count is expanded into individual entries with the current
+    # timestamp and category.  Categories are filtered against
+    # LOG_REPORT_CATEGORIES to avoid populating unused logs.
     try:
-        run_analyzer_once_if_scheduled(get_settings())
-    except Exception as err:
-        # keep the traceback so we can fix root cause
-        log.warning("analyzer_schedule error=%s", err.__class__.__name__, exc_info=True)
+        now_utc = datetime.now(timezone.utc)
+        counts = {
+            "items": len(items),
+            "deduped": len(deduped),
+            "skipped_no_ticker": skipped_no_ticker,
+            "skipped_price_gate": skipped_price_gate,
+            "skipped_instr": skipped_instr,
+            "skipped_by_source": skipped_by_source,
+            "skipped_low_score": skipped_low_score,
+            "skipped_sent_gate": skipped_sent_gate,
+            "skipped_cat_gate": skipped_cat_gate,
+            "skipped_seen": skipped_seen,
+        }
+        for cat, cnt in counts.items():
+            if cat in LOG_REPORT_CATEGORIES and cnt:
+                for _ in range(cnt):
+                    LOG_ENTRIES.append({"timestamp": now_utc, "category": cat})
+    except Exception:
+        # do not fail the cycle due to logging errors
+        pass
+
+    # ---------------------------------------------------------------------
+    # Auto analyzer & log reporter: run scheduled tasks and deliver digest.
+    try:
+
+        def _analyze_wrapper() -> None:
+            # Wrap analyzer call to use fresh settings each time
+            try:
+                run_analyzer_once_if_scheduled(get_settings())
+            except Exception as e:
+                # Log any analyzer error but do not propagate
+                log.warning(
+                    "analyzer_schedule error=%s",
+                    e.__class__.__name__,
+                    exc_info=True,
+                )
+
+        def _report_wrapper(md: str) -> None:
+            """Deliver the log digest via configured destination(s)."""
+            # Always delegate to deliver_report to handle file writes.
+            try:
+                deliver_report(md)
+            except Exception:
+                pass
+            # Post to admin webhook as an embed when destination is not 'file'.
+            try:
+                s2 = get_settings()
+                dest = os.getenv("ADMIN_LOG_DESTINATION", "").strip().lower()
+                if not dest:
+                    from catalyst_bot.config_extras import (
+                        ADMIN_LOG_DESTINATION as _defdest,
+                    )
+
+                    dest = _defdest.lower()
+                if dest != "file":
+                    admin_url = (
+                        getattr(s2, "admin_webhook_url", None)
+                        or os.getenv("DISCORD_ADMIN_WEBHOOK", "")
+                        or os.getenv("ADMIN_WEBHOOK", "")
+                    )
+                    if admin_url:
+                        try:
+                            # truncate description to avoid Discord limits
+                            desc = md if len(md) <= 3900 else md[:3897] + "..."
+                            payload = {
+                                "embeds": [
+                                    {
+                                        "title": "Log Summary",
+                                        "description": desc,
+                                    }
+                                ]
+                            }
+                            _alerts.post_discord_json(payload, webhook_url=admin_url)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        # Invoke scheduled tasks with current time, log list, analyzer and reporter
+        run_scheduled_tasks(
+            datetime.now(timezone.utc),
+            LOG_ENTRIES,
+            analyze_fn=_analyze_wrapper,
+            report_fn=_report_wrapper,
+        )
+    except Exception:
+        # Ignore auto analyzer errors to keep the main loop alive
+        pass
 
 
 def runner_main(

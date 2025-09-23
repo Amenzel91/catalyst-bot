@@ -1073,6 +1073,70 @@ def fetch_pr_feeds() -> List[Dict]:
                         _sec_update_watchlist(tkr_u, lbl)
             except Exception:
                 continue
+
+    # -----------------------------------------------------------------
+    # Wave‑4: attach options sentiment when enabled
+    #
+    # When FEATURE_OPTIONS_SCANNER=1 the bot will call
+    # :func:`catalyst_bot.options_scanner.scan_options` for each unique ticker
+    # and attach the returned score, label and details to events under the
+    # keys ``sentiment_options_score``, ``sentiment_options_label`` and
+    # ``sentiment_options_details``.  Failures are silently ignored to avoid
+    # disrupting the ingestion pipeline.  A per‑ticker cache avoids redundant
+    # API calls.
+    try:
+        from .options_scanner import scan_options  # type: ignore
+    except Exception:
+        scan_options = None  # type: ignore
+    if scan_options:
+        try:
+            opt_enabled = False
+            if settings:
+                opt_enabled = getattr(settings, "feature_options_scanner", False)
+            else:
+                try:
+                    env_val = (
+                        (os.getenv("FEATURE_OPTIONS_SCANNER", "") or "").strip().lower()
+                    )
+                    opt_enabled = env_val in {"1", "true", "yes", "on"}
+                except Exception:
+                    opt_enabled = False
+        except Exception:
+            opt_enabled = False
+        if opt_enabled:
+            opt_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+            for it in all_items:
+                try:
+                    tkr = it.get("ticker") or None
+                    if not tkr:
+                        tkrs = it.get("tickers")
+                        if isinstance(tkrs, list) and tkrs:
+                            tkr = tkrs[0]
+                    if not tkr or not isinstance(tkr, str):
+                        continue
+                    tkr_u = tkr.upper().strip()
+                    if not tkr_u:
+                        continue
+                    if tkr_u not in opt_cache:
+                        try:
+                            res = scan_options(tkr_u)
+                        except Exception:
+                            res = None
+                        opt_cache[tkr_u] = res
+                    res = opt_cache.get(tkr_u)
+                    if not res:
+                        continue
+                    score = res.get("score")
+                    label = res.get("label")
+                    details = res.get("details")
+                    if score is not None and "sentiment_options_score" not in it:
+                        it["sentiment_options_score"] = score  # type: ignore
+                    if label is not None and "sentiment_options_label" not in it:
+                        it["sentiment_options_label"] = label  # type: ignore
+                    if details is not None and "sentiment_options_details" not in it:
+                        it["sentiment_options_details"] = details  # type: ignore
+                except Exception:
+                    continue
         # Second pass: attach recent filing context and combined sentiment to each event
         for it in all_items:
             try:
