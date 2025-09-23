@@ -502,6 +502,42 @@ class Settings:
         os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.1") or "0.1"
     )
 
+    # --- Wave‑4: Options scanner support ---
+    # Enable the options sentiment scanner.  When this flag is set, the bot
+    # will call :func:`catalyst_bot.options_scanner.scan_options` for each
+    # ticker and, if a score is returned, combine it into the bullishness
+    # gauge.  Defaults to False.
+    feature_options_scanner: bool = _b("FEATURE_OPTIONS_SCANNER", False)
+    # Weight of the options sentiment in the combined bullishness gauge.
+    # When non‑zero and a sentiment score is present on the event, this
+    # component will contribute to the weighted average.  Defaults to 0.0.
+    sentiment_weight_options: float = float(
+        os.getenv("SENTIMENT_WEIGHT_OPTIONS", "0") or "0"
+    )
+    # Optional thresholds for unusual options activity.  These values are
+    # currently unused by the stub implementation but are defined here for
+    # future provider integrations.
+    options_volume_threshold: float = float(
+        os.getenv("OPTIONS_VOLUME_THRESHOLD", "0") or "0"
+    )
+    options_min_premium: float = float(os.getenv("OPTIONS_MIN_PREMIUM", "0") or "0")
+
+    # --- Wave‑4: Sector/session and auto analyzer feature flags ---
+    # These flags mirror values defined in ``config_extras.py``.  Exposing
+    # them on ``Settings`` allows existing code to continue using
+    # ``getattr(settings, ...)`` without importing the extras module.
+    feature_sector_info: bool = _b("FEATURE_SECTOR_INFO", False)
+    feature_market_time: bool = _b("FEATURE_MARKET_TIME", False)
+    feature_sector_relax: bool = _b("FEATURE_SECTOR_RELAX", False)
+
+    # Wave‑4: auto analyzer and log reporter flags.  When
+    # ``feature_auto_analyzer`` is true, the runner will invoke the
+    # analyzer at configured times.  When ``feature_log_reporter`` is true,
+    # the runner will emit periodic log summaries.  Defaults to False for
+    # both to preserve backward compatibility.
+    feature_auto_analyzer: bool = _b("FEATURE_AUTO_ANALYZER", False)
+    feature_log_reporter: bool = _b("FEATURE_LOG_REPORTER", False)
+
     # --- Liquidity filtering ---
     # Minimum last price threshold for tickers.  When greater than zero, any
     # ticker whose last traded price falls below this value will be skipped

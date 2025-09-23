@@ -851,13 +851,27 @@ def _build_discord_embed(
                     return None
 
             # Extract per‑component scores
+            # Extend the sentiment components with an options entry.  The options
+            # scanner attaches a score to the event under ``sentiment_options_score``;
+            # when present, it will be combined into the bullishness gauge.
             comp: Dict[str, Optional[float]] = {
                 "local": None,
                 "ext": None,
                 "sec": None,
                 "analyst": None,
                 "earnings": None,
+                "options": None,
             }
+
+            # Populate options sentiment from the event.  The options scanner
+            # attaches a numeric score under ``sentiment_options_score``.  When
+            # present and not "n/a", assign it to the options component.
+            try:
+                os_val = item_dict.get("sentiment_options_score")  # type: ignore
+                if os_val is not None and os_val != "n/a":
+                    comp["options"] = float(os_val)
+            except Exception:
+                comp["options"] = None
             # Local sentiment – prefer the numeric score on the item/scored dict
             try:
                 # item_dict may already contain a numeric local score
@@ -938,6 +952,17 @@ def _build_discord_embed(
                 w_earn = float(getattr(s, "sentiment_weight_earnings", 0.0))
             except Exception:
                 w_earn = 0.0
+            # Weight for options sentiment.  Use getattr on settings when
+            # available; fall back to the SENTIMENT_WEIGHT_OPTIONS env var.
+            try:
+                w_opts = float(getattr(s, "sentiment_weight_options", 0.0))
+            except Exception:
+                try:
+                    import os as _os  # type: ignore
+
+                    w_opts = float(_os.getenv("SENTIMENT_WEIGHT_OPTIONS", "0") or "0")
+                except Exception:
+                    w_opts = 0.0
             # Combine weighted components
             weighted_total = 0.0
             total_w = 0.0
@@ -956,6 +981,13 @@ def _build_discord_embed(
             if comp["earnings"] is not None and w_earn > 0:
                 weighted_total += comp["earnings"] * w_earn
                 total_w += w_earn
+            # Options sentiment: include when a score is present and weight > 0
+            if comp.get("options") is not None and w_opts > 0:
+                try:
+                    weighted_total += float(comp["options"]) * w_opts
+                    total_w += w_opts
+                except Exception:
+                    pass
             bullish_score: Optional[float] = None
             bullish_label: str = "n/a"
             if total_w > 0:
@@ -963,9 +995,39 @@ def _build_discord_embed(
                 # classify into Bullish/Neutral/Bearish using simple thresholds
                 try:
                     val = float(bullish_score)
-                    if val >= 0.05:
+                    # Determine neutral threshold.  Default to 0.05 (5%), but
+                    # when the low‑beta relaxation feature is enabled, expand
+                    # the band based on the ticker's sector.  We import
+                    # config_extras and sector_info lazily to avoid
+                    # unnecessary overhead when the gauge is off.
+                    neutral_th = 0.05
+                    try:
+                        from .config_extras import FEATURE_SECTOR_RELAX
+
+                        if FEATURE_SECTOR_RELAX:
+                            from .sector_info import (
+                                get_neutral_band_bps,
+                                get_sector_info,
+                            )
+
+                            sec_name = None
+                            try:
+                                tk = primary or ""
+                                if isinstance(tk, str) and tk:
+                                    info = get_sector_info(tk)
+                                    sec_name = info.get("sector")
+                            except Exception:
+                                sec_name = None
+                            try:
+                                bps = get_neutral_band_bps(sec_name)
+                                neutral_th = 0.05 + (float(bps) / 10000.0)
+                            except Exception:
+                                neutral_th = 0.05
+                    except Exception:
+                        neutral_th = 0.05
+                    if val >= neutral_th:
                         bullish_label = "Bullish"
-                    elif val <= -0.05:
+                    elif val <= -neutral_th:
                         bullish_label = "Bearish"
                     else:
                         bullish_label = "Neutral"
@@ -980,6 +1042,88 @@ def _build_discord_embed(
                         "inline": True,
                     }
                 )
+            # Append sector and session fields when enabled.  Insert near the
+            # end of the sentiment section so that price, sentiment and score
+            # remain at the top of the embed.  The sector field shows the
+            # primary ticker's sector and industry (when available) or a
+            # fallback label.  The session field displays Pre‑Mkt/Regular/
+            # After‑Hours/Closed based on the alert timestamp.
+            try:
+                import os as _os  # type: ignore
+                from datetime import datetime as _dt
+                from datetime import timezone as _tz
+
+                from .config_extras import (
+                    FEATURE_MARKET_TIME,
+                    FEATURE_SECTOR_INFO,
+                    SECTOR_FALLBACK_LABEL,
+                )
+                from .sector_info import get_sector_info, get_session
+
+                add_sector = bool(FEATURE_SECTOR_INFO)
+                add_session = bool(FEATURE_MARKET_TIME)
+                if add_sector or add_session:
+                    tk = (primary or "").strip()
+                    sec_label: str = ""
+                    ind_label: str | None = None
+                    if tk:
+                        try:
+                            info = get_sector_info(tk)
+                            sec_label = info.get("sector") or SECTOR_FALLBACK_LABEL
+                            ind_label = info.get("industry")
+                            if not sec_label:
+                                sec_label = SECTOR_FALLBACK_LABEL
+                        except Exception:
+                            sec_label = SECTOR_FALLBACK_LABEL
+                            ind_label = None
+                    else:
+                        sec_label = SECTOR_FALLBACK_LABEL
+                        ind_label = None
+                    sector_val = sec_label
+                    try:
+                        if (
+                            add_sector
+                            and ind_label
+                            and isinstance(ind_label, str)
+                            and ind_label.strip()
+                        ):
+                            sector_val = f"{sec_label} • {ind_label}"
+                    except Exception:
+                        pass
+                    if add_sector:
+                        fields.append(
+                            {
+                                "name": "Sector",
+                                "value": str(sector_val)[:1024],
+                                "inline": True,
+                            }
+                        )
+                    if add_session:
+                        sess_name: str | None = None
+                        try:
+                            ts_val = ts
+                            dt_obj = None
+                            if isinstance(ts_val, str):
+                                if ts_val.endswith("Z"):
+                                    ts_val = ts_val[:-1] + "+00:00"
+                                dt_obj = _dt.fromisoformat(ts_val)
+                            if dt_obj:
+                                if dt_obj.tzinfo is None:
+                                    dt_obj = dt_obj.replace(tzinfo=_tz.utc)
+                                sess_name = get_session(dt_obj, tz=_tz.utc)
+                        except Exception:
+                            sess_name = None
+                        if not sess_name:
+                            sess_name = "-"
+                        fields.append(
+                            {
+                                "name": "Session",
+                                "value": str(sess_name)[:1024],
+                                "inline": True,
+                            }
+                        )
+            except Exception:
+                pass
             # Optionally log the components and final score when sentiment logging is on
             try:
                 if s and getattr(s, "feature_sentiment_logging", False):
