@@ -536,7 +536,54 @@ class Settings:
     # the runner will emit periodic log summaries.  Defaults to False for
     # both to preserve backward compatibility.
     feature_auto_analyzer: bool = _b("FEATURE_AUTO_ANALYZER", False)
+
+    # --- Trade simulation analysis ---
+    # Enable trade simulation analysis in the daily analyzer.  When this
+    # flag is true, the analyzer will invoke the backtest simulator for
+    # each event processed and surface high‑level performance metrics
+    # such as top gainers and losers in the daily report.  Because
+    # simulation requires fetching historical intraday data, it can be
+    # computationally expensive and is therefore disabled by default.
+    # Set FEATURE_TRADE_SIM_ANALYSIS=1 to enable.
+    feature_trade_sim_analysis: bool = _b("FEATURE_TRADE_SIM_ANALYSIS", False)
+
+    # Number of top gainers and losers to display when trade simulation
+    # analysis is enabled.  A lower number produces a more concise
+    # report.  Defaults to 5.
+    trade_sim_top_n: int = int(os.getenv("TRADE_SIM_TOP_N", "5") or "5")
+
+    # Directory containing scraped historical event files for offline
+    # backtesting and simulation.  The historical backtest CLI scans
+    # this directory for ``*.jsonl`` files and analyses them via the
+    # backtest simulator.  Ensure the directory exists or the CLI will
+    # produce no output.  Defaults to ``data/historical``.
+    historical_data_dir: str = os.getenv("HISTORICAL_DATA_DIR", "data/historical")
     feature_log_reporter: bool = _b("FEATURE_LOG_REPORTER", False)
+
+    # --- Wave‑5: LLM classification and sentiment support ---
+    # Enable the LLM news classifier.  When this flag is set the bot will
+    # invoke the local LLM via :mod:`catalyst_bot.llm_classifier` to
+    # classify news headlines and summaries.  The classification
+    # returns catalyst tags, relevance, sentiment and a rationale
+    # which are merged into each event.  Defaults to false to avoid
+    # incurring network or compute overhead when disabled.
+    feature_llm_classifier: bool = _b("FEATURE_LLM_CLASSIFIER", False)
+
+    # URL of the LLM API endpoint.  Must include the path to the
+    # ``/api/generate`` method when using Ollama.  Used by
+    # :mod:`catalyst_bot.llm_client`.  Defaults to ``http://localhost:11434/api/generate``.
+    llm_endpoint_url: str = os.getenv(
+        "LLM_ENDPOINT_URL", "http://localhost:11434/api/generate"
+    )
+
+    # Name of the local model to call.  Used by
+    # :mod:`catalyst_bot.llm_client`.  Defaults to ``"mistral"``.
+    llm_model_name: str = os.getenv("LLM_MODEL_NAME", "mistral")
+
+    # Timeout (in seconds) for the LLM API request.  A shorter timeout
+    # prevents the ingest pipeline from stalling on long‑running
+    # requests.  Defaults to 15 seconds.
+    llm_timeout_secs: float = float(os.getenv("LLM_TIMEOUT_SECS", "15") or "15")
 
     # --- Liquidity filtering ---
     # Minimum last price threshold for tickers.  When greater than zero, any
