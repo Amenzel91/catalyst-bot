@@ -3,28 +3,30 @@ LLM‑based news classifier for Catalyst‑Bot.
 
 This module defines a single function, :func:`classify_news`, which
 uses a local large language model (LLM) to evaluate a news headline
-and optional summary.  The classifier determines whether a piece of
+and optional summary. The classifier determines whether a piece of
 news is catalyst‑worthy, identifies the relevant catalysts, rates the
 potential impact on the stock from −1 (very negative) to +1 (very
 positive), and returns a concise rationale.
 
 The implementation relies on :func:`catalyst_bot.llm_client.query_llm`
-to communicate with the local LLM API.  All invocations are
+to communicate with the local LLM API. All invocations are
 surrounded with a timeout and broad exception handling so that
 upstream pipelines remain resilient when the model is unavailable or
-returns unexpected output.  Feature flags control whether this
+returns unexpected output. Feature flags control whether this
 classification is executed at runtime.
 
 The returned dictionary contains the following keys (when available):
 
-* ``llm_tags`` – list of lower‑case catalyst tags (e.g., ``["earnings", "fda"]``) representing the primary catalysts extracted from the text.
+* ``llm_tags`` – list of lower‑case catalyst tags (e.g.,
+    ``["earnings", "fda"]``) representing the primary catalysts
+    extracted from the text.
 * ``llm_relevance`` – float between 0 and 1 indicating how likely
-  the news is to be a meaningful catalyst.
+    the news is to be a meaningful catalyst.
 * ``llm_sentiment`` – float between −1 and 1 representing the
-  predicted price impact (positive numbers for bullish news,
-  negative for bearish news).
+    predicted price impact (positive numbers for bullish news,
+    negative for bearish news).
 * ``llm_reason`` – short natural language explanation of the
-  classification outcome.  Useful for debugging and admin embeds.
+    classification outcome. Useful for debugging and admin embeds.
 
 Callers are expected to merge these results into event dictionaries
 without overwriting existing fields when the LLM is disabled or
@@ -102,17 +104,23 @@ def classify_news(headline: str, summary: Optional[str] = None) -> Dict[str, Any
         "You are an AI assistant helping a news trading bot classify news."
     )
     prompt_lines.append(
-        "Given the following headline and optional summary, decide if the news is a catalyst for the stock."
+        "Given the following headline and optional summary, "
+        "decide if the news is a catalyst for the stock."
     )
     prompt_lines.append(
-        "Return a JSON object with keys: tags (list of catalysts), relevance (0–1 float), sentiment (-1 to 1 float), reason (short explanation)."
+        "Return a JSON object with keys: "
+        "tags (list of catalysts), "
+        "relevance (0–1 float), "
+        "sentiment (-1 to 1 float), "
+        "reason (short explanation)."
     )
     prompt_lines.append(f"Headline: {headline.strip()}")
     if summary:
         prompt_lines.append(f"Summary: {summary.strip()}")
     # Example output helps steer the model towards the expected JSON schema
     prompt_lines.append(
-        "Example output: {\"tags\": [\"earnings\"], \"relevance\": 0.8, \"sentiment\": 0.6, \"reason\": \"Strong guidance above expectations\"}"
+        'Example output: {"tags": ["earnings"], "relevance": 0.8, '
+        '"sentiment": 0.6, "reason": "Strong guidance above expectations"}'
     )
     full_prompt = "\n".join(prompt_lines)
     try:
