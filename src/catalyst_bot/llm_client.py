@@ -43,8 +43,8 @@ except Exception:
     requests = None  # type: ignore
 
 if requests is None:
-    import urllib.request
     import urllib.error
+    import urllib.request
 
 _logger = logging.getLogger(__name__)
 
@@ -69,8 +69,14 @@ def _get_env_float(key: str, default: float) -> float:
         return default
 
 
-def query_llm(prompt: str, *, system: Optional[str] = None, model: Optional[str] = None,
-              timeout: Optional[float] = None, stream: bool = False) -> Optional[str]:
+def query_llm(
+    prompt: str,
+    *,
+    system: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout: Optional[float] = None,
+    stream: bool = False,
+) -> Optional[str]:
     """Send a prompt to the local LLM and return the response text.
 
     Parameters
@@ -97,12 +103,10 @@ def query_llm(prompt: str, *, system: Optional[str] = None, model: Optional[str]
     Optional[str]
         The response text or ``None`` on failure.
     """
-    endpoint = _get_env_str(
-        "LLM_ENDPOINT_URL", "http://localhost:11434/api/generate"
-    )
+    endpoint = _get_env_str("LLM_ENDPOINT_URL", "http://localhost:11434/api/generate")
     model_name = model or _get_env_str("LLM_MODEL_NAME", "mistral")
-    timeout_secs = timeout if timeout is not None else _get_env_float(
-        "LLM_TIMEOUT_SECS", 15.0
+    timeout_secs = (
+        timeout if timeout is not None else _get_env_float("LLM_TIMEOUT_SECS", 15.0)
     )
     # Build the request payload.  The API expects JSON with ``model`` and
     # ``prompt`` fields; additional options can be provided under
@@ -128,9 +132,7 @@ def query_llm(prompt: str, *, system: Optional[str] = None, model: Optional[str]
                 endpoint, data=data, headers=headers, timeout=timeout_secs
             )
             if resp.status_code != 200:
-                _logger.warning(
-                    "LLM API returned non‑200 status: %s", resp.status_code
-                )
+                _logger.warning("LLM API returned non‑200 status: %s", resp.status_code)
                 return None
             try:
                 json_data = resp.json()

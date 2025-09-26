@@ -3,6 +3,25 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+
+try:
+    # Import get_settings from config to access QuickChart settings
+    from .config import get_settings  # type: ignore
+except Exception:
+    # Fallback import for environments where relative import fails
+    try:
+        from catalyst_bot.config import get_settings  # type: ignore
+    except Exception:
+        get_settings = None  # type: ignore
+
+# Initialize settings once (if available). This captures environment variables
+if get_settings is not None:
+    try:
+        settings = get_settings()
+    except Exception:
+        settings = None  # type: ignore
+else:
+    settings = None  # type: ignore
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -55,9 +74,36 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         # respect QUICKCHART_BASE_URL if provided; otherwise default to
         # https://quickchart.io/chart.  The config dict must be JSON‑serializable.
         def _encode_config(cfg: Dict[str, Any]) -> str:
+            """
+            URL‑encode the Chart.js configuration and prepend the QuickChart base URL.
+
+            This helper first attempts to read a base URL from application settings
+            (settings.quickchart_base_url) if available. If settings are not
+            available or no base URL is defined, it falls back to the
+            ``QUICKCHART_BASE_URL`` environment variable, and finally to the
+            public QuickChart endpoint. It ensures the resulting URL includes
+            the ``/chart`` suffix.
+
+            Args:
+                cfg: Chart.js configuration dict.
+
+            Returns:
+                A full URL to the QuickChart chart endpoint with the encoded config.
+            """
             cfg_json = json.dumps(cfg, separators=(",", ":"))
             encoded = urllib.parse.quote(cfg_json, safe="")
-            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
+            # Determine base URL: prefer settings.quickchart_base_url if available
+            base: str | None = None
+            try:
+                if settings and getattr(settings, "quickchart_base_url", None):
+                    base = settings.quickchart_base_url  # type: ignore
+            except Exception:
+                base = None
+            if not base:
+                base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
+            # Normalize to ensure '/chart' suffix is present
+            if not base.endswith("/chart"):
+                base = f"{base.rstrip('/')}/chart"
             return f"{base}?c={encoded}"
 
         # Attempt to fetch 1‑day, 5‑minute intraday data.  Explicitly disable
