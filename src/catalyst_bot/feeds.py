@@ -1550,6 +1550,70 @@ def fetch_pr_feeds() -> List[Dict]:
 
     all_items = filtered
 
+    # -----------------------------------------------------------------
+    # Patch: attach LLM classification & sentiment when enabled
+    #
+    # When FEATURE_LLM_CLASSIFIER=1 the bot will invoke the local
+    # LLM classifier for each news event (excluding SEC filings and
+    # demo/test items) to extract catalyst tags, relevance, sentiment
+    # and rationale.  The classifier is resilient to errors; if the
+    # call fails or returns no data it leaves existing fields
+    # unchanged.  Results are stored in the event under keys
+    # ``llm_tags``, ``llm_relevance``, ``llm_sentiment`` and
+    # ``llm_reason``.  To avoid redundant LLM calls, this pass is
+    # executed only once after filtering.
+    try:
+        from .llm_classifier import classify_news  # type: ignore
+    except Exception:
+        classify_news = None  # type: ignore
+    # Determine whether to run the LLM classifier.  Prefer settings
+    # over environment variables so that tests can override behaviour.
+    llm_enabled = False
+    try:
+        if settings:
+            llm_enabled = getattr(settings, "feature_llm_classifier", False)
+        else:
+            env_val = (os.getenv("FEATURE_LLM_CLASSIFIER", "") or "").strip().lower()
+            llm_enabled = env_val in {"1", "true", "yes", "on"}
+    except Exception:
+        llm_enabled = False
+    if llm_enabled and classify_news:
+        for it in all_items:
+            try:
+                # Skip SEC filings (handled separately by the digester) and
+                # demo/test items
+                src = str(it.get("source") or "").lower()
+                if src.startswith("sec_") or src == "demo":
+                    continue
+                # Avoid re‑classifying if results already present
+                if any(
+                    key in it for key in ("llm_tags", "llm_relevance", "llm_sentiment")
+                ):
+                    continue
+                title = it.get("title") or it.get("headline")
+                if not title or not isinstance(title, str):
+                    continue
+                summary_txt = (
+                    it.get("summary") if isinstance(it.get("summary"), str) else None
+                )
+                res = classify_news(title, summary_txt)
+                if not res:
+                    continue
+                tags = res.get("llm_tags")
+                if tags is not None and "llm_tags" not in it:
+                    it["llm_tags"] = tags  # type: ignore
+                rel = res.get("llm_relevance")
+                if rel is not None and "llm_relevance" not in it:
+                    it["llm_relevance"] = rel  # type: ignore
+                sent = res.get("llm_sentiment")
+                if sent is not None and "llm_sentiment" not in it:
+                    it["llm_sentiment"] = sent  # type: ignore
+                reason = res.get("llm_reason")
+                if reason and "llm_reason" not in it:
+                    it["llm_reason"] = reason  # type: ignore
+            except Exception:
+                continue
+
     # If EVERYTHING failed and user wants to validate alerts, inject demo
     if not all_items and os.getenv("DEMO_IF_EMPTY", "").lower() in ("1", "true", "yes"):
         now = datetime.now(timezone.utc).isoformat()
