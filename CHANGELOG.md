@@ -464,3 +464,108 @@ for this bug‑fix release.
 +updates by promoting the pending JSON file into `keyword_stats.json`.
 +Future phases will integrate the approval loop and backtesting
 +framework.
+
+1. Tiingo Integration in market.py:
+
+New Tiingo Helper Functions: Added _tiingo_intraday_series(ticker, api_key, interval, ...) to fetch intraday OHLCV bars from Tiingo’s IEX API, and _tiingo_daily_history(ticker, api_key, start_date, end_date) to fetch daily OHLCV from Tiingo’s daily prices API
+GitHub
+business-science.github.io
+. These functions parse the JSON responses into pandas DataFrames, rename columns to match yfinance conventions (Open/High/Low/Close/Volume), and handle extended hours data via the afterHours parameter
+GitHub
+business-science.github.io
+. They return None on any network or parsing error to allow graceful fallback.
+
+get_last_price_snapshot: This function already had Tiingo support; no functional change to its logic aside from reformatting and documentation. It will attempt Tiingo first when FEATURE_TIINGO is enabled and a TIINGO_API_KEY is set, then Alpha Vantage, then yfinance, merging results from providers as before
+GitHub
+GitHub
+. We preserved all fallback behavior and telemetry logging. Tests confirm that if Tiingo or Alpha Vantage returns data, yfinance is not called, and partial data is correctly supplemented by later providers
+GitHub
+GitHub
+.
+
+get_last_price_change: Simplified to use get_last_price_snapshot and then compute percentage change if possible
+GitHub
+. Returns (last, None) if previous close is missing or zero (avoiding division-by-zero)
+GitHub
+. This ensures no exceptions propagate; any error in computing change yields None for change_pct.
+
+Intraday Data (get_intraday): This function now tries Tiingo intraday first. If FEATURE_TIINGO=1 and a TIINGO_API_KEY is available, it calls _tiingo_intraday_series. On success, it returns the DataFrame immediately
+GitHub
+GitHub
+. If Tiingo is not enabled or returns no data, it falls back to the original yfinance logic (using yf.download). We map output_size to a date range for Tiingo: “compact” ~ last 5–7 days, “full” ~ ~60 days (noting Tiingo’s 2000-bar limit)
+business-science.github.io
+. Extended hours (prepost) are passed through via the afterHours flag. The returned DataFrame is in the same format as before (with columns Open, High, Low, Close, Volume). If no provider yields data, it returns None
+GitHub
+GitHub
+.
+
+Intraday Snapshots (get_intraday_snapshots): Added Tiingo support for 1-minute data. If Tiingo is enabled, we call _tiingo_intraday_series for the day (±1 day buffer) instead of yf.download
+GitHub
+GitHub
+. The same segmenting logic then applies to the DataFrame. If Tiingo fails or returns no data, we fallback to yfinance as before
+GitHub
+GitHub
+. This improves snapshot reliability for extended hours, since Tiingo provides pre/post market data when available. The output format (dict of segment OHLCs) remains unchanged.
+
+Volatility (get_volatility): Modified to prefer Tiingo for daily historical data. If Tiingo is enabled, we call _tiingo_daily_history for roughly (days+5) days of data (to ensure we have at least days trading days)
+GitHub
+GitHub
+. If Tiingo returns data, we compute the average daily range% from that; if not, we fallback to yfinance (Ticker.history) as before. We continue to return None if insufficient data or on any exception
+GitHub
+GitHub
+. The test for a 3-day volatility scenario passes (computed ~16.7% range) within tolerance, confirming consistency
+GitHub
+.
+
+Intraday Indicators (get_intraday_indicators, get_momentum_indicators): These now attempt Tiingo 1-minute data if available. We fetch 1-minute bars for the target date (with a one-day buffer before/after) via Tiingo, else fallback to yfinance
+GitHub
+GitHub
+. The computation of VWAP, RSI-14, MACD, EMAs, etc., is unchanged, but they will use Tiingo data when possible. We guarded these functions with feature_indicators and feature_momentum_indicators flags as before
+GitHub
+GitHub
+. If Tiingo is used and fails (e.g., no data for illiquid ticker), we safely fall back to yfinance or return {}. This enhancement ensures indicators can be calculated even if yfinance is not installed or if it fails, as long as Tiingo is enabled.
+
+QuickChart Integration: The get_quickchart_url function (in charts.py) calls market.get_intraday(..., output_size="compact"). With our changes, this call will use Tiingo (if enabled) to retrieve intraday data for the chart
+GitHub
+. We did not change charts.py directly; however, QuickChart will now prefer Tiingo data automatically through the modified get_intraday. The fallback to _quickchart_url_yfinance remains in place if both Tiingo and yfinance fail to provide intraday data
+GitHub
+. This means alert candlestick charts will benefit from Tiingo’s extended hours data and reliability when available, without altering the QuickChart logic.
+
+2. Loader Updates (backtest/loader.py):
+
+Daily History via Tiingo: In load_price_history, for daily interval we replaced the direct yfinance.download call with a new call to get_daily_history
+GitHub
+. We created get_daily_history(ticker, days) in market.py to encapsulate the logic of “Tiingo if possible, else yfinance” for daily bars. This function uses _tiingo_daily_history under the hood, falling back to yf.download if Tiingo is unavailable or empty. By using get_daily_history, the backtest simulator will retrieve daily price data from Tiingo (when enabled), improving consistency with live mode. If Tiingo is disabled, get_daily_history simply invokes yfinance as before. We preserved the period_days = days+7 buffer for weekends/holidays, so the behavior and output size remain consistent
+GitHub
+GitHub
+. We also adjusted the loader’s comments to reflect using Tiingo instead of exclusively yfinance.
+
+Import Changes: We added get_daily_history to market.py (but did not add it to __all__, as it’s mainly for internal use). The loader now does from ..market import get_daily_history inside the load_price_history function when needed, similar to how it imports yfinance on the fly. This keeps the import overhead minimal and avoids issues if market.py is imported without Tiingo configured.
+
+3. Environment & Config Considerations:
+
+The new code respects the FEATURE_TIINGO flag and TIINGO_API_KEY from settings or environment. If FEATURE_TIINGO is off or the API key is missing, all Tiingo code paths are skipped, and behavior remains exactly as before (using Alpha Vantage and yfinance only)
+GitHub
+GitHub
+. We took care to not introduce any hard dependency on Tiingo – the bot will function without it.
+
+If Tiingo is enabled but a particular API call fails (network issue, ticker not found, etc.), we catch exceptions and proceed to the next provider or return None as appropriate
+GitHub
+GitHub
+. This ensures robust fallback. We also log provider usage (provider_usage telemetry) for Tiingo just like for Alpha and yfinance, so one can monitor in logs which source provided the data
+GitHub
+GitHub
+.
+
+No changes were made to Alpha Vantage logic aside from ensuring our code uses _alpha_last_prev_cached and _alpha_last_prev exactly as before. The Alpha cache and skip flag are honored. The yfinance usage is also unchanged except where we intercept it with Tiingo data earlier.
+
+4. Minor Enhancements and Notes:
+
+We updated docstrings and comments to reflect the new behavior (e.g., noting Tiingo as a provider in get_last_price_snapshot and others, updating loader’s documentation) for clarity
+GitHub
+GitHub
+.
+
+The Alpaca streaming stub (sample_alpaca_stream) was not part of the request, but we noticed it in __all__. We left its functionality intact, only reformatting slightly for consistency (no logic change).
+
+We did not modify charts.py except indirectly via get_intraday, as mentioned. The Finviz and FMP integrations, and other parts of the bot unrelated to price fetching, remain untouched.
