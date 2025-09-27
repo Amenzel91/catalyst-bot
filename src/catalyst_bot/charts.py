@@ -3,25 +3,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-
-try:
-    # Import get_settings from config to access QuickChart settings
-    from .config import get_settings  # type: ignore
-except Exception:
-    # Fallback import for environments where relative import fails
-    try:
-        from catalyst_bot.config import get_settings  # type: ignore
-    except Exception:
-        get_settings = None  # type: ignore
-
-# Initialize settings once (if available). This captures environment variables
-if get_settings is not None:
-    try:
-        settings = get_settings()
-    except Exception:
-        settings = None  # type: ignore
-else:
-    settings = None  # type: ignore
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -59,6 +40,12 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
     returned as a link to the QuickChart API.  If no data can be
     retrieved, ``None`` is returned.
     """
+    log.info(
+        "quickchart_yf_start ticker=%s bars=%d base=%s",
+        ticker,
+        bars,
+        os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart"),
+    )
     try:
         import json
         import urllib.parse
@@ -74,36 +61,9 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         # respect QUICKCHART_BASE_URL if provided; otherwise default to
         # https://quickchart.io/chart.  The config dict must be JSON‑serializable.
         def _encode_config(cfg: Dict[str, Any]) -> str:
-            """
-            URL‑encode the Chart.js configuration and prepend the QuickChart base URL.
-
-            This helper first attempts to read a base URL from application settings
-            (settings.quickchart_base_url) if available. If settings are not
-            available or no base URL is defined, it falls back to the
-            ``QUICKCHART_BASE_URL`` environment variable, and finally to the
-            public QuickChart endpoint. It ensures the resulting URL includes
-            the ``/chart`` suffix.
-
-            Args:
-                cfg: Chart.js configuration dict.
-
-            Returns:
-                A full URL to the QuickChart chart endpoint with the encoded config.
-            """
             cfg_json = json.dumps(cfg, separators=(",", ":"))
             encoded = urllib.parse.quote(cfg_json, safe="")
-            # Determine base URL: prefer settings.quickchart_base_url if available
-            base: str | None = None
-            try:
-                if settings and getattr(settings, "quickchart_base_url", None):
-                    base = settings.quickchart_base_url  # type: ignore
-            except Exception:
-                base = None
-            if not base:
-                base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
-            # Normalize to ensure '/chart' suffix is present
-            if not base.endswith("/chart"):
-                base = f"{base.rstrip('/')}/chart"
+            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
             return f"{base}?c={encoded}"
 
         # Attempt to fetch 1‑day, 5‑minute intraday data.  Explicitly disable
@@ -211,6 +171,13 @@ def render_intraday_chart(
     created and returned instead.  On critical import failures, None is
     returned so callers can skip attachments entirely.
     """
+    log.info(
+        "charts_render_start ticker=%s CHARTS_OK=%s has_mpl=%s has_mpf=%s",
+        ticker,
+        (HAS_MATPLOTLIB and HAS_MPLFINANCE),
+        HAS_MATPLOTLIB,
+        HAS_MPLFINANCE,
+    )
     # Respect dependency guard: skip entirely when chart libs are missing.
     if not CHARTS_OK:
         log.info(
@@ -256,6 +223,15 @@ def render_intraday_chart(
         df = market.get_intraday(
             sym, interval="5min", output_size="compact", prepost=True
         )
+        try:
+            log.info(
+                "charts_render_df ticker=%s rows=%s cols=%s",
+                sym,
+                getattr(df, "shape", ("-", "-"))[0],
+                list(getattr(df, "columns", [])),
+            )
+        except Exception:
+            pass
         # Validate DataFrame
         if df is None or getattr(df, "empty", False):
             raise ValueError("no_intraday_data")
@@ -392,6 +368,8 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
     Note: The QuickChart API is accessed by the Discord client, not the bot
     itself, so no external HTTP request is made from this function.
     """
+    base_env = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io")
+    log.info("quickchart_build_start ticker=%s bars=%d base=%s", ticker, bars, base_env)
     try:
         import pandas as pd
 
@@ -444,13 +422,16 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                     "c": close_price,
                 }
             )
+        log.info("quickchart_dataset ticker=%s rows=%d", nt, len(dataset))
         if not dataset:
+            log.info("quickchart_no_dataset ticker=%s", nt)
             return None
         cfg = _build_quickchart_config(dataset, nt)
         cfg_json = json.dumps(cfg, separators=(",", ":"))
         encoded = urllib.parse.quote(cfg_json, safe="")
         # Build base URL
-        base_url = f"https://quickchart.io/chart?c={encoded}"
+        base_url = f"{os.getenv('QUICKCHART_BASE_URL', 'https://quickchart.io')}/chart?c={encoded}"
+        log.info("quickchart_cfg_len bytes=%d url_len=%d", len(cfg_json), len(base_url))
         # If URL length exceeds ~1900 characters, attempt to shorten via QuickChart API.
         # This avoids hitting Discord's message limit and improves readability.
         try:
@@ -490,10 +471,12 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                         data = {}
                     url = data.get("url") or data.get("shortUrl") or None
                     if isinstance(url, str) and url.startswith("http"):
+                        log.info("quickchart_create_ok short_url_len=%d", len(url))
                         return url
-        except Exception:
+        except Exception as e:
             # Fall back to original long URL on any failure
-            pass
+            log.warning("quickchart_create_failed err=%s", str(e))
+        log.info("quickchart_return_base_url url_len=%d", len(base_url))
         return base_url
     except Exception:
         return None
