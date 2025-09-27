@@ -13,8 +13,10 @@ import requests
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
 from .charts import CHARTS_OK, get_quickchart_url, render_intraday_chart
 from .config import get_settings
+from .indicator_utils import compute_composite_score
 from .logging_utils import get_logger
-from .market import get_intraday_indicators, get_momentum_indicators
+from .market import get_intraday, get_intraday_indicators, get_momentum_indicators
+from .ml_utils import extract_features, load_model, score_alerts
 
 log = get_logger("alerts")
 
@@ -806,12 +808,164 @@ def _build_discord_embed(
     except Exception:
         pass
 
+    # -----------------------------------------------------------------
+    # Patch A/C: Compute composite indicator score and ML confidence tier
+    composite_score = None
+    ml_score = None
+    alert_tier = None
+    try:
+        # Compute composite indicator when enabled
+        comp_flag = os.getenv("FEATURE_COMPOSITE_INDICATORS", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if comp_flag and primary:
+            hi_res = os.getenv("FEATURE_HIGH_RES_DATA", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            interval = "1min" if hi_res else "5min"
+            try:
+                intraday_df = get_intraday(
+                    primary, interval=interval, output_size="compact"
+                )
+            except Exception:
+                intraday_df = None
+            if intraday_df is not None:
+                composite_score = compute_composite_score(intraday_df)
+            # Apply composite threshold gating (no suppression here; only note)
+        # Compute ML confidence and tier when enabled
+        ml_flag = os.getenv("FEATURE_ML_ALERT_RANKING", "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if ml_flag:
+            # Derive price change in decimal form from last_change_pct
+            price_change_pct = 0.0
+            try:
+                if last_change_pct is not None and last_change_pct not in (
+                    "n/a",
+                    "",
+                    None,
+                ):
+                    # last_change_pct may be a float or formatted string (e.g., "+2.00%")
+                    if isinstance(last_change_pct, (float, int)):
+                        price_change_pct = float(last_change_pct) / 100.0
+                    else:
+                        # strip percent sign and convert
+                        v = (
+                            str(last_change_pct)
+                            .replace("%", "")
+                            .replace("+", "")
+                            .strip()
+                        )
+                        price_change_pct = float(v) / 100.0
+            except Exception:
+                price_change_pct = 0.0
+            # Sentiment numeric score: take first element of score_values when available
+            sent_score_val = 0.0
+            try:
+                if score_values:
+                    sv = str(score_values[0]).replace("+", "").replace("%", "").strip()
+                    sent_score_val = float(sv) if sv not in ("n/a", "", None) else 0.0
+            except Exception:
+                sent_score_val = 0.0
+            ind_score_val = float(composite_score or 0.0)
+            feature_df, _ = extract_features(
+                [
+                    {
+                        "price_change": price_change_pct,
+                        "sentiment_score": sent_score_val,
+                        "indicator_score": ind_score_val,
+                    }
+                ]
+            )
+            model_path = os.getenv("ML_MODEL_PATH", "data/models/trade_classifier.pkl")
+            try:
+                model = load_model(model_path)
+            except Exception:
+                model = None
+            if model:
+                try:
+                    scores = score_alerts(model, feature_df)
+                    if scores:
+                        ml_score = float(scores[0])
+                except Exception:
+                    ml_score = None
+            # Determine tier based on confidence thresholds
+            if ml_score is not None:
+                try:
+                    high_thr = float(os.getenv("CONFIDENCE_HIGH", "0.8"))
+                    mod_thr = float(os.getenv("CONFIDENCE_MODERATE", "0.6"))
+                except Exception:
+                    high_thr = 0.8
+                    mod_thr = 0.6
+                if ml_score >= high_thr:
+                    alert_tier = "Strong Alert"
+                elif ml_score >= mod_thr:
+                    alert_tier = "Moderate Alert"
+                else:
+                    alert_tier = "Heads‑Up Alert"
+    except Exception:
+        composite_score = None
+        ml_score = None
+        alert_tier = None
+
+    # Override colour based on ML tier (if present)
+    try:
+        if alert_tier:
+            if alert_tier == "Strong Alert":
+                color = 0x2ECC71  # green
+            elif alert_tier == "Moderate Alert":
+                color = 0xE69E00  # amber
+            else:
+                color = 0x95A5A6  # grey
+    except Exception:
+        pass
+
     # Build the list of fields.  Combine price and change for a concise layout.
     fields = []
     price_change_val = f"{price_str} / {chg_str}"
     fields.append({"name": "Price / Change", "value": price_change_val, "inline": True})
     fields.append({"name": "Sentiment", "value": sent, "inline": True})
     fields.append({"name": "Score", "value": score_str, "inline": True})
+    # Append composite indicator and ML confidence when available
+    try:
+        if composite_score is not None:
+            fields.append(
+                {
+                    "name": "Composite Score",
+                    "value": f"{float(composite_score):.2f}",
+                    "inline": True,
+                }
+            )
+    except Exception:
+        pass
+    try:
+        if ml_score is not None:
+            fields.append(
+                {
+                    "name": "Confidence",
+                    "value": f"{float(ml_score):.2f}",
+                    "inline": True,
+                }
+            )
+            if alert_tier:
+                fields.append(
+                    {
+                        "name": "Tier",
+                        "value": str(alert_tier),
+                        "inline": True,
+                    }
+                )
+    except Exception:
+        pass
 
     # -----------------------------------------------------------------
     # Patch‑Wave‑1: Bullishness gauge
