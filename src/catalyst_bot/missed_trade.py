@@ -23,8 +23,10 @@ DataFrame as a stub.
 
 from __future__ import annotations
 
-import pandas as pd
 from typing import Optional
+
+import pandas as pd
+
 
 def identify_missed_trades(
     events_df: pd.DataFrame,
@@ -63,8 +65,8 @@ def identify_missed_trades(
     # Placeholder implementation.  Users may implement their own logic
     # using the provided parameters.  For now, we return an empty
     # DataFrame with the anticipated structure.
-    columns = ['symbol', 'event_date', 'max_return', 'hit']
+    columns = ["symbol", "event_date", "max_return", "hit"]
     return pd.DataFrame(columns=columns)
 
 
-__all__ = ['identify_missed_trades']
+__all__ = ["identify_missed_trades"]

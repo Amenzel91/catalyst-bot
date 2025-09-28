@@ -21,10 +21,11 @@ indicator.  Callers are expected to handle missing values gracefully.
 from __future__ import annotations
 
 import math
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     """Return the Average True Range (ATR) for a price DataFrame.
@@ -47,11 +48,11 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
         A Series of ATR values aligned with ``df`` or ``None`` if not
         enough data is available.
     """
-    if df is None or df.empty or not {'High', 'Low', 'Close'}.issubset(df.columns):
+    if df is None or df.empty or not {"High", "Low", "Close"}.issubset(df.columns):
         return None
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
     # True range is the maximum of (high-low), abs(high-prev_close), abs(low-prev_close)
     prev_close = close.shift(1)
     tr1 = high - low
@@ -88,9 +89,9 @@ def compute_bollinger_bands(
     tuple (mid, upper, lower) or None
         A tuple of Series representing the middle, upper and lower bands.
     """
-    if df is None or df.empty or 'Close' not in df.columns:
+    if df is None or df.empty or "Close" not in df.columns:
         return None
-    close = df['Close']
+    close = df["Close"]
     mid = close.rolling(window=period, min_periods=period).mean()
     std = close.rolling(window=period, min_periods=period).std()
     upper = mid + num_std * std
@@ -108,10 +109,10 @@ def compute_obv(df: pd.DataFrame) -> Optional[pd.Series]:
 
     Returns ``None`` if data is missing or insufficient.
     """
-    if df is None or df.empty or not {'Close', 'Volume'}.issubset(df.columns):
+    if df is None or df.empty or not {"Close", "Volume"}.issubset(df.columns):
         return None
-    close = df['Close']
-    volume = df['Volume']
+    close = df["Close"]
+    volume = df["Volume"]
     direction = np.sign(close.diff().fillna(0.0))
     obv = (direction * volume).fillna(0).cumsum()
     return obv
@@ -124,12 +125,12 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     and negative directional movements over a rolling window.  Requires
     'High', 'Low', 'Close' columns.  Returns None if data is missing.
     """
-    required = {'High', 'Low', 'Close'}
+    required = {"High", "Low", "Close"}
     if df is None or df.empty or not required.issubset(df.columns):
         return None
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
     # Compute directional movement
     up_move = high.diff()
     down_move = low.diff().abs() * -1  # negative downward move
@@ -137,15 +138,22 @@ def compute_adx(df: pd.DataFrame, period: int = 14) -> Optional[pd.Series]:
     minus_dm = np.where((down_move > up_move) & (down_move > 0), -down_move, 0.0)
     # True range
     prev_close = close.shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     # Smooth values using Wilder's smoothing
     atr = tr.rolling(window=period, min_periods=period).mean()
-    plus_di = (100 * pd.Series(plus_dm).rolling(window=period, min_periods=period).sum() / atr)
-    minus_di = (100 * pd.Series(minus_dm).rolling(window=period, min_periods=period).sum() / atr)
+    plus_di = (
+        100 * pd.Series(plus_dm).rolling(window=period, min_periods=period).sum() / atr
+    )
+    minus_di = (
+        100 * pd.Series(minus_dm).rolling(window=period, min_periods=period).sum() / atr
+    )
     dx = ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)) * 100
     adx = dx.rolling(window=period, min_periods=period).mean()
     return adx
@@ -179,7 +187,7 @@ def compute_composite_score(
     float or None
         Composite score in the range 0–100 or ``None`` if computation fails.
     """
-    required = {'High', 'Low', 'Close', 'Volume'}
+    required = {"High", "Low", "Close", "Volume"}
     if df is None or df.empty or not required.issubset(df.columns):
         return None
     # Compute individual indicators (take the last available value)
@@ -218,9 +226,9 @@ def compute_composite_score(
 
 
 __all__ = [
-    'compute_atr',
-    'compute_bollinger_bands',
-    'compute_obv',
-    'compute_adx',
-    'compute_composite_score',
+    "compute_atr",
+    "compute_bollinger_bands",
+    "compute_obv",
+    "compute_adx",
+    "compute_composite_score",
 ]

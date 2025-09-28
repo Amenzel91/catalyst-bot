@@ -38,6 +38,7 @@ from typing import Any, Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 
+
 @dataclass
 class DummyModel:
     """A trivial model that predicts the mean of the target values.
@@ -47,14 +48,17 @@ class DummyModel:
     and returns it for any input.  The ``predict`` method returns
     an array of constant scores between 0 and 1.
     """
+
     mean_target: float = 0.5
 
     def predict(self, X: Iterable) -> np.ndarray:
-        length = len(X) if hasattr(X, '__len__') else 1
+        length = len(X) if hasattr(X, "__len__") else 1
         return np.full(length, self.mean_target, dtype=float)
 
 
-def extract_features(alerts: Iterable[dict[str, Any]]) -> Tuple[pd.DataFrame, List[Any]]:
+def extract_features(
+    alerts: Iterable[dict[str, Any]]
+) -> Tuple[pd.DataFrame, List[Any]]:
     """Extract numerical features and labels from a sequence of alert dicts.
 
     Each alert dict is expected to contain at minimum:
@@ -77,13 +81,17 @@ def extract_features(alerts: Iterable[dict[str, Any]]) -> Tuple[pd.DataFrame, Li
     rows = []
     labels = []
     for alert in alerts:
-        price_change = float(alert.get('price_change') or 0.0)
-        sent_score = float(alert.get('sentiment_score') or 0.0)
-        indicator_score = float(alert.get('indicator_score') or 0.0)
-        rows.append({'price_change': price_change,
-                     'sentiment_score': sent_score,
-                     'indicator_score': indicator_score})
-        labels.append(alert.get('label'))
+        price_change = float(alert.get("price_change") or 0.0)
+        sent_score = float(alert.get("sentiment_score") or 0.0)
+        indicator_score = float(alert.get("indicator_score") or 0.0)
+        rows.append(
+            {
+                "price_change": price_change,
+                "sentiment_score": sent_score,
+                "indicator_score": indicator_score,
+            }
+        )
+        labels.append(alert.get("label"))
     df = pd.DataFrame(rows)
     return df, labels
 
@@ -108,7 +116,9 @@ def train_model(X: pd.DataFrame, y: Iterable[Any]) -> DummyModel:
     DummyModel
         Trained model with a ``predict`` method.
     """
-    clean_labels = [float(lbl) for lbl in y if lbl is not None and isinstance(lbl, (int, float))]
+    clean_labels = [
+        float(lbl) for lbl in y if lbl is not None and isinstance(lbl, (int, float))
+    ]
     if clean_labels:
         mean_target = float(np.mean(clean_labels))
     else:
@@ -164,10 +174,11 @@ def load_model(path: str) -> DummyModel:
         Loaded model with a ``predict`` method.
     """
     import json
+
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        mean_target = float(data.get('mean_target', 0.5))
+        mean_target = float(data.get("mean_target", 0.5))
         return DummyModel(mean_target=mean_target)
     except Exception:
         # On any error, fall back to a default model
@@ -177,9 +188,9 @@ def load_model(path: str) -> DummyModel:
 # Define the public API for this module.  The '__all__' list specifies
 # which names will be exported when ``from catalyst_bot.ml_utils import *``
 __all__ = [
-    'DummyModel',
-    'extract_features',
-    'train_model',
-    'score_alerts',
-    'load_model',
+    "DummyModel",
+    "extract_features",
+    "train_model",
+    "score_alerts",
+    "load_model",
 ]

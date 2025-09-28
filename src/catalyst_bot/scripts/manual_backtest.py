@@ -31,16 +31,16 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List
 
 import pandas as pd
 
-from ..backtest.simulator import simulate_trades
-from ..backtest.metrics import summarize_returns, BacktestSummary
-from ..indicator_utils import compute_composite_score
-from ..ml_utils import extract_features, load_model, score_alerts
-from ..market import get_intraday, get_last_price_change  # type: ignore[attr-defined]
 from ..alerts import _post_discord_with_backoff  # type: ignore
+from ..backtest.metrics import BacktestSummary, summarize_returns
+from ..backtest.simulator import simulate_trades
+from ..indicator_utils import compute_composite_score
+from ..market import get_intraday, get_last_price_change  # type: ignore[attr-defined]
+from ..ml_utils import extract_features, load_model, score_alerts
 
 
 def _load_events(path: Path) -> List[Dict[str, Any]]:
@@ -119,22 +119,64 @@ def _derive_trades(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return trades
 
 
-def _build_embed(summary: BacktestSummary, composite: float | None, ml_score: float | None, alert_tier: str | None, label: str) -> Dict[str, Any]:
+def _build_embed(
+    summary: BacktestSummary,
+    composite: float | None,
+    ml_score: float | None,
+    alert_tier: str | None,
+    label: str,
+) -> Dict[str, Any]:
     """Construct a Discord embed dict summarising backtest results."""
     fields: List[Dict[str, Any]] = []
     fields.append({"name": "Trades", "value": str(summary.n), "inline": True})
     fields.append({"name": "Hits", "value": str(summary.hits), "inline": True})
-    fields.append({"name": "Hit Rate", "value": f"{summary.hit_rate:.3f}", "inline": True})
-    fields.append({"name": "Avg Return", "value": f"{summary.avg_return:.4f}", "inline": True})
-    fields.append({"name": "Max Drawdown", "value": f"{summary.max_drawdown:.4f}", "inline": True})
-    fields.append({"name": "Sharpe", "value": f"{summary.sharpe:.3f}" if not pd.isna(summary.sharpe) else "n/a", "inline": True})
-    fields.append({"name": "Sortino", "value": f"{summary.sortino:.3f}" if not pd.isna(summary.sortino) else "n/a", "inline": True})
-    fields.append({"name": "Profit Factor", "value": f"{summary.profit_factor:.3f}" if summary.profit_factor != float('inf') else "∞", "inline": True})
-    fields.append({"name": "Avg Win-Loss", "value": f"{summary.avg_win_loss:.4f}", "inline": True})
+    fields.append(
+        {"name": "Hit Rate", "value": f"{summary.hit_rate:.3f}", "inline": True}
+    )
+    fields.append(
+        {"name": "Avg Return", "value": f"{summary.avg_return:.4f}", "inline": True}
+    )
+    fields.append(
+        {"name": "Max Drawdown", "value": f"{summary.max_drawdown:.4f}", "inline": True}
+    )
+    fields.append(
+        {
+            "name": "Sharpe",
+            "value": f"{summary.sharpe:.3f}" if not pd.isna(summary.sharpe) else "n/a",
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Sortino",
+            "value": (
+                f"{summary.sortino:.3f}" if not pd.isna(summary.sortino) else "n/a"
+            ),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {
+            "name": "Profit Factor",
+            "value": (
+                f"{summary.profit_factor:.3f}"
+                if summary.profit_factor != float("inf")
+                else "∞"
+            ),
+            "inline": True,
+        }
+    )
+    fields.append(
+        {"name": "Avg Win-Loss", "value": f"{summary.avg_win_loss:.4f}", "inline": True}
+    )
     if composite is not None:
-        fields.append({"name": "Composite Score", "value": f"{composite:.2f}", "inline": True})
+        fields.append(
+            {"name": "Composite Score", "value": f"{composite:.2f}", "inline": True}
+        )
     if ml_score is not None:
-        fields.append({"name": "Confidence", "value": f"{ml_score:.2f}", "inline": True})
+        fields.append(
+            {"name": "Confidence", "value": f"{ml_score:.2f}", "inline": True}
+        )
     if alert_tier:
         fields.append({"name": "Tier", "value": alert_tier, "inline": True})
     embed = {
@@ -161,10 +203,16 @@ def run_backtest_on_directory(dir_path: str) -> List[Dict[str, Any]]:
         commission = float(os.getenv("BACKTEST_COMMISSION", "0.0") or 0.0)
         slippage = float(os.getenv("BACKTEST_SLIPPAGE", "0.0") or 0.0)
         try:
-            results_df, summary = simulate_trades(trades, commission=commission, slippage=slippage)
+            results_df, summary = simulate_trades(
+                trades, commission=commission, slippage=slippage
+            )
         except Exception:
             # If simulation fails, summarise manually using returns only
-            rets = [((t.get("exit_price") or 0) - (t.get("entry_price") or 0)) / (t.get("entry_price") or 1) for t in trades]
+            rets = [
+                ((t.get("exit_price") or 0) - (t.get("entry_price") or 0))
+                / (t.get("entry_price") or 1)
+                for t in trades
+            ]
             summary = summarize_returns(rets)
         # Compute composite indicator and ML score for the entire dataset
         comp_score = None
@@ -173,21 +221,29 @@ def run_backtest_on_directory(dir_path: str) -> List[Dict[str, Any]]:
         try:
             # Use the first ticker and compute composite on intraday data
             if events:
-                sym = (events[0].get("ticker") or events[0].get("symbol") or "").strip().upper()
+                sym = (
+                    (events[0].get("ticker") or events[0].get("symbol") or "")
+                    .strip()
+                    .upper()
+                )
                 if sym:
                     intraday = get_intraday(sym, interval="5min", output_size="compact")
                     if intraday is not None:
                         comp_score = compute_composite_score(intraday)
             # ML confidence using dummy model on aggregate
             if comp_score is not None:
-                features_df, _ = extract_features([
-                    {
-                        "price_change": summary.avg_return,
-                        "sentiment_score": summary.avg_return,
-                        "indicator_score": comp_score,
-                    }
-                ])
-                model_path = os.getenv("ML_MODEL_PATH", "data/models/trade_classifier.pkl")
+                features_df, _ = extract_features(
+                    [
+                        {
+                            "price_change": summary.avg_return,
+                            "sentiment_score": summary.avg_return,
+                            "indicator_score": comp_score,
+                        }
+                    ]
+                )
+                model_path = os.getenv(
+                    "ML_MODEL_PATH", "data/models/trade_classifier.pkl"
+                )
                 model = load_model(model_path)
                 scores = score_alerts(model, features_df)
                 if scores:
