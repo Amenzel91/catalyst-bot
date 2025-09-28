@@ -1,0 +1,58 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\menza> cd "C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot"
+PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> py -3.12 -m venv .venv
+PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> .\.venv\Scripts\Activate.ps1
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> pre-commit run -a
+black....................................................................Passed
+isort....................................................................Passed
+autoflake................................................................Passed
+flake8...................................................................Passed
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> pytest -q\
+ERROR: usage: pytest [options] [file_or_dir] [file_or_dir] [...]
+pytest: error: argument -q/--quiet: ignored explicit argument '\\'
+
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> pytest -q
+............................................                                                                     [100%]
+================================================== warnings summary ===================================================
+tests/test_classify.py::test_classify_detects_fda_keyword_and_sentiment
+  C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_classify.py:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ts_utc=datetime.utcnow(),
+
+tests/test_tradesim.py::test_simulate_trades_returns_empty_for_missing_ticker
+  C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_tradesim.py:12: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    ts_utc=datetime.utcnow(),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+44 passed, 2 warnings in 21.43s
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> py -3.12 -c "import os; print(os.getenv('FEATURE_QUICKCHART'), os.getenv('QUICKCHART_BASE_URL'))"
+None None
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> python -m src.catalyst_bot.runner --once
+2025-09-28T03:46:53Z INFO     runner: boot_start alerts_enabled=True webhook=set record_only=False finviz_token=ok(status=200) taskName=None
+2025-09-28T03:46:53Z INFO     runner: boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs= taskName=None
+2025-09-28T03:46:53Z INFO     runner: heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb... taskName=None
+2025-09-28T03:46:54Z INFO     catalyst_bot.finviz_elite: finviz_screener_rows taskName=None headers=[]
+2025-09-28T03:47:12Z ERROR    src.catalyst_bot.llm_client: LLM query failed: HTTPConnectionPool(host='127.0.0.1', port=11434): Read timed out. (read timeout=15.0) taskName=None
+2025-09-28T03:47:59Z INFO     feeds: feeds_summary sources=6 items=239 t_ms=66161.7 globenewswire_public=ok:1 entries:20 err:0 h4:0 h5:0 t_ms:372.8 sec_8k=ok:1 entries:100 err:0 h4:0 h5:0 t_ms:414.9 sec_424b5=ok:1 entries:27 err:0 h4:0 h5:0 t_ms:413.0 sec_fwp=ok:1 entries:100 err:0 h4:0 h5:0 t_ms:380.0 sec_13d=ok:1 entries:0 err:0 h4:0 h5:0 t_ms:375.8 sec_13g=ok:1 entries:0 err:0 h4:0 h5:0 t_ms:403.2 taskName=None
+2025-09-28T03:48:00Z INFO     catalyst_bot.finviz_elite: finviz_screener_rows taskName=None headers=[]
+2025-09-28T03:48:00Z INFO     market: provider_usage provider=tiingo t_ms=357.6 status=ok taskName=None
+2025-09-28T03:48:02Z INFO     charts: quickchart_build_start ticker=ANIP bars=50 base=http://localhost:8080 taskName=None
+2025-09-28T03:48:02Z INFO     charts: quickchart_dataset ticker=ANIP rows=50 taskName=None
+2025-09-28T03:48:02Z INFO     charts: quickchart_cfg_len bytes=3635 url_len=6441 taskName=None
+2025-09-28T03:48:02Z INFO     charts: quickchart_return_base_url url_len=6441 taskName=None
+2025-09-28T03:48:03Z WARNING  alerts: alert_error http_status=400 taskName=None
+2025-09-28T03:48:03Z WARNING  alerts: alert_error source=sec_8k ticker=ANIP taskName=None
+2025-09-28T03:48:03Z INFO     runner: alert_skip source=sec_8k ticker=ANIP taskName=None
+2025-09-28T03:48:03Z INFO     market: provider_usage provider=tiingo t_ms=395.2 status=ok taskName=None
+2025-09-28T03:48:04Z INFO     charts: quickchart_build_start ticker=SNOA bars=50 base=http://localhost:8080 taskName=None
+2025-09-28T03:48:05Z INFO     charts: quickchart_dataset ticker=SNOA rows=50 taskName=None
+2025-09-28T03:48:05Z INFO     charts: quickchart_cfg_len bytes=3419 url_len=6225 taskName=None
+2025-09-28T03:48:05Z INFO     charts: quickchart_return_base_url url_len=6225 taskName=None
+2025-09-28T03:48:05Z WARNING  alerts: alert_error http_status=400 taskName=None
+2025-09-28T03:48:05Z WARNING  alerts: alert_error source=sec_8k ticker=SNOA taskName=None
+2025-09-28T03:48:05Z INFO     runner: alert_skip source=sec_8k ticker=SNOA taskName=None
+2025-09-28T03:48:06Z INFO     market: provider_usage provider=tiingo t_ms=337.2 status=ok taskName=None
+2025-09-28T03:48:07Z INFO     charts: quickchart_build_start ticker=QVCC bars=50 base=http://localhost:8080 taskName=None

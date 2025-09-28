@@ -44,7 +44,7 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         "quickchart_yf_start ticker=%s bars=%d base=%s",
         ticker,
         bars,
-        os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart"),
+        os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io"),
     )
     try:
         import json
@@ -63,7 +63,7 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         def _encode_config(cfg: Dict[str, Any]) -> str:
             cfg_json = json.dumps(cfg, separators=(",", ":"))
             encoded = urllib.parse.quote(cfg_json, safe="")
-            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io/chart")
+            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io")
             return f"{base}?c={encoded}"
 
         # Attempt to fetch 1‑day, 5‑minute intraday data.  Explicitly disable
@@ -436,7 +436,6 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
         # This avoids hitting Discord's message limit and improves readability.
         try:
             # Determine threshold from env or default (1900)
-            import os
 
             threshold = int(
                 os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "1900").strip() or 1900

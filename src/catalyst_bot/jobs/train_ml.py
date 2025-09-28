@@ -18,28 +18,39 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable
+from typing import Iterable
 
 import pandas as pd
 
 from catalyst_bot.ml_utils import extract_features, train_model
 
+
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train ML model for alert ranking")
-    parser.add_argument('--input', '-i', required=True, help='Path to JSONL or CSV file of alerts with labels')
-    parser.add_argument('--output', '-o', default='models/trained_model.json', help='Path to save trained model parameters')
+    parser.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help="Path to JSONL or CSV file of alerts with labels",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="models/trained_model.json",
+        help="Path to save trained model parameters",
+    )
     args = parser.parse_args(argv)
     input_path = Path(args.input)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_path}")
     # Load alerts
-    if input_path.suffix.lower() == '.csv':
+    if input_path.suffix.lower() == ".csv":
         df = pd.read_csv(input_path)
-        alerts = df.to_dict(orient='records')
+        alerts = df.to_dict(orient="records")
     else:
         # Assume JSON Lines (one JSON object per line)
         alerts = []
-        with input_path.open('r', encoding='utf-8') as f:
+        with input_path.open("r", encoding="utf-8") as f:
             for line in f:
                 try:
                     alerts.append(json.loads(line))
@@ -51,9 +62,10 @@ def main(argv: Iterable[str] | None = None) -> None:
     # implementations could use pickle or joblib instead.
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open('w', encoding='utf-8') as f:
-        json.dump({'mean_target': model.mean_target}, f, indent=2)
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump({"mean_target": model.mean_target}, f, indent=2)
     print(f"Trained model saved to {out_path}")
 
-if __name__ == '__main__':  # pragma: no cover
+
+if __name__ == "__main__":  # pragma: no cover
     main()

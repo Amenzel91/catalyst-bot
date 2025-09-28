@@ -1,0 +1,20 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\menza> cd "C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot"
+PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> py -3.12 -m venv .venv
+PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> .\.venv\Scripts\Activate.ps1
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot> python -m src.catalyst_bot.runner --once
+2025-09-28T04:25:41Z INFO     runner: boot_start alerts_enabled=True webhook=set record_only=False finviz_token=ok(status=200) taskName=None
+2025-09-28T04:25:41Z INFO     runner: boot_ctx target=admin hook=id=...248515 token=enV7jb... skip_sources= min_score= min_sent_abs= taskName=None
+2025-09-28T04:25:42Z INFO     runner: heartbeat_sent reason=boot mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb... taskName=None
+2025-09-28T04:25:43Z INFO     catalyst_bot.finviz_elite: finviz_screener_rows taskName=None headers=[]
+2025-09-28T04:26:19Z INFO     feeds: feeds_summary sources=6 items=239 t_ms=36871.9 globenewswire_public=ok:1 entries:20 err:0 h4:0 h5:0 t_ms:488.3 sec_8k=ok:1 entries:100 err:0 h4:0 h5:0 t_ms:425.0 sec_424b5=ok:1 entries:27 err:0 h4:0 h5:0 t_ms:347.1 sec_fwp=ok:1 entries:100 err:0 h4:0 h5:0 t_ms:379.7 sec_13d=ok:1 entries:0 err:0 h4:0 h5:0 t_ms:401.4 sec_13g=ok:1 entries:0 err:0 h4:0 h5:0 t_ms:369.9 taskName=None
+2025-09-28T04:26:19Z INFO     catalyst_bot.finviz_elite: finviz_screener_rows taskName=None headers=[]
+2025-09-28T04:26:20Z INFO     runner: cycle_metrics items=239 deduped=239 tickers_present=174 tickers_missing=65 dyn_weights=yes dyn_path_exists=yes dyn_path='C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\data\analyzer\keyword_stats.json' price_ceiling=450.0 skipped_no_ticker=0 skipped_price_gate=0 skipped_instr=0 skipped_by_source=0 skipped_low_score=0 skipped_sent_gate=0 skipped_cat_gate=0 alerted=0 taskName=None
+2025-09-28T04:26:20Z INFO     runner: CYCLE_DONE took=37.45s taskName=None
+2025-09-28T04:26:20Z INFO     runner: boot_end taskName=None
+2025-09-28T04:26:20Z INFO     runner: heartbeat_sent reason=endday mode=direct_http status=204 target=admin rich=1 hook=id=...248515 token=enV7jb... taskName=None
+(.venv) PS C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot>

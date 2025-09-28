@@ -14,8 +14,10 @@ and parse the results into a DataFrame for further processing.
 
 from __future__ import annotations
 
-import pandas as pd
 from typing import Dict, Optional
+
+import pandas as pd
+
 
 def run_finviz_screener(criteria: Optional[Dict[str, str]] = None) -> pd.DataFrame:
     """Run a Finviz screener and return results as a DataFrame.
@@ -41,4 +43,4 @@ def run_finviz_screener(criteria: Optional[Dict[str, str]] = None) -> pd.DataFra
     return pd.DataFrame()
 
 
-__all__ = ['run_finviz_screener']
+__all__ = ["run_finviz_screener"]
