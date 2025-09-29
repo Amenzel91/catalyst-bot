@@ -312,7 +312,7 @@ def _build_quickchart_config(dataset: list, ticker: str) -> Dict[str, Any]:
     Parameters
     ----------
     dataset : list
-        A list of dictionaries with keys ``t``, ``o``, ``h``, ``l``, ``c``.
+        A list of dictionaries with keys ``x``, ``o``, ``h``, ``l``, ``c``.
     ticker : str
         The primary ticker symbol used as the dataset label.
 
@@ -417,7 +417,7 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
             tstr = ts.strftime("%Y-%m-%dT%H:%M")
             dataset.append(
                 {
-                    "t": tstr,
+                    "x": tstr,
                     "o": open_price,
                     "h": high_price,
                     "l": low_price,
@@ -467,6 +467,7 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                     # e.g., https://quickchart.io/chart/create
                     create_endpoint = f"{base}/chart/create"
 
+                log.info("quickchart_create_endpoint endpoint=%s", create_endpoint)
                 resp = requests.post(
                     create_endpoint,
                     json=payload,

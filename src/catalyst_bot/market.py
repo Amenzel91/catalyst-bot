@@ -703,15 +703,33 @@ def get_intraday(
         if yf is None:
             return None
         period = "5d" if output_size.lower() == "compact" else "60d"
+        # Map '5min' -> '5m' etc. so yfinance accepts it
+        _yf_interval_map = {
+            "1min": "1m",
+            "2min": "2m",
+            "5min": "5m",
+            "15min": "15m",
+            "30min": "30m",
+            "60min": "60m",
+            "90min": "90m",
+            "1hour": "1h",
+        }
+        yf_interval = _yf_interval_map.get(interval.lower(), interval)
         df = yf.download(
             nt,
             period=period,
-            interval=interval,
+            interval=yf_interval,
             prepost=prepost,
             auto_adjust=False,
             progress=False,
         )
         if df is None or getattr(df, "empty", False):
+            log.info(
+                "yf_fallback_empty ticker=%s interval=%s period=%s",
+                nt,
+                yf_interval,
+                period,
+            )
             return None
         return df
     except Exception:
