@@ -63,8 +63,10 @@ def _quickchart_url_yfinance(ticker: str, bars: int = 50) -> Optional[str]:
         def _encode_config(cfg: Dict[str, Any]) -> str:
             cfg_json = json.dumps(cfg, separators=(",", ":"))
             encoded = urllib.parse.quote(cfg_json, safe="")
-            base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io")
-            return f"{base}?c={encoded}"
+            raw = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io")
+            base = raw.rstrip("/")
+            chart_base = base if base.endswith("/chart") else f"{base}/chart"
+            return f"{chart_base}?c={encoded}"
 
         # Attempt to fetch 1‑day, 5‑minute intraday data.  Explicitly disable
         # auto adjustment to avoid Series return types.  This call may
@@ -430,13 +432,16 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
         cfg_json = json.dumps(cfg, separators=(",", ":"))
         encoded = urllib.parse.quote(cfg_json, safe="")
         # Build base URL
-        base_url = f"{os.getenv('QUICKCHART_BASE_URL', 'https://quickchart.io')}/chart?c={encoded}"
-        log.info("quickchart_cfg_len bytes=%d url_len=%d", len(cfg_json), len(base_url))
-        # If URL length exceeds ~1900 characters, attempt to shorten via QuickChart API.
-        # This avoids hitting Discord's message limit and improves readability.
-        try:
-            # Determine threshold from env or default (1900)
+        # Build base URL (normalize path so we always hit /chart)
+        raw_base = os.getenv("QUICKCHART_BASE_URL", "https://quickchart.io")
+        base = raw_base.rstrip("/")
+        chart_base = base if base.endswith("/chart") else f"{base}/chart"
+        base_url = f"{chart_base}?c={encoded}"
 
+        log.info("quickchart_cfg_len bytes=%d url_len=%d", len(cfg_json), len(base_url))
+
+        # Decide whether to shorten the URL
+        try:
             threshold = int(
                 os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "1900").strip() or 1900
             )
@@ -453,11 +458,21 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                 payload = {"chart": cfg}
                 if api_key:
                     payload["key"] = api_key
+                # Build /chart/create endpoint based on the same base host
+                if base.endswith("/chart"):
+                    create_endpoint = (
+                        f"{base}/create"  # e.g., http://localhost:8080/chart/create
+                    )
+                else:
+                    # e.g., https://quickchart.io/chart/create
+                    create_endpoint = f"{base}/chart/create"
+
                 resp = requests.post(
-                    "https://quickchart.io/chart/create",
+                    create_endpoint,
                     json=payload,
                     timeout=10,
                 )
+
                 log.info(
                     "quickchart_post status=%s", resp.status_code
                 )  # log after the original call
