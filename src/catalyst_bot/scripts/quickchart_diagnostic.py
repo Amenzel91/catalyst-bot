@@ -38,10 +38,8 @@ data, misconfigured environment variables, or network issues.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import urllib.parse
 
 try:
     import requests  # type: ignore
@@ -49,7 +47,7 @@ except Exception:
     requests = None  # type: ignore
 
 from .. import market
-from ..charts import get_quickchart_url, _quickchart_url_yfinance
+from ..charts import _quickchart_url_yfinance, get_quickchart_url
 
 
 def diagnose_quickchart(ticker: str, *, fetch: bool = False) -> None:
@@ -89,7 +87,12 @@ def diagnose_quickchart(ticker: str, *, fetch: bool = False) -> None:
         print(f"  URL length: {len(qc_url)} characters\n")
         # Show whether the base URL ends with /chart
         if base_env.rstrip("/").endswith("/chart"):
-            print("  Note: QUICKCHART_BASE_URL ends with '/chart' — verify that the URL doesn't repeat '/chart' twice.\n")
+            print(
+                (
+                    "  Note: QUICKCHART_BASE_URL ends with '/chart' — "
+                    "verify that the URL doesn't repeat '/chart' twice.\n"
+                )
+            )
 
     # Fallback yfinance QuickChart helper
     print("Building fallback QuickChart via _quickchart_url_yfinance() ...")
