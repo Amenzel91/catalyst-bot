@@ -312,7 +312,7 @@ def _build_quickchart_config(dataset: list, ticker: str) -> Dict[str, Any]:
     Parameters
     ----------
     dataset : list
-        A list of dictionaries with keys ``x``, ``o``, ``h``, ``l``, ``c``.
+        A list of dictionaries with keys ``t``, ``o``, ``h``, ``l``, ``c``.
     ticker : str
         The primary ticker symbol used as the dataset label.
 
@@ -417,7 +417,7 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
             tstr = ts.strftime("%Y-%m-%dT%H:%M")
             dataset.append(
                 {
-                    "x": tstr,
+                    "t": tstr,
                     "o": open_price,
                     "h": high_price,
                     "l": low_price,
@@ -449,7 +449,7 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
             threshold = 1900
         try:
             if len(base_url) > threshold:
-                # Use the QuickChart /chart/create endpoint to shorten the config.
+                # Use the QuickChart /create endpoints to shorten the config.
                 import requests
 
                 # Include API key in the request body when provided.  The
@@ -458,36 +458,41 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
                 payload = {"chart": cfg}
                 if api_key:
                     payload["key"] = api_key
-                # Build /chart/create endpoint based on the same base host
+                # Build potential /create endpoints based on the same base host.
+                create_endpoints = []
                 if base.endswith("/chart"):
-                    create_endpoint = (
-                        f"{base}/create"  # e.g., http://localhost:8080/chart/create
-                    )
+                    # e.g., http://localhost:8080/chart/create
+                    create_endpoints.append(f"{base}/create")
+                    # e.g., http://localhost:8080/create (strip /chart)
+                    parent = base.rsplit("/chart", 1)[0]
+                    create_endpoints.append(f"{parent}/create")
                 else:
                     # e.g., https://quickchart.io/chart/create
-                    create_endpoint = f"{base}/chart/create"
-
-                log.info("quickchart_create_endpoint endpoint=%s", create_endpoint)
-                resp = requests.post(
-                    create_endpoint,
-                    json=payload,
-                    timeout=10,
-                )
-
-                log.info(
-                    "quickchart_post status=%s", resp.status_code
-                )  # log after the original call
-
-                # Expect JSON {"success": true, "url": "https://..."}
-                if resp.ok:
+                    create_endpoints.append(f"{base}/chart/create")
+                    # fallback /create at same root
+                    create_endpoints.append(f"{base}/create")
+                short_url = None
+                for create_endpoint in create_endpoints:
                     try:
-                        data = resp.json()
+                        resp = requests.post(
+                            create_endpoint,
+                            json=payload,
+                            timeout=10,
+                        )
+                        # Expect JSON {"success": true, "url": "https://..."}
+                        if resp.ok:
+                            try:
+                                data = resp.json()
+                            except Exception:
+                                data = {}
+                            url = data.get("url") or data.get("shortUrl") or None
+                            if isinstance(url, str) and url.startswith("http"):
+                                short_url = url
+                                break
                     except Exception:
-                        data = {}
-                    url = data.get("url") or data.get("shortUrl") or None
-                    if isinstance(url, str) and url.startswith("http"):
-                        log.info("quickchart_create_ok short_url_len=%d", len(url))
-                        return url
+                        continue
+                if short_url:
+                    return short_url
         except Exception as e:
             # Fall back to original long URL on any failure
             log.warning("quickchart_create_failed err=%s", str(e))
