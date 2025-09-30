@@ -390,7 +390,7 @@ def get_last_price_snapshot(
     # Determine provider order (default "tiingo,av,yf")
     order_str = getattr(settings, "market_provider_order", None) if settings else None
     if not order_str:
-        order_str = "tiingo,av,yf"
+        order_str = "av,yf,tiingo"
     providers = [p.strip().lower() for p in str(order_str).split(",") if p.strip()]
 
     # Helper to log telemetry
@@ -484,27 +484,25 @@ def get_last_price_snapshot(
                             if candidate is not None:
                                 prev = candidate
                     # If any value still missing, fall back to a tiny history call
-                    if last is None or prev is None:
-                        hist = t.history(period="2d", interval="1d", auto_adjust=False)
-                        if not getattr(hist, "empty", False):
-                            try:
-                                close_series = hist["Close"]
-                                last = float(close_series.iloc[-1])
-                                if len(hist) >= 2:
-                                    prev = float(close_series.iloc[-2])
-                                else:
-                                    info = getattr(t, "info", None)
-                                    if isinstance(info, dict):
-                                        pv = info.get("previousClose") or info.get(
-                                            "regularMarketPreviousClose"
-                                        )
-                                        if pv is not None:
-                                            try:
-                                                prev = float(pv)
-                                            except Exception:
-                                                pass
-                            except Exception:
-                                pass
+                    hist = t.history(period="2d", interval="1d", auto_adjust=False)
+                    if not getattr(hist, "empty", False):
+                        # Always prefer history for the most recent closing price
+                        # when falling back to yfinance
+                        try:
+                            last = float(hist["Close"].iloc[-1])
+                            if len(hist) >= 2:
+                                prev = float(hist["Close"].iloc[-2])
+                            else:
+                                # if only one row, keep prev unchanged or try t.info
+                                info = getattr(t, "info", None)
+                                if isinstance(info, dict):
+                                    pv = info.get("previousClose") or info.get(
+                                        "regularMarketPreviousClose"
+                                    )
+                                    if pv is not None:
+                                        prev = float(pv)
+                        except Exception:
+                            pass
                     _log_provider("yf", t0, last, prev)
                     # After one attempt (fast_info + possibly history), break out
                     break
