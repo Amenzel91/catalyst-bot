@@ -13,10 +13,12 @@ import requests
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
 from .charts import CHARTS_OK, get_quickchart_url, render_intraday_chart
 from .config import get_settings
+from .discord_upload import post_embed_with_attachment
 from .indicator_utils import compute_composite_score
 from .logging_utils import get_logger
 from .market import get_intraday, get_intraday_indicators, get_momentum_indicators
 from .ml_utils import extract_features, load_model, score_alerts
+from .quickchart_post import get_quickchart_png_path
 
 log = get_logger("alerts")
 
@@ -584,7 +586,36 @@ def send_alert_safe(*args, **kwargs) -> bool:
             ]
     except Exception:
         pass
-    # Post via the shared primitive with polite retries
+    # Optional QuickChart Route-A: POST /chart -> attach PNG (fully local)
+    try:
+        use_post = os.getenv("FEATURE_QUICKCHART_POST", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        # Only attempt when we already built a rich embed (same condition as legacy)
+        if use_post and "embeds" in payload and payload["embeds"] and ticker:
+            # Try to render and save a PNG locally
+            img_path = get_quickchart_png_path(
+                ticker,
+                bars=int(os.getenv("QUICKCHART_BARS", "50")),
+                out_dir=os.getenv("QUICKCHART_IMAGE_DIR", "out/charts"),
+            )
+            if img_path:
+                # Point the embed to the attachment URI and post multipart
+                embed0 = payload["embeds"][0]
+                embed0["image"] = {"url": f"attachment://{img_path.name}"}
+                if webhook_url:
+                    # Post file + payload_json in one multipart request
+                    ok_file = post_embed_with_attachment(webhook_url, embed0, img_path)
+                    if ok_file:
+                        return True
+                # If multipart failed, fall through to legacy JSON poster
+    except Exception:
+        pass
+
+    # Post via the shared primitive with polite retries (legacy behavior)
     ok = post_discord_json(payload, webhook_url=webhook_url, max_retries=2)
     if not ok:
         # Add source/ticker context on failure to aid triage
