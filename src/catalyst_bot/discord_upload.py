@@ -1,10 +1,15 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Dict, Any
+
 import json
+from pathlib import Path
+from typing import Any, Dict
+
 import requests
 
-def post_embed_with_attachment(webhook_url: str, embed: Dict[str, Any], file_path: Path) -> bool:
+
+def post_embed_with_attachment(
+    webhook_url: str, embed: Dict[str, Any], file_path: Path
+) -> bool:
     """Post a single-embed message with an attached image file (multipart).
 
     The embed should reference the attachment via:
