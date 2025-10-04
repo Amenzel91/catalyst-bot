@@ -69,6 +69,7 @@ from .log_reporter import deliver_report
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
 from .seen_store import should_filter  # persistent seen store for cross-run dedupe
+from .health_endpoint import start_health_server, update_health_status
 
 try:
     import yfinance as yf  # type: ignore
@@ -98,9 +99,18 @@ TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts":
 
 
 def _sig_handler(signum, frame):
-    # graceful exit on Ctrl+C / SIGTERM
+    """Graceful shutdown handler for SIGINT/SIGTERM signals."""
     global STOP
+    sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else f"signal_{signum}"
+    print(f"\n[SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", file=sys.stderr)
     STOP = True
+
+    # Log shutdown to file if logger is available
+    try:
+        log = get_logger("runner")
+        log.warning("shutdown_signal_received signal=%s", sig_name)
+    except Exception:
+        pass
 
 
 def _px_cache_get(ticker: str) -> float | None:
@@ -1215,6 +1225,16 @@ def runner_main(
     except Exception:
         pass  # Windows quirks shouldn't crash startup
 
+    # Start health check server if enabled
+    if os.getenv("FEATURE_HEALTH_ENDPOINT", "1").strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            health_port = int(os.getenv("HEALTH_CHECK_PORT", "8080"))
+            start_health_server(port=health_port)
+            log.info("health_endpoint_enabled port=%d", health_port)
+            update_health_status(status="starting")
+        except Exception as e:
+            log.warning("health_endpoint_failed err=%s", str(e))
+
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
 
@@ -1259,7 +1279,19 @@ def runner_main(
             break
         t0 = time.time()
         _cycle(log, settings)
-        log.info("CYCLE_DONE took=%.2fs", time.time() - t0)
+        cycle_time = time.time() - t0
+        log.info("CYCLE_DONE took=%.2fs", cycle_time)
+
+        # Update health status after successful cycle
+        try:
+            update_health_status(
+                status="healthy",
+                last_cycle_time=datetime.now(timezone.utc),
+                total_cycles=TOTAL_STATS.get("items", 0),
+                total_alerts=TOTAL_STATS.get("alerts", 0)
+            )
+        except Exception:
+            pass
         if not do_loop or STOP:
             break
         # sleep between cycles, but wake early if STOP flips

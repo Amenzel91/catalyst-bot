@@ -16,6 +16,7 @@ import requests
 from .config import get_settings
 from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem  # re-export for market.NewsItem
+from .validation import validate_ticker
 
 log = get_logger("market")
 
@@ -120,12 +121,19 @@ _SKIP_ALPHA = os.getenv("MARKET_SKIP_ALPHA", "0").strip().lower() in {
 
 
 def _norm_ticker(t: Optional[str]) -> Optional[str]:
+    """Normalize and validate a ticker symbol.
+
+    Returns validated ticker in uppercase, or None if invalid.
+    """
     if not t:
         return None
     t = t.strip().upper()
+    # Remove $ prefix if present (common in social media mentions)
     if t.startswith("$"):
         t = t[1:]
-    return t or None
+    # Validate the ticker to prevent injection attacks
+    validated = validate_ticker(t, allow_empty=False)
+    return validated
 
 
 def _fi_get(fi, attr: str) -> Optional[float]:
@@ -156,7 +164,17 @@ def _alpha_last_prev(
         r = requests.get(url, params=params, timeout=timeout)
         if r.status_code != 200:
             return None, None
-        j = r.json() or {}
+
+        try:
+            j = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as e:
+            log.warning("alpha_vantage_invalid_json ticker=%s err=%s", ticker, str(e))
+            return None, None
+
+        if not j or not isinstance(j, dict):
+            log.warning("alpha_vantage_unexpected_response ticker=%s type=%s", ticker, type(j).__name__)
+            return None, None
+
         q = j.get("Global Quote") or j.get("globalQuote") or {}
         last = q.get("05. price") or q.get("price")
         prev = q.get("08. previous close") or q.get("previousClose")
@@ -191,7 +209,13 @@ def _tiingo_last_prev(
         r = requests.get(url, params=params, timeout=timeout)
         if r.status_code != 200:
             return None, None
-        data = r.json()
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as e:
+            log.warning("tiingo_invalid_json ticker=%s err=%s", ticker, str(e))
+            return None, None
+
         # Response may be a list of quote objects or a single object
         q: Dict[str, float] = {}
         if isinstance(data, list):
@@ -266,7 +290,13 @@ def _tiingo_intraday_series(
         r = requests.get(url, params=params, timeout=timeout)
         if r.status_code != 200:
             return None
-        data = r.json()
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as e:
+            log.warning("tiingo_intraday_invalid_json ticker=%s err=%s", ticker, str(e))
+            return None
+
         if not data or not isinstance(data, list):
             return None
         df = pd.DataFrame(data)
@@ -325,7 +355,13 @@ def _tiingo_daily_history(
         r = requests.get(url, params=params, timeout=timeout)
         if r.status_code != 200:
             return None
-        data = r.json()
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as e:
+            log.warning("tiingo_daily_invalid_json ticker=%s err=%s", ticker, str(e))
+            return None
+
         if not data or not isinstance(data, list):
             return None
         df = pd.DataFrame(data)
@@ -528,7 +564,8 @@ def get_last_price_change(
     The change_pct is None if the previous close is unknown or zero.
     """
     last, prev = get_last_price_snapshot(ticker, retries=retries)
-    if last is None or prev is None or prev == 0:
+    # Use epsilon check to avoid division by zero (handles 0, 0.0, very small numbers)
+    if last is None or prev is None or abs(prev) < 1e-9:
         return last, None
     try:
         change_pct = ((last - prev) / prev) * 100.0

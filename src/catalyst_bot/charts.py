@@ -406,10 +406,11 @@ def get_quickchart_url(ticker: str, *, bars: int = 50) -> Optional[str]:
         for ts, row in tail.iterrows():
             try:
                 # Extract individual OHLC values with descriptive variable names
-                open_price = float(row["Open"])
-                high_price = float(row["High"])
-                low_price = float(row["Low"])
-                close_price = float(row["Close"])
+                # Use .item() to extract scalar from pandas Series safely
+                open_price = row["Open"].item() if hasattr(row["Open"], 'item') else float(row["Open"])
+                high_price = row["High"].item() if hasattr(row["High"], 'item') else float(row["High"])
+                low_price = row["Low"].item() if hasattr(row["Low"], 'item') else float(row["Low"])
+                close_price = row["Close"].item() if hasattr(row["Close"], 'item') else float(row["Close"])
             except Exception:
                 # Skip rows with missing or invalid data
                 continue

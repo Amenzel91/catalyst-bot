@@ -20,10 +20,25 @@ from .market import get_intraday, get_intraday_indicators, get_momentum_indicato
 from .ml_utils import extract_features, load_model, score_alerts
 from .quickchart_post import get_quickchart_png_path
 
+# Advanced charts with timeframe buttons
+try:
+    from .chart_cache import get_cache
+    from .charts_advanced import generate_multi_panel_chart
+    from .discord_interactions import add_components_to_payload
+    from .sentiment_gauge import generate_sentiment_gauge, log_sentiment_score
+
+    HAS_ADVANCED_CHARTS = True
+except Exception:
+    HAS_ADVANCED_CHARTS = False
+
 log = get_logger("alerts")
 
 alert_lock = threading.Lock()
 _alert_downgraded = False
+
+# Cached ML model to avoid reloading on every alert (GPU optimization)
+_cached_ml_model = None
+_cached_ml_model_path = None
 
 
 def _mask_webhook(url: str | None) -> str:
@@ -381,7 +396,8 @@ def reset_cycle_downgrade() -> None:
     """Clear per-cycle downgrade flags (no-op stub)."""
     # If there is per-cycle state to reset (e.g., _alert_downgraded), do it here.
     global _alert_downgraded
-    _alert_downgraded = False
+    with alert_lock:
+        _alert_downgraded = False
     return None
 
 
@@ -521,7 +537,9 @@ def send_alert_safe(*args, **kwargs) -> bool:
         return True
 
     # If a prior error downgraded alerts, record-only
-    if _alert_downgraded:
+    with alert_lock:
+        downgraded = _alert_downgraded
+    if downgraded:
         log.info("alert_record_only source=%s ticker=%s downgraded", source, ticker)
         return True
 
@@ -612,6 +630,147 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     if ok_file:
                         return True
                 # If multipart failed, fall through to legacy JSON poster
+    except Exception:
+        pass
+
+    # Optional Sentiment Gauge Visual
+    gauge_path = None
+    try:
+        use_gauge = os.getenv("FEATURE_SENTIMENT_GAUGE", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+        if use_gauge and HAS_ADVANCED_CHARTS and "embeds" in payload and payload["embeds"] and scored:
+            # Extract aggregate score - handle both dict and ScoredItem types
+            aggregate_score = 0
+            if isinstance(scored, dict):
+                aggregate_score = scored.get("aggregate_score") or scored.get("score") or scored.get("sentiment") or 0
+            else:
+                # ScoredItem dataclass - use sentiment attribute
+                aggregate_score = getattr(scored, "sentiment", 0)
+
+            if isinstance(aggregate_score, (int, float)):
+                # Scale score to -100 to +100 range if needed
+                if -1 <= aggregate_score <= 1:
+                    aggregate_score = aggregate_score * 100
+
+                gauge_path = generate_sentiment_gauge(aggregate_score, ticker, style="dark")
+
+                if gauge_path:
+                    log.info("sentiment_gauge_generated ticker=%s score=%.1f", ticker, aggregate_score)
+
+                    # Log score for calibration
+                    try:
+                        log_sentiment_score(ticker, aggregate_score, last_price, metadata={
+                            "source": source,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                    except Exception:
+                        pass
+    except Exception as e:
+        log.warning("sentiment_gauge_failed ticker=%s err=%s", ticker, str(e))
+
+    # Optional Advanced Multi-Panel Charts with Timeframe Buttons
+    try:
+        use_advanced = os.getenv("FEATURE_ADVANCED_CHARTS", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        log.debug("advanced_charts_check use_advanced=%s has_advanced=%s embeds_in_payload=%s payload_embeds=%s ticker=%s",
+                  use_advanced, HAS_ADVANCED_CHARTS, 'embeds' in payload, bool(payload.get('embeds')), ticker)
+
+        if (
+            use_advanced
+            and HAS_ADVANCED_CHARTS
+            and "embeds" in payload
+            and payload["embeds"]
+            and ticker
+        ):
+            log.debug("generating_advanced_chart_start ticker=%s", ticker)
+            # Get default timeframe from env (default: 1D)
+            default_tf = os.getenv("CHART_DEFAULT_TIMEFRAME", "1D").upper()
+
+            # Try cache first
+            cache = get_cache()
+            chart_path = cache.get(ticker, default_tf)
+            log.debug("cache_result ticker=%s tf=%s path=%s", ticker, default_tf, chart_path)
+
+            if chart_path is None:
+                # Generate new multi-panel chart
+                log.info(
+                    "generating_advanced_chart ticker=%s tf=%s", ticker, default_tf
+                )
+                log.debug("calling_generate_multi_panel_chart ticker=%s tf=%s", ticker, default_tf)
+                chart_path = generate_multi_panel_chart(
+                    ticker, timeframe=default_tf, style="dark"
+                )
+                log.debug("chart_generated ticker=%s path=%s", ticker, chart_path)
+
+                if chart_path:
+                    cache.put(ticker, default_tf, chart_path)
+
+            log.debug("chart_path_exists ticker=%s exists=%s", ticker, chart_path and chart_path.exists())
+            if chart_path and chart_path.exists():
+                # Update embed to reference the chart
+                embed0 = payload["embeds"][0]
+                embed0["image"] = {"url": f"attachment://{chart_path.name}"}
+
+                # Add sentiment gauge as thumbnail if available
+                if gauge_path and gauge_path.exists():
+                    embed0["thumbnail"] = {"url": f"attachment://{gauge_path.name}"}
+
+                # Add footer with timeframe info
+                if "footer" not in embed0:
+                    embed0["footer"] = {}
+                embed0["footer"][
+                    "text"
+                ] = f"Chart: {default_tf} | Click buttons to switch timeframes"
+
+                # Add interactive timeframe buttons
+                payload = add_components_to_payload(
+                    payload, ticker, current_timeframe=default_tf
+                )
+
+                # Extract components from payload
+                components = payload.get("components")
+                log.debug("components_extracted ticker=%s count=%d webhook_url=%s",
+                          ticker, len(components) if components else 0, bool(webhook_url))
+
+                if webhook_url:
+                    log.debug("calling_post_embed_with_attachment ticker=%s", ticker)
+                    # Post with multipart attachment (includes components if bot token configured)
+                    ok_file = post_embed_with_attachment(
+                        webhook_url, embed0, chart_path, components=components
+                    )
+                    log.debug("post_embed_result ticker=%s success=%s", ticker, ok_file)
+                    if ok_file:
+                        log.info(
+                            "alert_sent_advanced_chart ticker=%s tf=%s",
+                            ticker,
+                            default_tf,
+                        )
+                        return True
+                    # If multipart failed, fall through
+    except Exception as e:
+        log.warning("advanced_chart_failed ticker=%s err=%s", ticker, str(e))
+
+    # Clean up attachment references before JSON-only fallback
+    # Discord returns 400 if embed references attachments that aren't included
+    try:
+        if "embeds" in payload and payload["embeds"]:
+            for embed in payload["embeds"]:
+                # Remove image/thumbnail references that start with "attachment://"
+                if "image" in embed and isinstance(embed.get("image"), dict):
+                    url = embed["image"].get("url", "")
+                    if url.startswith("attachment://"):
+                        log.debug("removing_attachment_reference type=image url=%s", url)
+                        del embed["image"]
+                if "thumbnail" in embed and isinstance(embed.get("thumbnail"), dict):
+                    url = embed["thumbnail"].get("url", "")
+                    if url.startswith("attachment://"):
+                        log.debug("removing_attachment_reference type=thumbnail url=%s", url)
+                        del embed["thumbnail"]
     except Exception:
         pass
 
@@ -876,6 +1035,17 @@ def _build_discord_embed(
             "yes",
             "on",
         }
+        # Skip ML scoring for earnings calendar events (simple date announcements)
+        skip_ml_earnings = os.getenv("SKIP_ML_FOR_EARNINGS", "1").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+        is_earnings = (
+            item_dict.get("event_type") == "earnings"
+            or item_dict.get("category") == "earnings"
+        )
+        if skip_ml_earnings and is_earnings:
+            ml_flag = False
+
         if ml_flag:
             # Derive price change in decimal form from last_change_pct
             price_change_pct = 0.0
@@ -918,10 +1088,19 @@ def _build_discord_embed(
                 ]
             )
             model_path = os.getenv("ML_MODEL_PATH", "data/models/trade_classifier.pkl")
-            try:
-                model = load_model(model_path)
-            except Exception:
-                model = None
+            # Use cached model if path matches (GPU optimization)
+            global _cached_ml_model, _cached_ml_model_path
+            if _cached_ml_model is not None and _cached_ml_model_path == model_path:
+                model = _cached_ml_model
+            else:
+                try:
+                    model = load_model(model_path)
+                    _cached_ml_model = model
+                    _cached_ml_model_path = model_path
+                    log.debug("ml_model_loaded_and_cached path=%s", model_path)
+                except Exception as e:
+                    log.debug("ml_model_load_failed path=%s err=%s", model_path, str(e))
+                    model = None
             if model:
                 try:
                     scores = score_alerts(model, feature_df)

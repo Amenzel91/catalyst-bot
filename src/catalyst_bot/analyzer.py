@@ -377,6 +377,21 @@ def analyze_once(for_date: Optional[date_cls] = None) -> AnalyzeResult:
     except Exception:
         pass
 
+    # Optional: post interactive admin report with backtest results
+    try:
+        from .admin_reporter import post_admin_report
+
+        if os.getenv("FEATURE_ADMIN_REPORTS", "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            post_admin_report(target)
+            log.info(f"posted_admin_report date={target}")
+    except Exception as e:
+        log.warning(f"admin_report_post_failed err={e}")
+
     log.info(
         "analyzer_result date=%s events=%d categories=%d pending=%s report=%s",
         target.isoformat(),
