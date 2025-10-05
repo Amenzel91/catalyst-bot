@@ -24,9 +24,12 @@ try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("health_endpoint")
+
 
 log = get_logger("health_endpoint")
 
@@ -48,7 +51,7 @@ def update_health_status(
     last_cycle_time: datetime = None,
     total_cycles: int = None,
     total_alerts: int = None,
-    error: str = None
+    error: str = None,
 ) -> None:
     """Update the health status from the main bot loop.
 
@@ -80,17 +83,18 @@ def update_health_status(
         _HEALTH_STATUS["total_alerts"] = total_alerts
 
     if error:
-        _HEALTH_STATUS["errors"].append({
-            "time": datetime.now(timezone.utc).isoformat(),
-            "error": error
-        })
+        _HEALTH_STATUS["errors"].append(
+            {"time": datetime.now(timezone.utc).isoformat(), "error": error}
+        )
         # Keep only last 10 errors
         _HEALTH_STATUS["errors"] = _HEALTH_STATUS["errors"][-10:]
 
     # Update uptime
     if _HEALTH_STATUS["start_time"]:
         start = datetime.fromisoformat(_HEALTH_STATUS["start_time"])
-        _HEALTH_STATUS["uptime_seconds"] = (datetime.now(timezone.utc) - start).total_seconds()
+        _HEALTH_STATUS["uptime_seconds"] = (
+            datetime.now(timezone.utc) - start
+        ).total_seconds()
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -98,7 +102,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """Suppress default HTTP server logging to avoid noise."""
-        pass
 
     def do_GET(self):
         """Handle GET requests to /health endpoint."""
@@ -203,9 +206,7 @@ if __name__ == "__main__":
 
         time.sleep(5)
         update_health_status(
-            last_cycle_time=datetime.now(timezone.utc),
-            total_cycles=10,
-            total_alerts=5
+            last_cycle_time=datetime.now(timezone.utc), total_cycles=10, total_alerts=5
         )
         print("Status updated with cycle data")
 

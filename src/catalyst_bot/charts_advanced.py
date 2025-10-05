@@ -11,18 +11,20 @@ Supports multiple timeframes (1D, 5D, 1M, 3M, 1Y) with dark theme styling.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("charts_advanced")
+
 
 try:
     from .validation import validate_ticker, validate_timeframe
@@ -38,24 +40,33 @@ except Exception:
             return None
         return str(tf).strip().upper()
 
+
 log = get_logger("charts_advanced")
 
 
 # Timeframe configurations: (period_days, interval, bars_to_show)
 # Note: These are now fetched via market.get_intraday() which uses Tiingo when configured
 TIMEFRAME_CONFIG = {
-    "1D": {"days": 1, "interval": "5min", "bars": 78},      # 1 day of 5-min bars (6.5 hours / 5 min)
-    "5D": {"days": 5, "interval": "5min", "bars": 390},     # 5 days of 5-min bars
-    "1M": {"days": 90, "interval": "1d", "bars": 22},       # 1 month of daily bars (fetch 90 days for MA-50)
-    "3M": {"days": 90, "interval": "1d", "bars": 90},       # 3 months of daily bars
-    "1Y": {"days": 365, "interval": "1d", "bars": 252},     # 1 year of daily bars
+    "1D": {
+        "days": 1,
+        "interval": "5min",
+        "bars": 78,
+    },  # 1 day of 5-min bars (6.5 hours / 5 min)
+    "5D": {"days": 5, "interval": "5min", "bars": 390},  # 5 days of 5-min bars
+    "1M": {
+        "days": 90,
+        "interval": "1d",
+        "bars": 22,
+    },  # 1 month of daily bars (fetch 90 days for MA-50)
+    "3M": {"days": 90, "interval": "1d", "bars": 90},  # 3 months of daily bars
+    "1Y": {"days": 365, "interval": "1d", "bars": 252},  # 1 year of daily bars
 }
 
 
 def _compute_rsi(series, period: int = 14):
     """Compute RSI (Relative Strength Index) for a price series."""
     try:
-        import pandas as pd
+        pass
 
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -72,7 +83,7 @@ def _compute_rsi(series, period: int = 14):
 def _compute_macd(series, fast: int = 12, slow: int = 26, signal: int = 9):
     """Compute MACD (Moving Average Convergence Divergence)."""
     try:
-        import pandas as pd
+        pass
 
         ema_fast = series.ewm(span=fast, adjust=False).mean()
         ema_slow = series.ewm(span=slow, adjust=False).mean()
@@ -104,10 +115,7 @@ def _compute_vwap(df):
         return None
 
 
-def _fetch_data_for_timeframe(
-    ticker: str,
-    timeframe: str
-) -> Optional[Any]:
+def _fetch_data_for_timeframe(ticker: str, timeframe: str) -> Optional[Any]:
     """Fetch OHLCV data for the specified timeframe.
 
     Uses market.get_intraday() which respects Tiingo API configuration
@@ -133,7 +141,7 @@ def _fetch_data_for_timeframe(
             log.warning("invalid_timeframe tf=%s", timeframe)
             return None
 
-        config = TIMEFRAME_CONFIG[timeframe]
+        TIMEFRAME_CONFIG[timeframe]
 
         # Map timeframe to interval
         if timeframe == "1D":
@@ -152,46 +160,59 @@ def _fetch_data_for_timeframe(
             interval = "5min"
             output_size = "compact"
 
-        log.info(
-            "fetch_data ticker=%s tf=%s interval=%s",
-            ticker, timeframe, interval
-        )
+        log.info("fetch_data ticker=%s tf=%s interval=%s", ticker, timeframe, interval)
 
         # For intraday timeframes, use market.get_intraday() (supports Tiingo)
         if timeframe in ["1D", "5D"]:
             try:
                 from . import market
+
                 df = market.get_intraday(
-                    ticker,
-                    interval=interval,
-                    output_size=output_size,
-                    prepost=True
+                    ticker, interval=interval, output_size=output_size, prepost=True
                 )
 
                 if df is not None and not df.empty:
                     # Ensure proper column names (handle multi-ticker response)
                     if isinstance(df.columns, pd.MultiIndex):
-                        log.info("dropping_multiindex_intraday ticker=%s cols_before=%s nlevels=%d",
-                                ticker, df.columns.tolist()[:3], df.columns.nlevels)
+                        log.info(
+                            "dropping_multiindex_intraday ticker=%s cols_before=%s nlevels=%d",
+                            ticker,
+                            df.columns.tolist()[:3],
+                            df.columns.nlevels,
+                        )
                         if df.columns.nlevels > 1:
                             df.columns = df.columns.droplevel(1)
-                            log.info("dropped_multiindex_intraday ticker=%s cols_after=%s", ticker, df.columns.tolist())
+                            log.info(
+                                "dropped_multiindex_intraday ticker=%s cols_after=%s",
+                                ticker,
+                                df.columns.tolist(),
+                            )
                         else:
-                            log.warning("unexpected_single_level_multiindex ticker=%s", ticker)
+                            log.warning(
+                                "unexpected_single_level_multiindex ticker=%s", ticker
+                            )
                             # Attempt to flatten anyway using level 0
                             df.columns = df.columns.get_level_values(0)
 
                     log.info(
                         "fetch_data_success source=market.get_intraday ticker=%s tf=%s rows=%d",
-                        ticker, timeframe, len(df)
+                        ticker,
+                        timeframe,
+                        len(df),
                     )
                     return df
                 else:
-                    log.warning("no_data_from_market_intraday ticker=%s tf=%s", ticker, timeframe)
+                    log.warning(
+                        "no_data_from_market_intraday ticker=%s tf=%s",
+                        ticker,
+                        timeframe,
+                    )
             except Exception as e:
                 log.warning(
                     "market_intraday_failed ticker=%s tf=%s err=%s",
-                    ticker, timeframe, str(e)
+                    ticker,
+                    timeframe,
+                    str(e),
                 )
 
         # For daily timeframes or intraday fallback, use yfinance directly
@@ -231,12 +252,20 @@ def _fetch_data_for_timeframe(
 
             # Ensure proper column names (handle multi-ticker response)
             if isinstance(df.columns, pd.MultiIndex):
-                log.info("dropping_multiindex ticker=%s cols_before=%s nlevels=%d",
-                        ticker, df.columns.tolist()[:3], df.columns.nlevels)
+                log.info(
+                    "dropping_multiindex ticker=%s cols_before=%s nlevels=%d",
+                    ticker,
+                    df.columns.tolist()[:3],
+                    df.columns.nlevels,
+                )
                 # yfinance returns ('Price', 'Ticker') structure - keep only Price level
                 if df.columns.nlevels > 1:
                     df.columns = df.columns.droplevel(1)
-                    log.info("dropped_multiindex ticker=%s cols_after=%s", ticker, df.columns.tolist())
+                    log.info(
+                        "dropped_multiindex ticker=%s cols_after=%s",
+                        ticker,
+                        df.columns.tolist(),
+                    )
                 else:
                     log.warning("unexpected_single_level_multiindex ticker=%s", ticker)
                     # Attempt to flatten anyway using level 0
@@ -248,7 +277,9 @@ def _fetch_data_for_timeframe(
 
             log.info(
                 "fetch_data_success source=yfinance ticker=%s tf=%s rows=%d",
-                ticker, timeframe, len(df)
+                ticker,
+                timeframe,
+                len(df),
             )
 
             return df
@@ -256,14 +287,15 @@ def _fetch_data_for_timeframe(
         except Exception as e:
             log.warning(
                 "yfinance_fallback_failed ticker=%s tf=%s err=%s",
-                ticker, timeframe, str(e)
+                ticker,
+                timeframe,
+                str(e),
             )
             return None
 
     except Exception as e:
         log.warning(
-            "fetch_data_failed ticker=%s tf=%s err=%s",
-            ticker, timeframe, str(e)
+            "fetch_data_failed ticker=%s tf=%s err=%s", ticker, timeframe, str(e)
         )
         return None
 
@@ -295,6 +327,7 @@ def generate_multi_panel_chart(
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg", force=True)
 
         import matplotlib.pyplot as plt
@@ -326,14 +359,28 @@ def generate_multi_panel_chart(
         # Clean data: ensure all OHLCV columns are numeric and drop NaN rows
         # First, ensure columns are not MultiIndex
         if isinstance(df.columns, pd.MultiIndex):
-            log.info("cleaning_multiindex ticker=%s tf=%s cols_before=%s nlevels=%d",
-                    ticker, timeframe, df.columns.tolist()[:3], df.columns.nlevels)
+            log.info(
+                "cleaning_multiindex ticker=%s tf=%s cols_before=%s nlevels=%d",
+                ticker,
+                timeframe,
+                df.columns.tolist()[:3],
+                df.columns.nlevels,
+            )
             # yfinance returns ('Price', 'Ticker') structure - drop ticker level
             if df.columns.nlevels > 1:
                 df.columns = df.columns.droplevel(1)
-                log.info("cleaned_multiindex ticker=%s tf=%s cols_after=%s", ticker, timeframe, df.columns.tolist())
+                log.info(
+                    "cleaned_multiindex ticker=%s tf=%s cols_after=%s",
+                    ticker,
+                    timeframe,
+                    df.columns.tolist(),
+                )
             else:
-                log.warning("unexpected_single_level_multiindex ticker=%s tf=%s", ticker, timeframe)
+                log.warning(
+                    "unexpected_single_level_multiindex ticker=%s tf=%s",
+                    ticker,
+                    timeframe,
+                )
                 # Attempt to flatten anyway using level 0
                 df.columns = df.columns.get_level_values(0)
 
@@ -341,11 +388,10 @@ def generate_multi_panel_chart(
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             if col in df.columns:
                 try:
-                    df[col] = pd.to_numeric(df[col].squeeze(), errors='coerce')
+                    df[col] = pd.to_numeric(df[col].squeeze(), errors="coerce")
                 except Exception as col_err:
                     log.warning(
-                        "column_conversion_failed col=%s err=%s",
-                        col, str(col_err)
+                        "column_conversion_failed col=%s err=%s", col, str(col_err)
                     )
 
         # Drop rows with any NaN values in OHLCV columns
@@ -363,7 +409,7 @@ def generate_multi_panel_chart(
             try:
                 import pytz
 
-                et_tz = pytz.timezone('America/New_York')
+                et_tz = pytz.timezone("America/New_York")
                 now_et = datetime.now(et_tz)
 
                 # Determine the most recent trading day start (4 AM ET)
@@ -389,7 +435,9 @@ def generate_multi_panel_chart(
                     trading_day = now_et
 
                 # Set start to 4 AM ET of the trading day
-                day_start = trading_day.replace(hour=4, minute=0, second=0, microsecond=0)
+                day_start = trading_day.replace(
+                    hour=4, minute=0, second=0, microsecond=0
+                )
 
                 # For 1D: show the most recent full trading day
                 # For 5D: show last 5 trading days
@@ -397,7 +445,7 @@ def generate_multi_panel_chart(
                     # Filter to the most recent trading day with data
                     try:
                         if df.index.tz is None:
-                            df.index = df.index.tz_localize('UTC').tz_convert(et_tz)
+                            df.index = df.index.tz_localize("UTC").tz_convert(et_tz)
                         else:
                             df.index = df.index.tz_convert(et_tz)
 
@@ -412,19 +460,26 @@ def generate_multi_panel_chart(
 
                             log.info(
                                 "1d_filter ticker=%s date=%s filtered_rows=%d total_dates=%d",
-                                ticker, most_recent_date, len(df_filtered), len(unique_dates)
+                                ticker,
+                                most_recent_date,
+                                len(df_filtered),
+                                len(unique_dates),
                             )
 
                             if len(df_filtered) >= 3:
                                 df = df_filtered
                                 log.info(
                                     "using_most_recent_trading_day ticker=%s date=%s rows=%d",
-                                    ticker, most_recent_date, len(df)
+                                    ticker,
+                                    most_recent_date,
+                                    len(df),
                                 )
                             else:
                                 log.warning(
                                     "insufficient_data_for_1d ticker=%s date=%s rows=%d (need >=3)",
-                                    ticker, most_recent_date, len(df_filtered)
+                                    ticker,
+                                    most_recent_date,
+                                    len(df_filtered),
                                 )
 
                     except Exception as ex:
@@ -452,7 +507,9 @@ def generate_multi_panel_chart(
             ma_50 = df["Close"].rolling(window=50).mean()
 
         # Debug: Log data shape before limiting bars
-        log.info("data_before_limit ticker=%s tf=%s rows=%d", ticker, timeframe, len(df))
+        log.info(
+            "data_before_limit ticker=%s tf=%s rows=%d", ticker, timeframe, len(df)
+        )
 
         # Limit display to most recent bars (after computing indicators with full data)
         config = TIMEFRAME_CONFIG.get(timeframe, {})
@@ -499,7 +556,13 @@ def generate_multi_panel_chart(
 
             log.info(
                 "outlier_calc ticker=%s tf=%s p_low=%.2f p_high=%.2f range=%.2f ylim=%.2f-%.2f",
-                ticker, timeframe, p_lower, p_upper, price_range, price_lower, price_upper
+                ticker,
+                timeframe,
+                p_lower,
+                p_upper,
+                price_range,
+                price_lower,
+                price_upper,
             )
         except Exception as e:
             log.warning("outlier_calculation_failed err=%s", str(e))
@@ -527,23 +590,28 @@ def generate_multi_panel_chart(
         # RSI panel (panel=1 since volume is removed)
         if rsi is not None:
             addplot_main.append(
-                mpf.make_addplot(rsi, color="#00BCD4", width=2, panel=1,
-                                ylim=(0, 100))  # ylabel set later with color
+                mpf.make_addplot(
+                    rsi, color="#00BCD4", width=2, panel=1, ylim=(0, 100)
+                )  # ylabel set later with color
             )
             # Add RSI reference lines at 30 and 70
             addplot_main.append(
-                mpf.make_addplot([30] * len(df), color="#888888",
-                                linestyle="--", width=1, panel=1)
+                mpf.make_addplot(
+                    [30] * len(df), color="#888888", linestyle="--", width=1, panel=1
+                )
             )
             addplot_main.append(
-                mpf.make_addplot([70] * len(df), color="#888888",
-                                linestyle="--", width=1, panel=1)
+                mpf.make_addplot(
+                    [70] * len(df), color="#888888", linestyle="--", width=1, panel=1
+                )
             )
 
         # MACD panel (panel=2 since volume is removed)
         if macd_line is not None and signal_line is not None:
             addplot_main.append(
-                mpf.make_addplot(macd_line, color="#4CAF50", width=1.5, panel=2)  # ylabel set later with color
+                mpf.make_addplot(
+                    macd_line, color="#4CAF50", width=1.5, panel=2
+                )  # ylabel set later with color
             )
             addplot_main.append(
                 mpf.make_addplot(signal_line, color="#F44336", width=1, panel=2)
@@ -551,20 +619,22 @@ def generate_multi_panel_chart(
             if histogram is not None:
                 # Histogram as bar chart
                 try:
-                    colors = ["#4CAF50" if float(val) >= 0 else "#F44336"
-                             for val in histogram]
+                    colors = [
+                        "#4CAF50" if float(val) >= 0 else "#F44336" for val in histogram
+                    ]
                 except (ValueError, TypeError):
                     colors = "#4CAF50"  # Default color if conversion fails
                 addplot_main.append(
-                    mpf.make_addplot(histogram, type="bar", color=colors,
-                                    alpha=0.3, panel=2)
+                    mpf.make_addplot(
+                        histogram, type="bar", color=colors, alpha=0.3, panel=2
+                    )
                 )
 
         # Define custom dark style
         if style == "dark":
             mc = mpf.make_marketcolors(
-                up="#26A69A",      # Green for up candles
-                down="#EF5350",    # Red for down candles
+                up="#26A69A",  # Green for up candles
+                down="#EF5350",  # Red for down candles
                 edge="inherit",
                 wick="inherit",
                 volume="#546E7A",  # Blue-gray for volume
@@ -627,7 +697,8 @@ def generate_multi_panel_chart(
 
         # Add title INSIDE the chart area (top-left of price panel)
         price_ax.text(
-            0.005, 0.98,  # Top-left corner in axes coordinates
+            0.005,
+            0.98,  # Top-left corner in axes coordinates
             f"{ticker}  {timeframe}  ({interval_display})",
             transform=price_ax.transAxes,
             fontsize=11,
@@ -640,10 +711,10 @@ def generate_multi_panel_chart(
                 edgecolor="none",
                 alpha=0.8,
                 pad=3,
-                boxstyle="round,pad=0.3"
+                boxstyle="round,pad=0.3",
             ),
             zorder=1000,
-            clip_on=False
+            clip_on=False,
         )
 
         # Apply y-axis limits to price panel to handle outlier wicks
@@ -653,7 +724,9 @@ def generate_multi_panel_chart(
                 price_ax.autoscale(False)  # Disable autoscaling to preserve ylim
                 log.debug(
                     "set_ylim ticker=%s range=%.2f-%.2f",
-                    ticker, price_lower, price_upper
+                    ticker,
+                    price_lower,
+                    price_upper,
                 )
             except Exception as e:
                 log.warning("set_ylim_failed err=%s", str(e))
@@ -664,15 +737,19 @@ def generate_multi_panel_chart(
                 import pytz
                 from matplotlib.dates import date2num
 
-                et_tz = pytz.timezone('America/New_York')
+                et_tz = pytz.timezone("America/New_York")
 
                 # Iterate through dates in the dataframe
                 dates_in_data = df.index.normalize().unique()
 
                 for date in dates_in_data:
                     # Convert to ET timezone
-                    if hasattr(date, 'tz_localize'):
-                        date_et = date.tz_localize(et_tz) if date.tz is None else date.tz_convert(et_tz)
+                    if hasattr(date, "tz_localize"):
+                        date_et = (
+                            date.tz_localize(et_tz)
+                            if date.tz is None
+                            else date.tz_convert(et_tz)
+                        )
                     else:
                         date_et = date
 
@@ -684,8 +761,11 @@ def generate_multi_panel_chart(
 
                     # Pre-market: 4:00 - 9:30 (black background)
                     price_ax.axvspan(
-                        date2num(pm_start), date2num(market_open),
-                        facecolor='#000000', alpha=0.3, zorder=0
+                        date2num(pm_start),
+                        date2num(market_open),
+                        facecolor="#000000",
+                        alpha=0.3,
+                        zorder=0,
                     )
 
                     # Regular hours: 9:30 - 16:00 (grey background - default)
@@ -693,8 +773,11 @@ def generate_multi_panel_chart(
 
                     # After-hours: 16:00 - 20:00 (black background)
                     price_ax.axvspan(
-                        date2num(market_close), date2num(ah_end),
-                        facecolor='#000000', alpha=0.3, zorder=0
+                        date2num(market_close),
+                        date2num(ah_end),
+                        facecolor="#000000",
+                        alpha=0.3,
+                        zorder=0,
                     )
             except Exception as e:
                 log.debug("pm_ah_shading_failed err=%s", str(e))
@@ -713,19 +796,22 @@ def generate_multi_panel_chart(
                     color="#FFFFFF",
                     linestyle="--",
                     linewidth=1,
-                    alpha=0.5
+                    alpha=0.5,
                 )
 
                 # Add price label on right side
                 price_ax.text(
-                    1.01, current_price,
+                    1.01,
+                    current_price,
                     f"${current_price:.2f}",
                     transform=price_ax.get_yaxis_transform(),
                     fontsize=10,
                     color="#FFFFFF",
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="#333333", edgecolor="none"),
+                    bbox=dict(
+                        boxstyle="round,pad=0.3", facecolor="#333333", edgecolor="none"
+                    ),
                     va="center",
-                    ha="left"
+                    ha="left",
                 )
         except Exception as e:
             log.debug("current_price_overlay_failed err=%s", str(e))
@@ -737,14 +823,20 @@ def generate_multi_panel_chart(
                 if not vwap.empty and len(vwap) >= 1:
                     vwap_current = vwap.iloc[-1]
                     price_ax.text(
-                        1.01, vwap_current,
+                        1.01,
+                        vwap_current,
                         f"VWAP ${vwap_current:.2f}",
                         transform=price_ax.get_yaxis_transform(),
                         fontsize=9,
                         color="#FF9800",
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="#1E1E1E", edgecolor="#FF9800", linewidth=1),
+                        bbox=dict(
+                            boxstyle="round,pad=0.3",
+                            facecolor="#1E1E1E",
+                            edgecolor="#FF9800",
+                            linewidth=1,
+                        ),
                         va="center",
-                        ha="left"
+                        ha="left",
                     )
             except Exception as e:
                 log.debug("vwap_overlay_failed err=%s", str(e))
@@ -761,7 +853,7 @@ def generate_multi_panel_chart(
 
             for i, ax in enumerate(axes):
                 # Make time labels brighter for better contrast
-                ax.tick_params(axis='x', colors='#CCCCCC', labelsize=9)
+                ax.tick_params(axis="x", colors="#CCCCCC", labelsize=9)
 
                 # Panel 0 = Price (show y-axis labels)
                 # Panel 2 = RSI (hide y-axis labels, using custom text annotations)
@@ -770,47 +862,47 @@ def generate_multi_panel_chart(
                     # Price panel: Show y-axis on right
                     ax.yaxis.set_label_position("right")
                     ax.yaxis.tick_right()
-                    ax.tick_params(axis='y', colors='#CCCCCC', labelsize=9)
-                    ax.yaxis.set_ticks_position('right')
+                    ax.tick_params(axis="y", colors="#CCCCCC", labelsize=9)
+                    ax.yaxis.set_ticks_position("right")
                 elif i in [2, 4]:
                     # RSI and MACD panels: Hide y-axis tick labels (using custom annotations)
                     ax.yaxis.set_label_position("right")
                     ax.yaxis.tick_right()
-                    ax.tick_params(axis='y', labelsize=0)  # Hide tick labels
-                    ax.yaxis.set_ticks_position('right')
+                    ax.tick_params(axis="y", labelsize=0)  # Hide tick labels
+                    ax.yaxis.set_ticks_position("right")
                 else:
                     # Hidden panels: Just hide everything
                     ax.yaxis.set_label_position("right")
                     ax.yaxis.tick_right()
-                    ax.tick_params(axis='y', labelsize=0)
-                    ax.yaxis.set_ticks_position('right')
+                    ax.tick_params(axis="y", labelsize=0)
+                    ax.yaxis.set_ticks_position("right")
 
                 # Improve x-axis label formatting based on timeframe
                 if timeframe == "1Y":
                     # Year view: Show year markers and monthly ticks
                     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b'))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
 
                 elif timeframe == "3M":
                     # 3 month view: Show month/day format
                     locator = mdates.AutoDateLocator(maxticks=10)
                     ax.xaxis.set_major_locator(locator)
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
 
                 elif timeframe == "1M":
                     # 1 month view: Use AutoDateLocator for smart spacing
                     locator = mdates.AutoDateLocator(maxticks=8)
                     ax.xaxis.set_major_locator(locator)
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
 
                 elif timeframe in ["1D", "5D"]:
                     # Intraday: Use AutoDateLocator for time format
                     locator = mdates.AutoDateLocator(maxticks=8)
                     ax.xaxis.set_major_locator(locator)
-                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
 
                 # Rotate labels for better readability
-                plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, ha='center')
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=0, ha="center")
 
         except Exception as e:
             log.debug("axis_formatting_failed err=%s", str(e))
@@ -818,11 +910,11 @@ def generate_multi_panel_chart(
         # Expand chart to fill space - reduce all margins to absolute minimum
         try:
             fig.subplots_adjust(
-                left=0.0,     # No left margin (y-axis is on right)
-                right=0.88,   # More space for price/indicator labels on right
-                top=0.99,     # Almost no top margin
+                left=0.0,  # No left margin (y-axis is on right)
+                right=0.88,  # More space for price/indicator labels on right
+                top=0.99,  # Almost no top margin
                 bottom=0.03,  # Minimal bottom margin for x-axis labels
-                hspace=0.10   # Tight space between panels
+                hspace=0.10,  # Tight space between panels
             )
         except Exception as e:
             log.debug("margin_adjustment_failed err=%s", str(e))
@@ -835,14 +927,14 @@ def generate_multi_panel_chart(
                 import pytz
                 from matplotlib.dates import date2num
 
-                et_tz = pytz.timezone('America/New_York')
+                et_tz = pytz.timezone("America/New_York")
 
                 # Get the date range in the data
                 first_date = df.index[0]
                 last_date = df.index[-1]
 
                 # Convert to ET
-                if hasattr(first_date, 'tz_convert'):
+                if hasattr(first_date, "tz_convert"):
                     first_date_et = first_date.tz_convert(et_tz)
                     last_date_et = last_date.tz_convert(et_tz)
                 else:
@@ -850,12 +942,20 @@ def generate_multi_panel_chart(
                     last_date_et = last_date
 
                 # Set chart to span from 4:00 AM to 8:00 PM ET for the date range
-                day_start = first_date_et.replace(hour=4, minute=0, second=0, microsecond=0)
-                day_end = last_date_et.replace(hour=20, minute=0, second=0, microsecond=0)
+                day_start = first_date_et.replace(
+                    hour=4, minute=0, second=0, microsecond=0
+                )
+                day_end = last_date_et.replace(
+                    hour=20, minute=0, second=0, microsecond=0
+                )
 
                 log.info(
                     "xlim_set ticker=%s data_range=%s_to_%s chart_range=%s_to_%s",
-                    ticker, first_date_et, last_date_et, day_start, day_end
+                    ticker,
+                    first_date_et,
+                    last_date_et,
+                    day_start,
+                    day_end,
                 )
 
                 # Apply to price axis
@@ -876,7 +976,8 @@ def generate_multi_panel_chart(
 
                     # RSI label (vertical text on right edge, outside panel)
                     rsi_ax.text(
-                        1.03, 0.5,
+                        1.03,
+                        0.5,
                         "RSI",
                         transform=rsi_ax.transAxes,
                         fontsize=11,
@@ -886,12 +987,13 @@ def generate_multi_panel_chart(
                         ha="left",
                         fontweight="bold",
                         clip_on=False,
-                        zorder=1000
+                        zorder=1000,
                     )
 
                     # RSI tick labels (30 and 70)
                     rsi_ax.text(
-                        1.03, 0.3,
+                        1.03,
+                        0.3,
                         "30",
                         transform=rsi_ax.transAxes,
                         fontsize=9,
@@ -899,10 +1001,11 @@ def generate_multi_panel_chart(
                         va="center",
                         ha="left",
                         clip_on=False,
-                        zorder=1000
+                        zorder=1000,
                     )
                     rsi_ax.text(
-                        1.03, 0.7,
+                        1.03,
+                        0.7,
                         "70",
                         transform=rsi_ax.transAxes,
                         fontsize=9,
@@ -910,12 +1013,13 @@ def generate_multi_panel_chart(
                         va="center",
                         ha="left",
                         clip_on=False,
-                        zorder=1000
+                        zorder=1000,
                     )
 
                     # MACD label (vertical text on right edge, level with RSI label)
                     macd_ax.text(
-                        1.03, 0.5,
+                        1.03,
+                        0.5,
                         "MACD",
                         transform=macd_ax.transAxes,
                         fontsize=11,
@@ -924,12 +1028,14 @@ def generate_multi_panel_chart(
                         va="center",
                         ha="left",
                         fontweight="bold",
-                        clip_on=False
+                        clip_on=False,
                     )
 
                     # Add RSI current value box (if RSI has data)
                     if rsi is not None:
-                        rsi_current = rsi.dropna().iloc[-1] if not rsi.dropna().empty else None
+                        rsi_current = (
+                            rsi.dropna().iloc[-1] if not rsi.dropna().empty else None
+                        )
                         if rsi_current is not None:
                             # Determine color based on RSI level
                             if rsi_current >= 70:
@@ -940,16 +1046,23 @@ def generate_multi_panel_chart(
                                 rsi_color = "#00BCD4"  # Cyan (neutral)
 
                             rsi_ax.text(
-                                0.01, 0.92,
+                                0.01,
+                                0.92,
                                 f"RSI {rsi_current:.1f}",
                                 transform=rsi_ax.transAxes,
                                 fontsize=11,
                                 color="#FFFFFF",
-                                bbox=dict(boxstyle="round,pad=0.5", facecolor=rsi_color, edgecolor=rsi_color, linewidth=2, alpha=0.9),
+                                bbox=dict(
+                                    boxstyle="round,pad=0.5",
+                                    facecolor=rsi_color,
+                                    edgecolor=rsi_color,
+                                    linewidth=2,
+                                    alpha=0.9,
+                                ),
                                 va="top",
                                 ha="left",
                                 fontweight="bold",
-                                zorder=1000
+                                zorder=1000,
                             )
 
                 elif len(axes) == 4:  # Only MACD panel (axes[2])
@@ -957,7 +1070,8 @@ def generate_multi_panel_chart(
 
                     # MACD label (vertical text on right edge)
                     macd_ax.text(
-                        1.03, 0.5,
+                        1.03,
+                        0.5,
                         "MACD",
                         transform=macd_ax.transAxes,
                         fontsize=11,
@@ -966,7 +1080,7 @@ def generate_multi_panel_chart(
                         va="center",
                         ha="left",
                         fontweight="bold",
-                        clip_on=False
+                        clip_on=False,
                     )
 
         except Exception as e:
@@ -975,29 +1089,37 @@ def generate_multi_panel_chart(
         # Adjust subplot spacing for better layout
         # Add small margins on right and bottom for unit contrast
         fig.subplots_adjust(
-            left=0.06,    # Left margin for y-axis labels
-            right=0.97,   # Small right margin for contrast
+            left=0.06,  # Left margin for y-axis labels
+            right=0.97,  # Small right margin for contrast
             bottom=0.06,  # Small bottom margin for contrast
-            top=0.98,     # Top margin (title is inside chart now)
-            hspace=0.02   # Minimal space between panels
+            top=0.98,  # Top margin (title is inside chart now)
+            hspace=0.02,  # Minimal space between panels
         )
 
         # Save the figure
-        fig.savefig(save_path, facecolor="#121212", edgecolor="none",
-                   bbox_inches=None, dpi=150, pad_inches=0.1)
+        fig.savefig(
+            save_path,
+            facecolor="#121212",
+            edgecolor="none",
+            bbox_inches=None,
+            dpi=150,
+            pad_inches=0.1,
+        )
         plt.close(fig)
 
         log.info(
             "chart_generated ticker=%s tf=%s path=%s size=%d",
-            ticker, timeframe, save_path, save_path.stat().st_size
+            ticker,
+            timeframe,
+            save_path,
+            save_path.stat().st_size,
         )
 
         return save_path
 
     except Exception as e:
         log.warning(
-            "chart_generation_failed ticker=%s tf=%s err=%s",
-            ticker, timeframe, str(e)
+            "chart_generation_failed ticker=%s tf=%s err=%s", ticker, timeframe, str(e)
         )
         return None
 
@@ -1029,10 +1151,7 @@ def generate_all_timeframes(
     for tf in TIMEFRAME_CONFIG.keys():
         log.info("generating_chart ticker=%s tf=%s", ticker, tf)
         path = generate_multi_panel_chart(
-            ticker,
-            timeframe=tf,
-            out_dir=out_dir,
-            style=style
+            ticker, timeframe=tf, out_dir=out_dir, style=style
         )
         results[tf] = path
 

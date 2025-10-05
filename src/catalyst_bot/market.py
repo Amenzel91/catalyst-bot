@@ -172,7 +172,11 @@ def _alpha_last_prev(
             return None, None
 
         if not j or not isinstance(j, dict):
-            log.warning("alpha_vantage_unexpected_response ticker=%s type=%s", ticker, type(j).__name__)
+            log.warning(
+                "alpha_vantage_unexpected_response ticker=%s type=%s",
+                ticker,
+                type(j).__name__,
+            )
             return None, None
 
         q = j.get("Global Quote") or j.get("globalQuote") or {}

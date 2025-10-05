@@ -637,13 +637,27 @@ def send_alert_safe(*args, **kwargs) -> bool:
     gauge_path = None
     try:
         use_gauge = os.getenv("FEATURE_SENTIMENT_GAUGE", "1").strip().lower() in (
-            "1", "true", "yes", "on"
+            "1",
+            "true",
+            "yes",
+            "on",
         )
-        if use_gauge and HAS_ADVANCED_CHARTS and "embeds" in payload and payload["embeds"] and scored:
+        if (
+            use_gauge
+            and HAS_ADVANCED_CHARTS
+            and "embeds" in payload
+            and payload["embeds"]
+            and scored
+        ):
             # Extract aggregate score - handle both dict and ScoredItem types
             aggregate_score = 0
             if isinstance(scored, dict):
-                aggregate_score = scored.get("aggregate_score") or scored.get("score") or scored.get("sentiment") or 0
+                aggregate_score = (
+                    scored.get("aggregate_score")
+                    or scored.get("score")
+                    or scored.get("sentiment")
+                    or 0
+                )
             else:
                 # ScoredItem dataclass - use sentiment attribute
                 aggregate_score = getattr(scored, "sentiment", 0)
@@ -653,17 +667,28 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 if -1 <= aggregate_score <= 1:
                     aggregate_score = aggregate_score * 100
 
-                gauge_path = generate_sentiment_gauge(aggregate_score, ticker, style="dark")
+                gauge_path = generate_sentiment_gauge(
+                    aggregate_score, ticker, style="dark"
+                )
 
                 if gauge_path:
-                    log.info("sentiment_gauge_generated ticker=%s score=%.1f", ticker, aggregate_score)
+                    log.info(
+                        "sentiment_gauge_generated ticker=%s score=%.1f",
+                        ticker,
+                        aggregate_score,
+                    )
 
                     # Log score for calibration
                     try:
-                        log_sentiment_score(ticker, aggregate_score, last_price, metadata={
-                            "source": source,
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        })
+                        log_sentiment_score(
+                            ticker,
+                            aggregate_score,
+                            last_price,
+                            metadata={
+                                "source": source,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
                     except Exception:
                         pass
     except Exception as e:
@@ -677,8 +702,15 @@ def send_alert_safe(*args, **kwargs) -> bool:
             "yes",
             "on",
         )
-        log.debug("advanced_charts_check use_advanced=%s has_advanced=%s embeds_in_payload=%s payload_embeds=%s ticker=%s",
-                  use_advanced, HAS_ADVANCED_CHARTS, 'embeds' in payload, bool(payload.get('embeds')), ticker)
+        log.debug(
+            "advanced_charts_check use_advanced=%s has_advanced=%s "
+            "embeds_in_payload=%s payload_embeds=%s ticker=%s",
+            use_advanced,
+            HAS_ADVANCED_CHARTS,
+            "embeds" in payload,
+            bool(payload.get("embeds")),
+            ticker,
+        )
 
         if (
             use_advanced
@@ -694,14 +726,20 @@ def send_alert_safe(*args, **kwargs) -> bool:
             # Try cache first
             cache = get_cache()
             chart_path = cache.get(ticker, default_tf)
-            log.debug("cache_result ticker=%s tf=%s path=%s", ticker, default_tf, chart_path)
+            log.debug(
+                "cache_result ticker=%s tf=%s path=%s", ticker, default_tf, chart_path
+            )
 
             if chart_path is None:
                 # Generate new multi-panel chart
                 log.info(
                     "generating_advanced_chart ticker=%s tf=%s", ticker, default_tf
                 )
-                log.debug("calling_generate_multi_panel_chart ticker=%s tf=%s", ticker, default_tf)
+                log.debug(
+                    "calling_generate_multi_panel_chart ticker=%s tf=%s",
+                    ticker,
+                    default_tf,
+                )
                 chart_path = generate_multi_panel_chart(
                     ticker, timeframe=default_tf, style="dark"
                 )
@@ -710,7 +748,11 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 if chart_path:
                     cache.put(ticker, default_tf, chart_path)
 
-            log.debug("chart_path_exists ticker=%s exists=%s", ticker, chart_path and chart_path.exists())
+            log.debug(
+                "chart_path_exists ticker=%s exists=%s",
+                ticker,
+                chart_path and chart_path.exists(),
+            )
             if chart_path and chart_path.exists():
                 # Update embed to reference the chart
                 embed0 = payload["embeds"][0]
@@ -734,14 +776,26 @@ def send_alert_safe(*args, **kwargs) -> bool:
 
                 # Extract components from payload
                 components = payload.get("components")
-                log.debug("components_extracted ticker=%s count=%d webhook_url=%s",
-                          ticker, len(components) if components else 0, bool(webhook_url))
+                log.debug(
+                    "components_extracted ticker=%s count=%d webhook_url=%s",
+                    ticker,
+                    len(components) if components else 0,
+                    bool(webhook_url),
+                )
 
                 if webhook_url:
                     log.debug("calling_post_embed_with_attachment ticker=%s", ticker)
                     # Post with multipart attachment (includes components if bot token configured)
+                    # Include gauge as additional file if available
+                    additional_files = (
+                        [gauge_path] if gauge_path and gauge_path.exists() else None
+                    )
                     ok_file = post_embed_with_attachment(
-                        webhook_url, embed0, chart_path, components=components
+                        webhook_url,
+                        embed0,
+                        chart_path,
+                        components=components,
+                        additional_files=additional_files,
                     )
                     log.debug("post_embed_result ticker=%s success=%s", ticker, ok_file)
                     if ok_file:
@@ -764,12 +818,16 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 if "image" in embed and isinstance(embed.get("image"), dict):
                     url = embed["image"].get("url", "")
                     if url.startswith("attachment://"):
-                        log.debug("removing_attachment_reference type=image url=%s", url)
+                        log.debug(
+                            "removing_attachment_reference type=image url=%s", url
+                        )
                         del embed["image"]
                 if "thumbnail" in embed and isinstance(embed.get("thumbnail"), dict):
                     url = embed["thumbnail"].get("url", "")
                     if url.startswith("attachment://"):
-                        log.debug("removing_attachment_reference type=thumbnail url=%s", url)
+                        log.debug(
+                            "removing_attachment_reference type=thumbnail url=%s", url
+                        )
                         del embed["thumbnail"]
     except Exception:
         pass
@@ -1037,7 +1095,10 @@ def _build_discord_embed(
         }
         # Skip ML scoring for earnings calendar events (simple date announcements)
         skip_ml_earnings = os.getenv("SKIP_ML_FOR_EARNINGS", "1").strip().lower() in (
-            "1", "true", "yes", "on"
+            "1",
+            "true",
+            "yes",
+            "on",
         )
         is_earnings = (
             item_dict.get("event_type") == "earnings"

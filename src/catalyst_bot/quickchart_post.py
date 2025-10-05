@@ -77,10 +77,24 @@ def get_quickchart_png_path(
     for ts, row in tail.iterrows():
         try:
             # Use .item() to extract scalar from pandas Series safely
-            o = row["Open"].item() if hasattr(row["Open"], 'item') else float(row["Open"])
-            h = row["High"].item() if hasattr(row["High"], 'item') else float(row["High"])
-            low = row["Low"].item() if hasattr(row["Low"], 'item') else float(row["Low"])
-            c = row["Close"].item() if hasattr(row["Close"], 'item') else float(row["Close"])
+            o = (
+                row["Open"].item()
+                if hasattr(row["Open"], "item")
+                else float(row["Open"])
+            )
+            h = (
+                row["High"].item()
+                if hasattr(row["High"], "item")
+                else float(row["High"])
+            )
+            low = (
+                row["Low"].item() if hasattr(row["Low"], "item") else float(row["Low"])
+            )
+            c = (
+                row["Close"].item()
+                if hasattr(row["Close"], "item")
+                else float(row["Close"])
+            )
             dataset.append(
                 {
                     "x": ts.strftime("%Y-%m-%dT%H:%M"),
@@ -114,11 +128,11 @@ def get_quickchart_png_path(
         r = requests.post(chart_endpoint, json={"chart": cfg}, timeout=15)
         if not r.ok or not r.content:
             # Log response body for debugging 500 errors
-            error_body = r.text[:200] if hasattr(r, 'text') else ''
+            error_body = r.text[:200] if hasattr(r, "text") else ""
             log.info(
                 "quickchart_post_chart_fail status=%s error=%s",
                 getattr(r, "status_code", "?"),
-                error_body
+                error_body,
             )
             return None
         out_file.write_bytes(r.content)

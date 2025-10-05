@@ -14,16 +14,12 @@ configuration in real-time without requiring a full restart.
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, Optional
-
-import requests
+from typing import Any, Dict
 
 from .admin_controls import load_admin_report
-from .config_updater import apply_parameter_changes, rollback_changes
+from .config_updater import apply_parameter_changes
 from .logging_utils import get_logger
 
 log = get_logger("admin_interactions")
@@ -51,10 +47,7 @@ def build_details_embed(report_id: str) -> Dict[str, Any]:
     """Build detailed breakdown embed for a report."""
     report = load_admin_report(report_id)
     if not report:
-        return {
-            "content": "❌ Report not found.",
-            "flags": 64  # Ephemeral
-        }
+        return {"content": "❌ Report not found.", "flags": 64}  # Ephemeral
 
     # Build detailed fields
     fields = []
@@ -62,44 +55,46 @@ def build_details_embed(report_id: str) -> Dict[str, Any]:
     # Backtest details
     bt = report.backtest_summary
     misses = bt.n - bt.hits  # Calculate misses
-    fields.append({
-        "name": "📊 Backtest Breakdown",
-        "value": (
-            f"**Total Trades:** {bt.n}\n"
-            f"**Wins:** {bt.hits} ({bt.hit_rate:.1%})\n"
-            f"**Losses:** {misses} ({(1 - bt.hit_rate):.1%})\n"
-            f"**Avg Win/Loss:** {bt.avg_win_loss:.2f}\n"
-            f"**Avg Return:** {bt.avg_return:+.2%}\n"
-            f"**Max Drawdown:** {bt.max_drawdown:.2%}"
-        ),
-        "inline": False
-    })
+    fields.append(
+        {
+            "name": "📊 Backtest Breakdown",
+            "value": (
+                f"**Total Trades:** {bt.n}\n"
+                f"**Wins:** {bt.hits} ({bt.hit_rate:.1%})\n"
+                f"**Losses:** {misses} ({(1 - bt.hit_rate):.1%})\n"
+                f"**Avg Win/Loss:** {bt.avg_win_loss:.2f}\n"
+                f"**Avg Return:** {bt.avg_return:+.2%}\n"
+                f"**Max Drawdown:** {bt.max_drawdown:.2%}"
+            ),
+            "inline": False,
+        }
+    )
 
     # Top 5 keyword performers
     if report.keyword_performance:
         kw_lines = []
         for kp in report.keyword_performance[:5]:
-            total = kp.hits + kp.misses + kp.neutrals
+            kp.hits + kp.misses + kp.neutrals
             kw_lines.append(
                 f"**{kp.category}:** {kp.hit_rate:.0%} win rate "
                 f"({kp.hits}W/{kp.misses}L/{kp.neutrals}N) | "
                 f"Avg: {kp.avg_return:+.1f}%"
             )
-        fields.append({
-            "name": "🏆 Top Keyword Categories",
-            "value": "\n".join(kw_lines),
-            "inline": False
-        })
+        fields.append(
+            {
+                "name": "🏆 Top Keyword Categories",
+                "value": "\n".join(kw_lines),
+                "inline": False,
+            }
+        )
 
     # Parameter recommendations
     if report.parameter_recommendations:
         rec_lines = []
         for rec in report.parameter_recommendations:
-            impact_emoji = {
-                "high": "🔴",
-                "medium": "🟡",
-                "low": "🟢"
-            }.get(rec.impact, "⚪")
+            impact_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(
+                rec.impact, "⚪"
+            )
 
             rec_lines.append(
                 f"{impact_emoji} **{rec.name}:** "
@@ -107,29 +102,28 @@ def build_details_embed(report_id: str) -> Dict[str, Any]:
                 f"   _{rec.reason}_"
             )
 
-        fields.append({
-            "name": "⚙️ Recommended Parameter Changes",
-            "value": "\n\n".join(rec_lines[:5]),  # Show top 5
-            "inline": False
-        })
+        fields.append(
+            {
+                "name": "⚙️ Recommended Parameter Changes",
+                "value": "\n\n".join(rec_lines[:5]),  # Show top 5
+                "inline": False,
+            }
+        )
 
     embed = {
         "title": f"📊 Detailed Report – {report.date}",
         "color": 0x3498DB,
         "fields": fields,
-        "footer": {
-            "text": "Use Approve/Reject buttons to apply or dismiss changes"
-        },
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "footer": {"text": "Use Approve/Reject buttons to apply or dismiss changes"},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    return {
-        "embeds": [embed],
-        "flags": 64  # Ephemeral (only visible to admin)
-    }
+    return {"embeds": [embed], "flags": 64}  # Ephemeral (only visible to admin)
 
 
-def build_approval_response(report_id: str, success: bool, message: str) -> Dict[str, Any]:
+def build_approval_response(
+    report_id: str, success: bool, message: str
+) -> Dict[str, Any]:
     """Build response for approval/rejection actions."""
     color = 0x2ECC71 if success else 0xE74C3C  # Green or Red
     emoji = "✅" if success else "❌"
@@ -138,13 +132,10 @@ def build_approval_response(report_id: str, success: bool, message: str) -> Dict
         "title": f"{emoji} Parameter Update",
         "description": message,
         "color": color,
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    return {
-        "embeds": [embed],
-        "flags": 64  # Ephemeral
-    }
+    return {"embeds": [embed], "flags": 64}  # Ephemeral
 
 
 def build_custom_modal(report_id: str) -> Dict[str, Any]:
@@ -157,48 +148,56 @@ def build_custom_modal(report_id: str) -> Dict[str, Any]:
     components = [
         {
             "type": 1,  # Action Row
-            "components": [{
-                "type": 4,  # Text Input
-                "custom_id": "min_score",
-                "label": "Minimum Sentiment Score (0-1)",
-                "style": 1,  # Short
-                "placeholder": str(os.getenv("MIN_SCORE", "0")),
-                "required": False
-            }]
+            "components": [
+                {
+                    "type": 4,  # Text Input
+                    "custom_id": "min_score",
+                    "label": "Minimum Sentiment Score (0-1)",
+                    "style": 1,  # Short
+                    "placeholder": str(os.getenv("MIN_SCORE", "0")),
+                    "required": False,
+                }
+            ],
         },
         {
             "type": 1,
-            "components": [{
-                "type": 4,
-                "custom_id": "price_ceiling",
-                "label": "Price Ceiling ($)",
-                "style": 1,
-                "placeholder": str(os.getenv("PRICE_CEILING", "10")),
-                "required": False
-            }]
+            "components": [
+                {
+                    "type": 4,
+                    "custom_id": "price_ceiling",
+                    "label": "Price Ceiling ($)",
+                    "style": 1,
+                    "placeholder": str(os.getenv("PRICE_CEILING", "10")),
+                    "required": False,
+                }
+            ],
         },
         {
             "type": 1,
-            "components": [{
-                "type": 4,
-                "custom_id": "confidence_high",
-                "label": "High Confidence Threshold (0-1)",
-                "style": 1,
-                "placeholder": str(os.getenv("CONFIDENCE_HIGH", "0.8")),
-                "required": False
-            }]
+            "components": [
+                {
+                    "type": 4,
+                    "custom_id": "confidence_high",
+                    "label": "High Confidence Threshold (0-1)",
+                    "style": 1,
+                    "placeholder": str(os.getenv("CONFIDENCE_HIGH", "0.8")),
+                    "required": False,
+                }
+            ],
         },
         {
             "type": 1,
-            "components": [{
-                "type": 4,
-                "custom_id": "max_alerts_per_cycle",
-                "label": "Max Alerts Per Cycle",
-                "style": 1,
-                "placeholder": str(os.getenv("MAX_ALERTS_PER_CYCLE", "40")),
-                "required": False
-            }]
-        }
+            "components": [
+                {
+                    "type": 4,
+                    "custom_id": "max_alerts_per_cycle",
+                    "label": "Max Alerts Per Cycle",
+                    "style": 1,
+                    "placeholder": str(os.getenv("MAX_ALERTS_PER_CYCLE", "40")),
+                    "required": False,
+                }
+            ],
+        },
     ]
 
     return {
@@ -206,8 +205,8 @@ def build_custom_modal(report_id: str) -> Dict[str, Any]:
         "data": {
             "custom_id": f"admin_modal_{report_id}",
             "title": "Custom Parameter Adjustment",
-            "components": components
-        }
+            "components": components,
+        },
     }
 
 
@@ -250,14 +249,14 @@ def handle_admin_interaction(interaction_data: Dict[str, Any]) -> Dict[str, Any]
         if not custom_id.startswith("admin_"):
             return {
                 "type": RESPONSE_TYPE_UPDATE_MESSAGE,
-                "data": {"content": "❌ Invalid interaction", "flags": 64}
+                "data": {"content": "❌ Invalid interaction", "flags": 64},
             }
 
         parts = custom_id.split("_")
         if len(parts) < 3:
             return {
                 "type": RESPONSE_TYPE_UPDATE_MESSAGE,
-                "data": {"content": "❌ Invalid interaction format", "flags": 64}
+                "data": {"content": "❌ Invalid interaction format", "flags": 64},
             }
 
         action = parts[1]
@@ -266,10 +265,7 @@ def handle_admin_interaction(interaction_data: Dict[str, Any]) -> Dict[str, Any]
         # Route to appropriate handler
         if action == "details":
             response_data = build_details_embed(report_id)
-            return {
-                "type": RESPONSE_TYPE_MESSAGE,
-                "data": response_data
-            }
+            return {"type": RESPONSE_TYPE_MESSAGE, "data": response_data}
 
         elif action == "approve":
             return handle_approve(report_id)
@@ -287,7 +283,7 @@ def handle_admin_interaction(interaction_data: Dict[str, Any]) -> Dict[str, Any]
 
     return {
         "type": RESPONSE_TYPE_UPDATE_MESSAGE,
-        "data": {"content": "❌ Unknown interaction type", "flags": 64}
+        "data": {"content": "❌ Unknown interaction type", "flags": 64},
     }
 
 
@@ -297,7 +293,7 @@ def handle_approve(report_id: str) -> Dict[str, Any]:
     if not report:
         return {
             "type": RESPONSE_TYPE_MESSAGE,
-            "data": build_approval_response(report_id, False, "Report not found.")
+            "data": build_approval_response(report_id, False, "Report not found."),
         }
 
     # Build parameter changes dict
@@ -310,7 +306,7 @@ def handle_approve(report_id: str) -> Dict[str, Any]:
         success, message = apply_parameter_changes(changes)
         return {
             "type": RESPONSE_TYPE_MESSAGE,
-            "data": build_approval_response(report_id, success, message)
+            "data": build_approval_response(report_id, success, message),
         }
     except Exception as e:
         log.error(f"failed_to_apply_changes err={e}")
@@ -318,7 +314,7 @@ def handle_approve(report_id: str) -> Dict[str, Any]:
             "type": RESPONSE_TYPE_MESSAGE,
             "data": build_approval_response(
                 report_id, False, f"Failed to apply changes: {e}"
-            )
+            ),
         }
 
 
@@ -330,7 +326,7 @@ def handle_reject(report_id: str) -> Dict[str, Any]:
     )
     return {
         "type": RESPONSE_TYPE_MESSAGE,
-        "data": build_approval_response(report_id, True, message)
+        "data": build_approval_response(report_id, True, message),
     }
 
 
@@ -344,7 +340,7 @@ def handle_modal_submit(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
     if not custom_id.startswith("admin_modal_"):
         return {
             "type": RESPONSE_TYPE_MESSAGE,
-            "data": build_approval_response("", False, "Invalid modal submission")
+            "data": build_approval_response("", False, "Invalid modal submission"),
         }
 
     report_id = custom_id.replace("admin_modal_", "")
@@ -364,7 +360,7 @@ def handle_modal_submit(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
                 "min_score": "MIN_SCORE",
                 "price_ceiling": "PRICE_CEILING",
                 "confidence_high": "CONFIDENCE_HIGH",
-                "max_alerts_per_cycle": "MAX_ALERTS_PER_CYCLE"
+                "max_alerts_per_cycle": "MAX_ALERTS_PER_CYCLE",
             }
 
             env_var = field_map.get(field_id)
@@ -382,14 +378,16 @@ def handle_modal_submit(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
     if not changes:
         return {
             "type": RESPONSE_TYPE_MESSAGE,
-            "data": build_approval_response(report_id, False, "No valid changes provided.")
+            "data": build_approval_response(
+                report_id, False, "No valid changes provided."
+            ),
         }
 
     try:
         success, message = apply_parameter_changes(changes)
         return {
             "type": RESPONSE_TYPE_MESSAGE,
-            "data": build_approval_response(report_id, success, message)
+            "data": build_approval_response(report_id, success, message),
         }
     except Exception as e:
         log.error(f"failed_to_apply_custom_changes err={e}")
@@ -397,5 +395,5 @@ def handle_modal_submit(interaction_data: Dict[str, Any]) -> Dict[str, Any]:
             "type": RESPONSE_TYPE_MESSAGE,
             "data": build_approval_response(
                 report_id, False, f"Failed to apply changes: {e}"
-            )
+            ),
         }

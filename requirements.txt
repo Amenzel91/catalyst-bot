@@ -25,3 +25,11 @@ tenacity>=8.2,<9
 
 # Optional: price lookups (runner handles absence gracefully)
 yfinance>=0.2.40,<0.3
+
+# Advanced charts (optional - for FEATURE_ADVANCED_CHARTS)
+matplotlib>=3.7,<4
+mplfinance>=0.12,<1
+
+# Discord interactions (optional - for button functionality)
+# PyNaCl>=1.5,<2  # Uncomment if using Discord button interactions
+# Flask>=3.0,<4   # Uncomment if running interaction endpoint

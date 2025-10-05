@@ -9,16 +9,19 @@ from __future__ import annotations
 import hashlib
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 try:
     from .finnhub_client import get_finnhub_client
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("finnhub_feeds")
+
     get_finnhub_client = None
 
 log = get_logger("finnhub_feeds")
@@ -107,7 +110,9 @@ def fetch_finnhub_company_news(ticker: str, days: int = 7) -> List[Dict[str, Any
         return []
 
     try:
-        from_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        from_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+            "%Y-%m-%d"
+        )
         to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         news = client.get_company_news(ticker, from_date=from_date, to_date=to_date)
@@ -167,7 +172,9 @@ def fetch_finnhub_earnings_calendar(days_ahead: int = 7) -> List[Dict[str, Any]]
 
     try:
         from_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        to_date = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+        to_date = (datetime.now(timezone.utc) + timedelta(days=days_ahead)).strftime(
+            "%Y-%m-%d"
+        )
 
         earnings = client.get_earnings_calendar(from_date=from_date, to_date=to_date)
 
@@ -183,7 +190,9 @@ def fetch_finnhub_earnings_calendar(days_ahead: int = 7) -> List[Dict[str, Any]]
 
             # Parse date
             try:
-                published_parsed = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                published_parsed = datetime.strptime(date, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
             except Exception:
                 published_parsed = datetime.now(timezone.utc)
 
@@ -191,7 +200,9 @@ def fetch_finnhub_earnings_calendar(days_ahead: int = 7) -> List[Dict[str, Any]]
             revenue_estimate = event.get("revenueEstimate")
             hour = event.get("hour", "")
 
-            title = f"{ticker} Earnings {hour.upper()}" if hour else f"{ticker} Earnings"
+            title = (
+                f"{ticker} Earnings {hour.upper()}" if hour else f"{ticker} Earnings"
+            )
             summary = f"Earnings Date: {date}"
 
             if eps_estimate:
@@ -242,6 +253,7 @@ def fetch_finnhub_upgrades_downgrades() -> List[Dict[str, Any]]:
     # Get watchlist tickers to check for upgrades/downgrades
     try:
         from .watchlist import load_watchlist_set
+
         watchlist = load_watchlist_set()
     except Exception:
         log.debug("finnhub_upgrades_no_watchlist")
@@ -261,7 +273,9 @@ def fetch_finnhub_upgrades_downgrades() -> List[Dict[str, Any]]:
 
                 # Only show recent events (last 7 days)
                 try:
-                    event_time = datetime.strptime(grade_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                    event_time = datetime.strptime(
+                        grade_time, "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=timezone.utc)
                     if (datetime.now(timezone.utc) - event_time).days > 7:
                         continue
                 except Exception:
@@ -273,9 +287,15 @@ def fetch_finnhub_upgrades_downgrades() -> List[Dict[str, Any]]:
                 action = event.get("action", "")
 
                 # Create unique ID
-                item_id = hashlib.md5(f"{ticker}_{grade_time}_{to_grade}".encode()).hexdigest()[:16]
+                item_id = hashlib.md5(
+                    f"{ticker}_{grade_time}_{to_grade}".encode()
+                ).hexdigest()[:16]
 
-                title = f"{ticker} {action}: {from_grade} → {to_grade}" if action else f"{ticker} Rated {to_grade}"
+                title = (
+                    f"{ticker} {action}: {from_grade} → {to_grade}"
+                    if action
+                    else f"{ticker} Rated {to_grade}"
+                )
                 summary = f"Analyst: {company}" if company else ""
 
                 item = {
@@ -287,7 +307,11 @@ def fetch_finnhub_upgrades_downgrades() -> List[Dict[str, Any]]:
                     "source": "Finnhub Analyst",
                     "ticker": ticker,
                     "category": "analyst",
-                    "event_type": "upgrade" if "upgrade" in action.lower() else "downgrade" if "downgrade" in action.lower() else "rating",
+                    "event_type": (
+                        "upgrade"
+                        if "upgrade" in action.lower()
+                        else "downgrade" if "downgrade" in action.lower() else "rating"
+                    ),
                     "from_grade": from_grade,
                     "to_grade": to_grade,
                     "analyst_company": company,
@@ -298,9 +322,15 @@ def fetch_finnhub_upgrades_downgrades() -> List[Dict[str, Any]]:
             checked += 1
 
         except Exception as e:
-            log.debug("finnhub_upgrades_error ticker=%s err=%s", ticker, str(e.__class__.__name__))
+            log.debug(
+                "finnhub_upgrades_error ticker=%s err=%s",
+                ticker,
+                str(e.__class__.__name__),
+            )
 
-    log.info("finnhub_upgrades_fetched tickers_checked=%d events=%d", checked, len(items))
+    log.info(
+        "finnhub_upgrades_fetched tickers_checked=%d events=%d", checked, len(items)
+    )
     return items
 
 

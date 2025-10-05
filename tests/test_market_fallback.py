@@ -17,9 +17,19 @@ def test_alpha_primary_short_circuits_yf(monkeypatch):
 
     importlib.reload(market)  # ensure clean state
 
+    # Mock get_settings to return a simple config with Alpha first
+    class FakeSettings:
+        market_provider_order = "av,yf"
+        feature_tiingo = False
+        tiingo_api_key = ""
+
+    monkeypatch.setattr(market, "get_settings", lambda: FakeSettings(), raising=False)
+
     # Force Alpha path on
     monkeypatch.setattr(market, "_AV_KEY", "demo", raising=False)
     monkeypatch.setattr(market, "_SKIP_ALPHA", False, raising=False)
+    # Disable Alpha caching to ensure our mock is called
+    monkeypatch.setattr(market, "_AV_CACHE_TTL", 0, raising=False)
 
     # Track whether yfinance fallback would be used
     def _boom(*a, **k):
@@ -59,9 +69,19 @@ def test_yfinance_fallback_when_alpha_none(monkeypatch):
 
     importlib.reload(market)  # ensure clean state
 
+    # Mock get_settings to return a simple config with Alpha first
+    class FakeSettings:
+        market_provider_order = "av,yf"
+        feature_tiingo = False
+        tiingo_api_key = ""
+
+    monkeypatch.setattr(market, "get_settings", lambda: FakeSettings(), raising=False)
+
     # Force Alpha path on, but make it return nothing usable
     monkeypatch.setattr(market, "_AV_KEY", "demo", raising=False)
     monkeypatch.setattr(market, "_SKIP_ALPHA", False, raising=False)
+    # Disable Alpha caching to ensure our mock is called
+    monkeypatch.setattr(market, "_AV_CACHE_TTL", 0, raising=False)
     monkeypatch.setattr(
         market, "_alpha_last_prev", lambda *a, **k: (None, None), raising=True
     )
@@ -99,9 +119,19 @@ def test_yfinance_history_fallback_when_fast_info_partial(monkeypatch):
 
     importlib.reload(market)  # ensure clean state
 
+    # Mock get_settings to return a simple config with Alpha first
+    class FakeSettings:
+        market_provider_order = "av,yf"
+        feature_tiingo = False
+        tiingo_api_key = ""
+
+    monkeypatch.setattr(market, "get_settings", lambda: FakeSettings(), raising=False)
+
     # Alpha gives partial (last only)
     monkeypatch.setattr(market, "_AV_KEY", "demo", raising=False)
     monkeypatch.setattr(market, "_SKIP_ALPHA", False, raising=False)
+    # Disable Alpha caching to ensure our mock is called
+    monkeypatch.setattr(market, "_AV_CACHE_TTL", 0, raising=False)
     monkeypatch.setattr(
         market, "_alpha_last_prev", lambda *a, **k: (50.0, None), raising=True
     )

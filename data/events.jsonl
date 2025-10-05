@@ -456,3 +456,13 @@
 {"id": "18f3a47a02087f127c2675dd1eef105bbc17410c", "title": "FWP - HSBC USA INC /MD/ (0000083246) (Subject)", "link": "https://www.sec.gov/Archives/edgar/data/83246/000110465925081751/0001104659-25-081751-index.htm", "ts": "2025-08-22T15:56:13+00:00", "source": "sec_fwp", "ticker": null, "cls": {"sentiment": 0.0, "keywords": [], "score": 0.0}, "price": null}
 {"id": "d4581cee17a2f9292a8e1f9d8b7b62a2315bd0bb", "title": "FWP - HSBC USA INC /MD/ (0000083246) (Subject)", "link": "https://www.sec.gov/Archives/edgar/data/83246/000110465925081750/0001104659-25-081750-index.htm", "ts": "2025-08-22T15:55:50+00:00", "source": "sec_fwp", "ticker": null, "cls": {"sentiment": 0.0, "keywords": [], "score": 0.0}, "price": null}
 {"id": "9326bb871bd45a6b68486294fe116993133794d9", "title": "FWP - HSBC USA INC /MD/ (0000083246) (Subject)", "link": "https://www.sec.gov/Archives/edgar/data/83246/000110465925081746/0001104659-25-081746-index.htm", "ts": "2025-08-22T15:39:57+00:00", "source": "sec_fwp", "ticker": null, "cls": {"sentiment": 0.0, "keywords": [], "score": 0.0}, "price": null}
+{"ts": "2025-10-03T09:00:00+00:00", "ticker": "AAPL", "price": 150.0, "cls": {"keywords": ["earnings", "strong"], "confidence": 0.85}}
+{"ts": "2025-10-03T10:00:00+00:00", "ticker": "TSLA", "price": 200.0, "cls": {"keywords": ["breakout", "volume"], "confidence": 0.72}}
+{"ts": "2025-10-03T11:00:00+00:00", "ticker": "NVDA", "price": 400.0, "cls": {"keywords": ["catalyst", "merger"], "confidence": 0.65}}
+{"ts": "2025-10-03T14:00:00+00:00", "ticker": "AMD", "price": 100.0, "cls": {"keywords": ["news", "upgrade"], "confidence": 0.58}}
+{"ts": "2025-10-03T15:00:00+00:00", "ticker": "META", "price": 300.0, "cls": {"keywords": ["filing", "sec"], "confidence": 0.45}}
+{"ts": "2025-10-04T09:00:00+00:00", "ticker": "AAPL", "price": 150.0, "cls": {"keywords": ["earnings", "strong"], "confidence": 0.85}}
+{"ts": "2025-10-04T10:00:00+00:00", "ticker": "TSLA", "price": 200.0, "cls": {"keywords": ["breakout", "volume"], "confidence": 0.72}}
+{"ts": "2025-10-04T11:00:00+00:00", "ticker": "NVDA", "price": 400.0, "cls": {"keywords": ["catalyst", "merger"], "confidence": 0.65}}
+{"ts": "2025-10-04T14:00:00+00:00", "ticker": "AMD", "price": 100.0, "cls": {"keywords": ["news", "upgrade"], "confidence": 0.58}}
+{"ts": "2025-10-04T15:00:00+00:00", "ticker": "META", "price": 300.0, "cls": {"keywords": ["filing", "sec"], "confidence": 0.45}}

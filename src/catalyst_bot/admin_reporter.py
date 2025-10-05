@@ -12,9 +12,9 @@ performance summaries to the admin channel.
 from __future__ import annotations
 
 import os
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
 from typing import Optional
-from uuid import uuid4
 
 import requests
 
@@ -30,8 +30,7 @@ log = get_logger("admin_reporter")
 
 
 def post_admin_report(
-    target_date: Optional[date_cls] = None,
-    webhook_url: Optional[str] = None
+    target_date: Optional[date_cls] = None, webhook_url: Optional[str] = None
 ) -> bool:
     """
     Generate and post nightly admin report to Discord.
@@ -53,7 +52,12 @@ def post_admin_report(
         target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 
     # Check if admin reports are enabled
-    if not os.getenv("FEATURE_ADMIN_REPORTS", "0").strip().lower() in ("1", "true", "yes", "on"):
+    if not os.getenv("FEATURE_ADMIN_REPORTS", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         log.info("admin_reports_disabled")
         return False
 
@@ -77,7 +81,9 @@ def post_admin_report(
 
         if bot_token and channel_id:
             # Use Discord Bot API (supports components/buttons)
-            return _post_via_bot_api(embed, components, bot_token, channel_id, target_date)
+            return _post_via_bot_api(
+                embed, components, bot_token, channel_id, target_date
+            )
         else:
             # Fallback to webhook (no buttons)
             if webhook_url is None:
@@ -90,7 +96,7 @@ def post_admin_report(
             log.warning("bot_token_not_configured using_webhook_without_buttons")
             payload = {
                 "username": "Catalyst Admin",
-                "embeds": [embed]
+                "embeds": [embed],
                 # Note: webhooks don't support components
             }
 
@@ -98,7 +104,7 @@ def post_admin_report(
                 webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=10
+                timeout=10,
             )
 
             if response.status_code in (200, 204):
@@ -121,7 +127,7 @@ def _post_via_bot_api(
     components: list,
     bot_token: str,
     channel_id: str,
-    target_date: date_cls
+    target_date: date_cls,
 ) -> bool:
     """
     Post message with components via Discord Bot API.
@@ -146,15 +152,9 @@ def _post_via_bot_api(
     """
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
 
-    payload = {
-        "embeds": [embed],
-        "components": components
-    }
+    payload = {"embeds": [embed], "components": components}
 
-    headers = {
-        "Authorization": f"Bot {bot_token}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"}
 
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -205,11 +205,13 @@ def should_send_admin_report(now: datetime) -> bool:
         target_hour, target_minute = 21, 30
 
     # Check if we're in the target hour and haven't sent yet today
-    current_hour = now.hour
-    current_minute = now.minute
+    now.hour
+    now.minute
 
     # Within 5-minute window of target time
-    target_time = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+    target_time = now.replace(
+        hour=target_hour, minute=target_minute, second=0, microsecond=0
+    )
     time_diff = abs((now - target_time).total_seconds())
 
     # Send if within 5 minutes of target time

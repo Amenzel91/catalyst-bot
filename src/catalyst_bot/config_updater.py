@@ -19,7 +19,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from .logging_utils import get_logger
 
@@ -37,7 +37,7 @@ def _get_repo_root() -> Path:
 def _get_env_path() -> Path:
     """Get path to .env file."""
     root = _get_repo_root()
-    return root / "env.env"
+    return root / ".env"
 
 
 def _get_backup_dir() -> Path:
@@ -64,8 +64,14 @@ def validate_parameter(name: str, value: Any) -> Tuple[bool, str]:
         "PRICE_CEILING": lambda v: (float(v) > 0, "Must be positive"),
         "PRICE_FLOOR": lambda v: (float(v) >= 0, "Must be non-negative"),
         "CONFIDENCE_HIGH": lambda v: (0 <= float(v) <= 1, "Must be between 0 and 1"),
-        "CONFIDENCE_MODERATE": lambda v: (0 <= float(v) <= 1, "Must be between 0 and 1"),
-        "ALERTS_MIN_INTERVAL_MS": lambda v: (int(v) >= 0, "Must be non-negative integer"),
+        "CONFIDENCE_MODERATE": lambda v: (
+            0 <= float(v) <= 1,
+            "Must be between 0 and 1",
+        ),
+        "ALERTS_MIN_INTERVAL_MS": lambda v: (
+            int(v) >= 0,
+            "Must be non-negative integer",
+        ),
         "MAX_ALERTS_PER_CYCLE": lambda v: (int(v) > 0, "Must be positive integer"),
         "ANALYZER_HIT_UP_THRESHOLD_PCT": lambda v: (float(v) > 0, "Must be positive"),
         "ANALYZER_HIT_DOWN_THRESHOLD_PCT": lambda v: (float(v) < 0, "Must be negative"),
@@ -79,7 +85,7 @@ def validate_parameter(name: str, value: Any) -> Tuple[bool, str]:
         "SENTIMENT_WEIGHT_EXT",
         "SENTIMENT_WEIGHT_SEC",
         "SENTIMENT_WEIGHT_ANALYST",
-        "SENTIMENT_WEIGHT_EARNINGS"
+        "SENTIMENT_WEIGHT_EARNINGS",
     ]
 
     if name in weight_params:
@@ -267,7 +273,9 @@ def apply_parameter_changes(changes: Dict[str, Any]) -> Tuple[bool, str]:
 
         # Build success message
         param_list = ", ".join(sorted(updated_params))
-        message = f"✅ Successfully updated {len(updated_params)} parameters: {param_list}"
+        message = (
+            f"✅ Successfully updated {len(updated_params)} parameters: {param_list}"
+        )
         log.info(f"applied_changes count={len(updated_params)} params={param_list}")
 
         return True, message
@@ -278,9 +286,15 @@ def apply_parameter_changes(changes: Dict[str, Any]) -> Tuple[bool, str]:
         # Attempt rollback
         rollback_success, rollback_msg = rollback_changes(backup_path)
         if rollback_success:
-            return False, f"Failed to apply changes: {e}. Rolled back to previous configuration."
+            return (
+                False,
+                f"Failed to apply changes: {e}. Rolled back to previous configuration.",
+            )
         else:
-            return False, f"Failed to apply changes: {e}. Rollback also failed: {rollback_msg}"
+            return (
+                False,
+                f"Failed to apply changes: {e}. Rollback also failed: {rollback_msg}",
+            )
 
 
 # ======================== Keyword Weight Updates ========================
@@ -309,6 +323,7 @@ def update_keyword_weights(weights: Dict[str, float]) -> Tuple[bool, str]:
         # Load existing weights
         if weights_path.exists():
             import json
+
             existing = json.loads(weights_path.read_text(encoding="utf-8"))
         else:
             existing = {}
@@ -318,6 +333,7 @@ def update_keyword_weights(weights: Dict[str, float]) -> Tuple[bool, str]:
 
         # Write back
         import json
+
         weights_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
         log.info(f"updated_keyword_weights count={len(weights)}")

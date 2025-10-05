@@ -606,7 +606,11 @@ def fetch_pr_feeds() -> List[Dict]:
     # Added for high-frequency news, earnings, and analyst events
     if os.environ.get("PYTEST_CURRENT_TEST") is None:
         try:
-            from .finnhub_feeds import is_finnhub_enabled, fetch_finnhub_news, fetch_finnhub_earnings_calendar
+            from .finnhub_feeds import (
+                fetch_finnhub_earnings_calendar,
+                fetch_finnhub_news,
+                is_finnhub_enabled,
+            )
 
             if is_finnhub_enabled():
                 st = time.time()
@@ -617,8 +621,10 @@ def fetch_pr_feeds() -> List[Dict]:
                 _seen_links = {i.get("link") for i in all_items if i.get("link")}
 
                 finnhub_unique = [
-                    it for it in (finnhub_news + finnhub_earnings)
-                    if (it.get("id") not in _seen_ids) and (it.get("link") not in _seen_links)
+                    it
+                    for it in (finnhub_news + finnhub_earnings)
+                    if (it.get("id") not in _seen_ids)
+                    and (it.get("link") not in _seen_links)
                 ]
 
                 all_items.extend(finnhub_unique)
@@ -631,13 +637,22 @@ def fetch_pr_feeds() -> List[Dict]:
                     "entries": len(finnhub_unique),
                     "t_ms": round((time.time() - st) * 1000.0, 1),
                 }
-                log.info("finnhub_feeds_added news=%d earnings=%d unique=%d",
-                        len(finnhub_news), len(finnhub_earnings), len(finnhub_unique))
+                log.info(
+                    "finnhub_feeds_added news=%d earnings=%d unique=%d",
+                    len(finnhub_news),
+                    len(finnhub_earnings),
+                    len(finnhub_unique),
+                )
         except Exception as e:
             log.warning("finnhub_feeds_error err=%s", str(e.__class__.__name__))
             summary["by_source"]["finnhub"] = {
-                "ok": 0, "http4": 0, "http5": 0, "errors": 1,
-                "entries_raw": 0, "entries": 0, "t_ms": 0.0
+                "ok": 0,
+                "http4": 0,
+                "http5": 0,
+                "errors": 1,
+                "entries_raw": 0,
+                "entries": 0,
+                "t_ms": 0.0,
             }
 
     # ---------------- Finviz Elite: news_export.ashx (opt-in) ----------------

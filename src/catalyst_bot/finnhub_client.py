@@ -26,9 +26,12 @@ try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("finnhub_client")
+
 
 log = get_logger("finnhub_client")
 
@@ -62,7 +65,9 @@ class FinnhubClient:
             time.sleep(sleep_time)
         self._last_request_time = time.time()
 
-    def _request(self, endpoint: str, params: Dict[str, Any] = None) -> Optional[Dict | List]:
+    def _request(
+        self, endpoint: str, params: Dict[str, Any] = None
+    ) -> Optional[Dict | List]:
         """Make authenticated request to Finnhub API.
 
         Parameters
@@ -92,7 +97,9 @@ class FinnhubClient:
                 return None
 
             if resp.status_code != 200:
-                log.warning("finnhub_error status=%d endpoint=%s", resp.status_code, endpoint)
+                log.warning(
+                    "finnhub_error status=%d endpoint=%s", resp.status_code, endpoint
+                )
                 return None
 
             data = resp.json()
@@ -105,7 +112,11 @@ class FinnhubClient:
             log.warning("finnhub_timeout endpoint=%s", endpoint)
             return None
         except Exception as e:
-            log.warning("finnhub_exception endpoint=%s err=%s", endpoint, str(e.__class__.__name__))
+            log.warning(
+                "finnhub_exception endpoint=%s err=%s",
+                endpoint,
+                str(e.__class__.__name__),
+            )
             return None
 
     # -------------------------------------------------------------------------
@@ -113,10 +124,7 @@ class FinnhubClient:
     # -------------------------------------------------------------------------
 
     def get_company_news(
-        self,
-        ticker: str,
-        from_date: str = None,
-        to_date: str = None
+        self, ticker: str, from_date: str = None, to_date: str = None
     ) -> List[Dict[str, Any]]:
         """Get company-specific news articles.
 
@@ -136,15 +144,16 @@ class FinnhubClient:
             related, source, summary, url
         """
         if not from_date:
-            from_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+            from_date = (datetime.now(timezone.utc) - timedelta(days=7)).strftime(
+                "%Y-%m-%d"
+            )
         if not to_date:
             to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        data = self._request("/company-news", {
-            "symbol": ticker.upper(),
-            "from": from_date,
-            "to": to_date
-        })
+        data = self._request(
+            "/company-news",
+            {"symbol": ticker.upper(), "from": from_date, "to": to_date},
+        )
 
         return data if isinstance(data, list) else []
 
@@ -185,10 +194,7 @@ class FinnhubClient:
     # -------------------------------------------------------------------------
 
     def get_earnings_calendar(
-        self,
-        from_date: str = None,
-        to_date: str = None,
-        ticker: str = None
+        self, from_date: str = None, to_date: str = None, ticker: str = None
     ) -> List[Dict[str, Any]]:
         """Get earnings calendar.
 
@@ -210,7 +216,9 @@ class FinnhubClient:
         if not from_date:
             from_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if not to_date:
-            to_date = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d")
+            to_date = (datetime.now(timezone.utc) + timedelta(days=7)).strftime(
+                "%Y-%m-%d"
+            )
 
         params = {"from": from_date, "to": to_date}
         if ticker:
@@ -299,10 +307,7 @@ class FinnhubClient:
     # -------------------------------------------------------------------------
 
     def get_insider_transactions(
-        self,
-        ticker: str,
-        from_date: str = None,
-        to_date: str = None
+        self, ticker: str, from_date: str = None, to_date: str = None
     ) -> List[Dict[str, Any]]:
         """Get insider transactions.
 
@@ -322,15 +327,16 @@ class FinnhubClient:
             symbol, transactionCode, transactionDate, transactionPrice
         """
         if not from_date:
-            from_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+            from_date = (datetime.now(timezone.utc) - timedelta(days=30)).strftime(
+                "%Y-%m-%d"
+            )
         if not to_date:
             to_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        data = self._request("/stock/insider-transactions", {
-            "symbol": ticker.upper(),
-            "from": from_date,
-            "to": to_date
-        })
+        data = self._request(
+            "/stock/insider-transactions",
+            {"symbol": ticker.upper(), "from": from_date, "to": to_date},
+        )
 
         if isinstance(data, dict) and "data" in data:
             return data["data"]
@@ -383,6 +389,7 @@ class FinnhubClient:
 # Convenience Functions
 # -------------------------------------------------------------------------
 
+
 def get_finnhub_client() -> Optional[FinnhubClient]:
     """Get a configured Finnhub client.
 
@@ -417,12 +424,16 @@ if __name__ == "__main__":
     print("\n--- Earnings Calendar (next 7 days) ---")
     earnings = client.get_earnings_calendar()
     for event in earnings[:5]:
-        print(f"  {event.get('date')} {event.get('symbol')}: EPS est {event.get('epsEstimate')}")
+        print(
+            f"  {event.get('date')} {event.get('symbol')}: EPS est {event.get('epsEstimate')}"
+        )
 
     # Test upgrades/downgrades
     print("\n--- Analyst Upgrades/Downgrades (AAPL) ---")
     upgrades = client.get_upgrades_downgrades("AAPL")
     for event in upgrades[:3]:
-        print(f"  {event.get('gradeTime')}: {event.get('fromGrade')} → {event.get('toGrade')}")
+        print(
+            f"  {event.get('gradeTime')}: {event.get('fromGrade')} → {event.get('toGrade')}"
+        )
 
     print("\nAll tests passed!")

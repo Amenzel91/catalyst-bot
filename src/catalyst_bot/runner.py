@@ -59,17 +59,23 @@ except ImportError as e:
 from datetime import datetime, timezone
 
 from . import alerts as _alerts  # used to post log digests as embeds
+from .admin_reporter import send_admin_report_if_scheduled  # Nightly admin reports
 from .alerts import send_alert_safe
 from .analyzer import run_analyzer_once_if_scheduled
 from .auto_analyzer import run_scheduled_tasks  # Wave‑4 auto analyzer
+from .breakout_feedback import (  # Real-time outcome tracking
+    register_alert_for_tracking,
+    track_pending_outcomes,
+)
 from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .config_extras import LOG_REPORT_CATEGORIES
+from .health_endpoint import start_health_server, update_health_status
 from .log_reporter import deliver_report
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
 from .seen_store import should_filter  # persistent seen store for cross-run dedupe
-from .health_endpoint import start_health_server, update_health_status
+from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
 
 try:
     import yfinance as yf  # type: ignore
@@ -101,8 +107,15 @@ TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts":
 def _sig_handler(signum, frame):
     """Graceful shutdown handler for SIGINT/SIGTERM signals."""
     global STOP
-    sig_name = signal.Signals(signum).name if hasattr(signal, 'Signals') else f"signal_{signum}"
-    print(f"\n[SHUTDOWN] Received {sig_name}, initiating graceful shutdown...", file=sys.stderr)
+    sig_name = (
+        signal.Signals(signum).name
+        if hasattr(signal, "Signals")
+        else f"signal_{signum}"
+    )
+    print(
+        f"\n[SHUTDOWN] Received {sig_name}, initiating graceful shutdown...",
+        file=sys.stderr,
+    )
     STOP = True
 
     # Log shutdown to file if logger is available
@@ -994,6 +1007,27 @@ def _cycle(log, settings) -> None:
                 # ignore promotion errors
                 pass
 
+            # Register alert for breakout feedback tracking
+            try:
+                if not settings.feature_record_only:
+                    # Extract keywords from classification
+                    keywords = scored.keywords if hasattr(scored, "keywords") else []
+                    confidence = (
+                        scored.confidence if hasattr(scored, "confidence") else 0.5
+                    )
+
+                    register_alert_for_tracking(
+                        ticker=ticker,
+                        entry_price=last_px,
+                        entry_volume=None,  # Volume not readily available here
+                        timestamp=datetime.now(timezone.utc),
+                        keywords=keywords,
+                        confidence=confidence,
+                    )
+            except Exception as e:
+                # Don't fail the alert if tracking registration fails
+                log.debug(f"feedback_registration_failed ticker={ticker} err={e}")
+
             # Optional: subscribe to Alpaca stream after sending an alert.  Run
             # asynchronously so we do not block the runner loop.  The feature
             # requires FEATURE_ALPACA_STREAM=1, valid credentials and a non‑zero
@@ -1171,6 +1205,24 @@ def _cycle(log, settings) -> None:
             analyze_fn=_analyze_wrapper,
             report_fn=_report_wrapper,
         )
+
+        # Check if it's time to send nightly admin report
+        try:
+            send_admin_report_if_scheduled()
+        except Exception as e:
+            log.warning("admin_report_check_failed err=%s", str(e))
+
+        # Check if it's time to send weekly performance report
+        try:
+            send_weekly_report_if_scheduled()
+        except Exception as e:
+            log.warning("weekly_report_check_failed err=%s", str(e))
+
+        # Track pending alert outcomes (15m, 1h, 4h, 1d)
+        try:
+            track_pending_outcomes()
+        except Exception as e:
+            log.warning("outcome_tracking_failed err=%s", str(e))
     except Exception:
         # Ignore auto analyzer errors to keep the main loop alive
         pass
@@ -1226,7 +1278,12 @@ def runner_main(
         pass  # Windows quirks shouldn't crash startup
 
     # Start health check server if enabled
-    if os.getenv("FEATURE_HEALTH_ENDPOINT", "1").strip().lower() in ("1", "true", "yes", "on"):
+    if os.getenv("FEATURE_HEALTH_ENDPOINT", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         try:
             health_port = int(os.getenv("HEALTH_CHECK_PORT", "8080"))
             start_health_server(port=health_port)
@@ -1288,7 +1345,7 @@ def runner_main(
                 status="healthy",
                 last_cycle_time=datetime.now(timezone.utc),
                 total_cycles=TOTAL_STATS.get("items", 0),
-                total_alerts=TOTAL_STATS.get("alerts", 0)
+                total_alerts=TOTAL_STATS.get("alerts", 0),
             )
         except Exception:
             pass

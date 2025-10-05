@@ -18,9 +18,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import date as date_cls
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .backtest.metrics import BacktestSummary, summarize_returns
 from .backtest.simulator import simulate_trades
@@ -36,6 +37,7 @@ log = get_logger("admin_controls")
 @dataclass
 class ParameterRecommendation:
     """Represents a recommended parameter change."""
+
     name: str
     current_value: float | str
     proposed_value: float | str
@@ -46,6 +48,7 @@ class ParameterRecommendation:
 @dataclass
 class KeywordPerformance:
     """Performance metrics for a keyword category."""
+
     category: str
     hits: int
     misses: int
@@ -59,6 +62,7 @@ class KeywordPerformance:
 @dataclass
 class AdminReport:
     """Complete admin report with all metrics and recommendations."""
+
     date: date_cls
     backtest_summary: BacktestSummary
     keyword_performance: List[KeywordPerformance]
@@ -81,30 +85,32 @@ def _get_current_parameters() -> Dict[str, Any]:
         # Sentiment thresholds
         "MIN_SCORE": float(os.getenv("MIN_SCORE", "0") or 0),
         "MIN_SENT_ABS": float(os.getenv("MIN_SENT_ABS", "0") or 0),
-
         # Alert rate limits
         "ALERTS_MIN_INTERVAL_MS": int(os.getenv("ALERTS_MIN_INTERVAL_MS", "300")),
         "MAX_ALERTS_PER_CYCLE": int(os.getenv("MAX_ALERTS_PER_CYCLE", "40")),
-
         # Price filters
         "PRICE_CEILING": float(os.getenv("PRICE_CEILING", "10")),
         "PRICE_FLOOR": float(os.getenv("PRICE_FLOOR", "0.1")),
-
         # Analyzer thresholds
-        "ANALYZER_HIT_UP_THRESHOLD_PCT": float(os.getenv("ANALYZER_HIT_UP_THRESHOLD_PCT", "5")),
-        "ANALYZER_HIT_DOWN_THRESHOLD_PCT": float(os.getenv("ANALYZER_HIT_DOWN_THRESHOLD_PCT", "-5")),
-
+        "ANALYZER_HIT_UP_THRESHOLD_PCT": float(
+            os.getenv("ANALYZER_HIT_UP_THRESHOLD_PCT", "5")
+        ),
+        "ANALYZER_HIT_DOWN_THRESHOLD_PCT": float(
+            os.getenv("ANALYZER_HIT_DOWN_THRESHOLD_PCT", "-5")
+        ),
         # Confidence tiers
         "CONFIDENCE_HIGH": float(os.getenv("CONFIDENCE_HIGH", "0.8")),
         "CONFIDENCE_MODERATE": float(os.getenv("CONFIDENCE_MODERATE", "0.6")),
-
         # Sentiment component weights
         "SENTIMENT_WEIGHT_LOCAL": float(os.getenv("SENTIMENT_WEIGHT_LOCAL", "0.4")),
         "SENTIMENT_WEIGHT_EXT": float(os.getenv("SENTIMENT_WEIGHT_EXT", "0.3")),
         "SENTIMENT_WEIGHT_SEC": float(os.getenv("SENTIMENT_WEIGHT_SEC", "0.2")),
-        "SENTIMENT_WEIGHT_ANALYST": float(os.getenv("SENTIMENT_WEIGHT_ANALYST", "0.05")),
-        "SENTIMENT_WEIGHT_EARNINGS": float(os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.05")),
-
+        "SENTIMENT_WEIGHT_ANALYST": float(
+            os.getenv("SENTIMENT_WEIGHT_ANALYST", "0.05")
+        ),
+        "SENTIMENT_WEIGHT_EARNINGS": float(
+            os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.05")
+        ),
         # Breakout scanner
         "BREAKOUT_MIN_AVG_VOL": int(os.getenv("BREAKOUT_MIN_AVG_VOL", "300000")),
         "BREAKOUT_MIN_RELVOL": float(os.getenv("BREAKOUT_MIN_RELVOL", "1.5")),
@@ -179,22 +185,31 @@ def _compute_backtest_summary(events: List[Dict[str, Any]]) -> BacktestSummary:
             if last is None:
                 continue
 
-            trades.append({
-                "symbol": ticker,
-                "entry_price": float(entry_price),
-                "exit_price": float(last),
-                "quantity": 1.0,
-                "direction": "long",
-            })
+            trades.append(
+                {
+                    "symbol": ticker,
+                    "entry_price": float(entry_price),
+                    "exit_price": float(last),
+                    "quantity": 1.0,
+                    "direction": "long",
+                }
+            )
         except Exception:
             continue
 
     # Run backtest simulation
     if not trades:
         return BacktestSummary(
-            n=0, hits=0, hit_rate=0.0, avg_return=0.0,
-            max_drawdown=0.0, sharpe=0.0, sortino=0.0,
-            profit_factor=0.0, avg_win_loss=0.0, trade_count=0
+            n=0,
+            hits=0,
+            hit_rate=0.0,
+            avg_return=0.0,
+            max_drawdown=0.0,
+            sharpe=0.0,
+            sortino=0.0,
+            profit_factor=0.0,
+            avg_win_loss=0.0,
+            trade_count=0,
         )
 
     commission = float(os.getenv("BACKTEST_COMMISSION", "0.0") or 0.0)
@@ -207,8 +222,7 @@ def _compute_backtest_summary(events: List[Dict[str, Any]]) -> BacktestSummary:
         log.warning(f"backtest_simulation_failed err={e}")
         # Fallback: manual summary
         returns = [
-            (t["exit_price"] - t["entry_price"]) / t["entry_price"]
-            for t in trades
+            (t["exit_price"] - t["entry_price"]) / t["entry_price"] for t in trades
         ]
         return summarize_returns(returns)
 
@@ -217,8 +231,7 @@ def _compute_backtest_summary(events: List[Dict[str, Any]]) -> BacktestSummary:
 
 
 def _analyze_keyword_performance(
-    events: List[Dict[str, Any]],
-    current_weights: Dict[str, float]
+    events: List[Dict[str, Any]], current_weights: Dict[str, float]
 ) -> List[KeywordPerformance]:
     """Analyze performance of each keyword category."""
     from .config import get_settings
@@ -305,16 +318,18 @@ def _analyze_keyword_performance(
         else:
             proposed_weight = current_weight
 
-        performances.append(KeywordPerformance(
-            category=cat,
-            hits=hits,
-            misses=misses,
-            neutrals=neutrals,
-            hit_rate=hit_rate,
-            avg_return=avg_return,
-            current_weight=current_weight,
-            proposed_weight=round(proposed_weight, 2)
-        ))
+        performances.append(
+            KeywordPerformance(
+                category=cat,
+                hits=hits,
+                misses=misses,
+                neutrals=neutrals,
+                hit_rate=hit_rate,
+                avg_return=avg_return,
+                current_weight=current_weight,
+                proposed_weight=round(proposed_weight, 2),
+            )
+        )
 
     # Sort by hit_rate descending
     performances.sort(key=lambda x: x.hit_rate, reverse=True)
@@ -324,72 +339,259 @@ def _analyze_keyword_performance(
 # ======================== Parameter Recommendations ========================
 
 
+def _load_historical_trends(days: int = 7) -> Dict[str, Any]:
+    """
+    Load historical performance trends from past reports.
+
+    Parameters
+    ----------
+    days : int
+        Number of days to look back
+
+    Returns
+    -------
+    dict
+        Historical trends including avg hit rate, avg return, trending keywords
+    """
+    try:
+        report_dir = Path("out/admin_reports")
+        if not report_dir.exists():
+            return {}
+
+        # Load past N days of reports
+        reports = []
+        today = datetime.now(timezone.utc).date()
+
+        for days_back in range(1, days + 1):
+            past_date = today - timedelta(days=days_back)
+            past_path = report_dir / f"report_{past_date.isoformat()}.json"
+
+            if past_path.exists():
+                try:
+                    data = json.loads(past_path.read_text(encoding="utf-8"))
+                    reports.append(data)
+                except Exception:
+                    continue
+
+        if not reports:
+            return {}
+
+        # Calculate trending metrics
+        hit_rates = [
+            r["backtest"]["hit_rate"] for r in reports if r["backtest"]["n"] > 0
+        ]
+        avg_returns = [
+            r["backtest"]["avg_return"] for r in reports if r["backtest"]["n"] > 0
+        ]
+
+        # Analyze keyword trends
+        keyword_trends = {}
+        for report in reports:
+            for kp in report.get("keyword_performance", []):
+                cat = kp["category"]
+                if cat not in keyword_trends:
+                    keyword_trends[cat] = []
+                keyword_trends[cat].append(kp["hit_rate"])
+
+        # Calculate trend directions (improving/declining)
+        trending_up_keywords = []
+        trending_down_keywords = []
+
+        for cat, rates in keyword_trends.items():
+            if len(rates) >= 3:
+                # Compare recent average vs earlier average
+                recent_avg = sum(rates[:3]) / 3
+                earlier_avg = sum(rates[-3:]) / 3
+
+                if recent_avg > earlier_avg + 0.1:  # 10% improvement
+                    trending_up_keywords.append(cat)
+                elif recent_avg < earlier_avg - 0.1:  # 10% decline
+                    trending_down_keywords.append(cat)
+
+        return {
+            "avg_hit_rate": sum(hit_rates) / len(hit_rates) if hit_rates else 0,
+            "avg_return": sum(avg_returns) / len(avg_returns) if avg_returns else 0,
+            "hit_rate_trend": (
+                "improving"
+                if len(hit_rates) >= 2 and hit_rates[0] > hit_rates[-1]
+                else "declining" if len(hit_rates) >= 2 else "stable"
+            ),
+            "trending_up_keywords": trending_up_keywords,
+            "trending_down_keywords": trending_down_keywords,
+            "report_count": len(reports),
+        }
+
+    except Exception as e:
+        log.warning(f"historical_trends_load_failed err={e}")
+        return {}
+
+
 def _generate_parameter_recommendations(
     backtest: BacktestSummary,
     keyword_perf: List[KeywordPerformance],
-    current_params: Dict[str, Any]
+    current_params: Dict[str, Any],
+    include_feedback: bool = True,
 ) -> List[ParameterRecommendation]:
-    """Generate recommended parameter adjustments based on performance."""
+    """Generate recommended parameter adjustments based on performance and historical trends."""
     recommendations = []
 
-    # 1. Adjust MIN_SCORE based on hit rate
+    # Load historical performance trends (past 7 days)
+    historical_trends = _load_historical_trends(days=7)
+
+    # 1. Adjust MIN_SCORE based on hit rate and historical trend
     if backtest.hit_rate < 0.5 and backtest.n > 10:
-        # Low hit rate: increase minimum score to be more selective
-        current_min_score = current_params.get("MIN_SCORE", 0)
-        if current_min_score < 0.3:
-            recommendations.append(ParameterRecommendation(
-                name="MIN_SCORE",
-                current_value=current_min_score,
-                proposed_value=0.3,
-                reason=f"Hit rate is low ({backtest.hit_rate:.1%}). Increase selectivity.",
-                impact="high"
-            ))
+        # Check if declining trend persists
+        trend = historical_trends.get("hit_rate_trend", "stable")
+        avg_historical = historical_trends.get("avg_hit_rate", 0.5)
+
+        # Only recommend if trend is declining or below historical average
+        if trend == "declining" or backtest.hit_rate < avg_historical - 0.1:
+            current_min_score = current_params.get("MIN_SCORE", 0)
+            if current_min_score < 0.3:
+                reason = f"Hit rate is low ({backtest.hit_rate:.1%})"
+                if trend == "declining":
+                    reason += f" and declining over {historical_trends.get('report_count', 0)} days"
+                reason += ". Increase selectivity."
+
+                recommendations.append(
+                    ParameterRecommendation(
+                        name="MIN_SCORE",
+                        current_value=current_min_score,
+                        proposed_value=0.3,
+                        reason=reason,
+                        impact="high",
+                    )
+                )
 
     # 2. Adjust PRICE_CEILING based on avg return
     if backtest.avg_return < 0 and backtest.n > 10:
         # Negative returns: consider lowering price ceiling
         current_ceiling = current_params.get("PRICE_CEILING", 10)
         if current_ceiling > 5:
-            recommendations.append(ParameterRecommendation(
-                name="PRICE_CEILING",
-                current_value=current_ceiling,
-                proposed_value=5.0,
-                reason=f"Avg return is negative ({backtest.avg_return:.2%}). Focus on lower-priced stocks.",
-                impact="medium"
-            ))
+            recommendations.append(
+                ParameterRecommendation(
+                    name="PRICE_CEILING",
+                    current_value=current_ceiling,
+                    proposed_value=5.0,
+                    reason=(
+                        f"Avg return is negative ({backtest.avg_return:.2%}). "
+                        f"Focus on lower-priced stocks."
+                    ),
+                    impact="medium",
+                )
+            )
 
     # 3. Adjust analyzer thresholds based on volatility
     if backtest.max_drawdown > 0.15:  # > 15% drawdown
         current_threshold = current_params.get("ANALYZER_HIT_UP_THRESHOLD_PCT", 5)
-        recommendations.append(ParameterRecommendation(
-            name="ANALYZER_HIT_UP_THRESHOLD_PCT",
-            current_value=current_threshold,
-            proposed_value=7.0,
-            reason=f"High volatility detected (max DD: {backtest.max_drawdown:.1%}). Raise hit threshold.",
-            impact="medium"
-        ))
+        recommendations.append(
+            ParameterRecommendation(
+                name="ANALYZER_HIT_UP_THRESHOLD_PCT",
+                current_value=current_threshold,
+                proposed_value=7.0,
+                reason=(
+                    f"High volatility detected (max DD: {backtest.max_drawdown:.1%}). "
+                    f"Raise hit threshold."
+                ),
+                impact="medium",
+            )
+        )
 
     # 4. Adjust confidence thresholds based on Sharpe ratio
     if backtest.sharpe < 0.5 and backtest.n > 10:
         current_high = current_params.get("CONFIDENCE_HIGH", 0.8)
-        recommendations.append(ParameterRecommendation(
-            name="CONFIDENCE_HIGH",
-            current_value=current_high,
-            proposed_value=0.85,
-            reason=f"Low Sharpe ratio ({backtest.sharpe:.2f}). Be more conservative with 'Strong Alerts'.",
-            impact="high"
-        ))
+        recommendations.append(
+            ParameterRecommendation(
+                name="CONFIDENCE_HIGH",
+                current_value=current_high,
+                proposed_value=0.85,
+                reason=(
+                    f"Low Sharpe ratio ({backtest.sharpe:.2f}). "
+                    f"Be more conservative with 'Strong Alerts'."
+                ),
+                impact="high",
+            )
+        )
 
-    # 5. Keyword weight recommendations (top 3 changes)
-    for kp in keyword_perf[:3]:
+    # 5. Keyword weight recommendations with trend analysis
+    trending_up = historical_trends.get("trending_up_keywords", [])
+    trending_down = historical_trends.get("trending_down_keywords", [])
+
+    for kp in keyword_perf[:5]:  # Consider top 5 instead of 3
         if abs(kp.proposed_weight - kp.current_weight) > 0.1:
-            recommendations.append(ParameterRecommendation(
-                name=f"KEYWORD_WEIGHT_{kp.category.upper()}",
-                current_value=kp.current_weight,
-                proposed_value=kp.proposed_weight,
-                reason=f"{kp.category}: {kp.hit_rate:.1%} hit rate, {kp.avg_return:+.1f}% avg return",
-                impact="medium" if kp.hits + kp.misses > 5 else "low"
-            ))
+            # Build reason with trend context
+            reason = f"{kp.category}: {kp.hit_rate:.1%} hit rate, {kp.avg_return:+.1f}% avg return"
+
+            # Add trending context
+            impact = "medium" if kp.hits + kp.misses > 5 else "low"
+            if kp.category in trending_up:
+                reason += " (trending up over past week)"
+                impact = "high"  # Upgrade impact for trending keywords
+            elif kp.category in trending_down:
+                reason += " (declining trend)"
+                impact = "high"  # Upgrade impact for declining trends
+
+            recommendations.append(
+                ParameterRecommendation(
+                    name=f"KEYWORD_WEIGHT_{kp.category.upper()}",
+                    current_value=kp.current_weight,
+                    proposed_value=kp.proposed_weight,
+                    reason=reason,
+                    impact=impact,
+                )
+            )
+
+    # 6. Real-time feedback-based keyword recommendations
+    if include_feedback:
+        try:
+            from .breakout_feedback import (
+                get_keyword_performance_stats,
+                suggest_keyword_weight_adjustments,
+            )
+
+            feedback_stats = get_keyword_performance_stats(
+                lookback_days=7, min_sample_size=5
+            )
+            feedback_suggestions = suggest_keyword_weight_adjustments(feedback_stats)
+
+            # Merge feedback suggestions with existing recommendations
+            for suggestion in feedback_suggestions:
+                keyword = suggestion["keyword"]
+                action = suggestion["action"]
+
+                # Check if we already have a recommendation for this keyword
+                existing = next(
+                    (
+                        r
+                        for r in recommendations
+                        if r.name == f"KEYWORD_WEIGHT_{keyword.upper()}"
+                    ),
+                    None,
+                )
+
+                if not existing:
+                    # Add new recommendation based on feedback
+                    # Default weight is 1.0, adjust by ±0.15 based on feedback
+                    current_weight = current_params.get(
+                        f"KEYWORD_WEIGHT_{keyword.upper()}", 1.0
+                    )
+                    proposed_weight = (
+                        current_weight + 0.15
+                        if action == "increase"
+                        else current_weight - 0.15
+                    )
+
+                    recommendations.append(
+                        ParameterRecommendation(
+                            name=f"KEYWORD_WEIGHT_{keyword.upper()}",
+                            current_value=current_weight,
+                            proposed_value=round(proposed_weight, 2),
+                            reason=f"[Real-time feedback] {suggestion['reason']}",
+                            impact=suggestion.get("impact", "medium"),
+                        )
+                    )
+        except Exception as e:
+            log.debug(f"feedback_recommendations_failed err={e}")
 
     return recommendations
 
@@ -417,7 +619,9 @@ def generate_admin_report(target_date: Optional[date_cls] = None) -> AdminReport
     )
 
     # Calculate total P&L (simulated)
-    total_revenue = backtest_summary.avg_return * backtest_summary.n * 100  # Assume $100 per trade
+    total_revenue = (
+        backtest_summary.avg_return * backtest_summary.n * 100
+    )  # Assume $100 per trade
 
     return AdminReport(
         date=target_date,
@@ -425,7 +629,7 @@ def generate_admin_report(target_date: Optional[date_cls] = None) -> AdminReport
         keyword_performance=keyword_performance,
         parameter_recommendations=recommendations,
         total_alerts=len(events),
-        total_revenue=total_revenue
+        total_revenue=total_revenue,
     )
 
 
@@ -465,8 +669,12 @@ def _get_performance_comparisons(current_date: date_cls) -> Optional[Dict[str, f
             with open(yesterday_path, "r") as f:
                 yesterday_report = json.load(f)
                 yesterday_data = {
-                    "yesterday_hit_rate": yesterday_report["backtest"].get("hit_rate", 0),
-                    "yesterday_avg_return": yesterday_report["backtest"].get("avg_return", 0)
+                    "yesterday_hit_rate": yesterday_report["backtest"].get(
+                        "hit_rate", 0
+                    ),
+                    "yesterday_avg_return": yesterday_report["backtest"].get(
+                        "avg_return", 0
+                    ),
                 }
 
         # Calculate average from past 30 days
@@ -481,18 +689,22 @@ def _get_performance_comparisons(current_date: date_cls) -> Optional[Dict[str, f
                         past_report = json.load(f)
                         bt = past_report.get("backtest", {})
                         if bt.get("n", 0) > 0:  # Only include days with trades
-                            all_reports.append({
-                                "hit_rate": bt.get("hit_rate", 0),
-                                "avg_return": bt.get("avg_return", 0)
-                            })
+                            all_reports.append(
+                                {
+                                    "hit_rate": bt.get("hit_rate", 0),
+                                    "avg_return": bt.get("avg_return", 0),
+                                }
+                            )
                 except Exception:
                     continue
 
         avg_data = None
         if all_reports:
             avg_data = {
-                "avg_hit_rate": sum(r["hit_rate"] for r in all_reports) / len(all_reports),
-                "avg_avg_return": sum(r["avg_return"] for r in all_reports) / len(all_reports)
+                "avg_hit_rate": sum(r["hit_rate"] for r in all_reports)
+                / len(all_reports),
+                "avg_avg_return": sum(r["avg_return"] for r in all_reports)
+                / len(all_reports),
             }
 
         # Combine results
@@ -545,10 +757,7 @@ def build_admin_embed(report: AdminReport) -> Dict[str, Any]:
     description = "\n".join(description_parts) if description_parts else None
 
     # Build performance field with comparisons
-    perf_value = (
-        f"**Total Alerts:** {report.total_alerts}\n"
-        f"**Trades:** {bt.n}\n"
-    )
+    perf_value = f"**Total Alerts:** {report.total_alerts}\n" f"**Trades:** {bt.n}\n"
 
     # Win rate with comparison
     if comparisons and comparisons.get("yesterday_hit_rate") is not None:
@@ -582,11 +791,7 @@ def build_admin_embed(report: AdminReport) -> Dict[str, Any]:
 
     # Build fields
     fields = [
-        {
-            "name": "📊 Daily Performance",
-            "value": perf_value,
-            "inline": False
-        },
+        {"name": "📊 Daily Performance", "value": perf_value, "inline": False},
         {
             "name": "📈 Risk Metrics",
             "value": (
@@ -595,51 +800,65 @@ def build_admin_embed(report: AdminReport) -> Dict[str, Any]:
                 f"**Sortino Ratio:** {bt.sortino:.2f}\n"
                 f"**Profit Factor:** {bt.profit_factor:.2f}"
             ),
-            "inline": True
-        }
+            "inline": True,
+        },
     ]
 
     # Add top keyword performers
     if report.keyword_performance:
         top_keywords = report.keyword_performance[:3]
-        kw_text = "\n".join([
-            f"**{kp.category}:** {kp.hit_rate:.1%} ({kp.hits}/{kp.hits+kp.misses+kp.neutrals})"
-            for kp in top_keywords
-        ])
-        fields.append({
-            "name": "🏆 Top Keywords",
-            "value": kw_text or "No data",
-            "inline": True
-        })
+        kw_text = "\n".join(
+            [
+                f"**{kp.category}:** {kp.hit_rate:.1%} ({kp.hits}/{kp.hits+kp.misses+kp.neutrals})"
+                for kp in top_keywords
+            ]
+        )
+        fields.append(
+            {"name": "🏆 Top Keywords", "value": kw_text or "No data", "inline": True}
+        )
 
     # Add top 1-2 recommendations preview
     if report.parameter_recommendations:
-        high_impact = [r for r in report.parameter_recommendations if r.impact == "high"]
         top_recs = report.parameter_recommendations[:2]  # Top 2 recommendations
 
         rec_text = ""
         for rec in top_recs:
-            impact_emoji = "🔴" if rec.impact == "high" else "🟡" if rec.impact == "medium" else "🟢"
-            rec_text += f"{impact_emoji} **{rec.name}:** {rec.current_value} → {rec.proposed_value}\n"
+            impact_emoji = (
+                "🔴"
+                if rec.impact == "high"
+                else "🟡" if rec.impact == "medium" else "🟢"
+            )
+            rec_text += (
+                f"{impact_emoji} **{rec.name}:** "
+                f"{rec.current_value} → {rec.proposed_value}\n"
+            )
             rec_text += f"  ↳ {rec.reason}\n"
 
         if len(report.parameter_recommendations) > 2:
-            rec_text += f"\n_+{len(report.parameter_recommendations) - 2} more (click View Details)_"
+            rec_text += (
+                f"\n_+{len(report.parameter_recommendations) - 2} "
+                f"more (click View Details)_"
+            )
 
-        fields.append({
-            "name": "⚙️ Top Recommendations",
-            "value": rec_text.strip(),
-            "inline": False
-        })
+        fields.append(
+            {
+                "name": "⚙️ Top Recommendations",
+                "value": rec_text.strip(),
+                "inline": False,
+            }
+        )
 
     embed = {
         "title": f"🤖 Nightly Admin Report – {report.date}",
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"Click buttons below to review and apply changes • Today at {datetime.now(timezone.utc).strftime('%H:%M')} UTC"
+            "text": (
+                f"Click buttons below to review and apply changes • "
+                f"Today at {datetime.now(timezone.utc).strftime('%H:%M')} UTC"
+            )
         },
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     if description:
@@ -659,30 +878,30 @@ def build_admin_components(report_id: str) -> List[Dict[str, Any]]:
                     "style": 1,  # Primary (blurple)
                     "label": "View Details",
                     "custom_id": f"admin_details_{report_id}",
-                    "emoji": {"name": "📊"}
+                    "emoji": {"name": "📊"},
                 },
                 {
                     "type": 2,
                     "style": 3,  # Success (green)
                     "label": "Approve Changes",
                     "custom_id": f"admin_approve_{report_id}",
-                    "emoji": {"name": "✅"}
+                    "emoji": {"name": "✅"},
                 },
                 {
                     "type": 2,
                     "style": 4,  # Danger (red)
                     "label": "Reject Changes",
                     "custom_id": f"admin_reject_{report_id}",
-                    "emoji": {"name": "❌"}
+                    "emoji": {"name": "❌"},
                 },
                 {
                     "type": 2,
                     "style": 2,  # Secondary (gray)
                     "label": "Custom Adjust",
                     "custom_id": f"admin_custom_{report_id}",
-                    "emoji": {"name": "⚙️"}
-                }
-            ]
+                    "emoji": {"name": "⚙️"},
+                },
+            ],
         }
     ]
 
@@ -710,7 +929,7 @@ def save_admin_report(report: AdminReport) -> Path:
             "sortino": report.backtest_summary.sortino,
             "profit_factor": report.backtest_summary.profit_factor,
             "avg_win_loss": report.backtest_summary.avg_win_loss,
-            "trade_count": report.backtest_summary.trade_count
+            "trade_count": report.backtest_summary.trade_count,
         },
         "keyword_performance": [
             {
@@ -721,7 +940,7 @@ def save_admin_report(report: AdminReport) -> Path:
                 "hit_rate": kp.hit_rate,
                 "avg_return": kp.avg_return,
                 "current_weight": kp.current_weight,
-                "proposed_weight": kp.proposed_weight
+                "proposed_weight": kp.proposed_weight,
             }
             for kp in report.keyword_performance
         ],
@@ -731,12 +950,12 @@ def save_admin_report(report: AdminReport) -> Path:
                 "current_value": rec.current_value,
                 "proposed_value": rec.proposed_value,
                 "reason": rec.reason,
-                "impact": rec.impact
+                "impact": rec.impact,
             }
             for rec in report.parameter_recommendations
         ],
         "total_alerts": report.total_alerts,
-        "total_revenue": report.total_revenue
+        "total_revenue": report.total_revenue,
     }
 
     report_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -765,17 +984,15 @@ def load_admin_report(report_id: str) -> Optional[AdminReport]:
             sortino=data["backtest"]["sortino"],
             profit_factor=data["backtest"]["profit_factor"],
             avg_win_loss=data["backtest"].get("avg_win_loss", 0.0),
-            trade_count=data["backtest"].get("trade_count", data["backtest"]["n"])
+            trade_count=data["backtest"].get("trade_count", data["backtest"]["n"]),
         )
 
         keyword_performance = [
-            KeywordPerformance(**kp)
-            for kp in data["keyword_performance"]
+            KeywordPerformance(**kp) for kp in data["keyword_performance"]
         ]
 
         recommendations = [
-            ParameterRecommendation(**rec)
-            for rec in data["recommendations"]
+            ParameterRecommendation(**rec) for rec in data["recommendations"]
         ]
 
         return AdminReport(
@@ -784,7 +1001,7 @@ def load_admin_report(report_id: str) -> Optional[AdminReport]:
             keyword_performance=keyword_performance,
             parameter_recommendations=recommendations,
             total_alerts=data["total_alerts"],
-            total_revenue=data["total_revenue"]
+            total_revenue=data["total_revenue"],
         )
     except Exception as e:
         log.warning(f"failed_to_load_report id={report_id} err={e}")

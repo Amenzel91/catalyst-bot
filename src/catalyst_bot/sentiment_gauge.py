@@ -6,18 +6,20 @@ color-coded zones and an arrow indicator.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("sentiment_gauge")
+
 
 log = get_logger("sentiment_gauge")
 
@@ -26,7 +28,7 @@ def generate_sentiment_gauge(
     score: float,
     ticker: str = "",
     out_dir: str | Path = "out/gauges",
-    style: str = "dark"
+    style: str = "dark",
 ) -> Optional[Path]:
     """Generate a sentiment gauge chart showing score on gradient scale.
 
@@ -48,11 +50,11 @@ def generate_sentiment_gauge(
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg", force=True)
 
-        import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
-        import numpy as np
+        import matplotlib.pyplot as plt
 
     except Exception as e:
         log.warning("gauge_import_failed err=%s", str(e))
@@ -72,8 +74,8 @@ def generate_sentiment_gauge(
         filename = f"gauge_{ticker_safe}_{timestamp}.png"
         save_path = out_path / filename
 
-        # Create figure
-        fig, ax = plt.subplots(figsize=(10, 3), dpi=100)
+        # Create figure (increased size for better visibility as Discord thumbnail)
+        fig, ax = plt.subplots(figsize=(14, 5), dpi=120)
 
         # Define color zones and labels
         zones = [
@@ -108,64 +110,59 @@ def generate_sentiment_gauge(
 
             # Draw rectangle for this zone
             rect = mpatches.Rectangle(
-                (x_start, bar_y - bar_height/2),
+                (x_start, bar_y - bar_height / 2),
                 width,
                 bar_height,
                 facecolor=zone["color"],
                 edgecolor=border_color,
-                linewidth=0.5
+                linewidth=0.5,
             )
             ax.add_patch(rect)
 
         # Calculate arrow position
         arrow_x = (score + 100) / 200  # Normalize to 0-1
-        arrow_y = bar_y
 
-        # Draw arrow pointing to score
+        # Draw arrow pointing to score (only goes through colored bar, not title)
         arrow_props = dict(
-            arrowstyle="->",
-            lw=3,
-            color=text_color,
-            connectionstyle="arc3,rad=0"
+            arrowstyle="->", lw=3, color=text_color, connectionstyle="arc3,rad=0"
         )
 
-        # Arrow from top pointing down to the score
+        # Arrow goes from top of bar to bottom of bar (only through colored area)
         ax.annotate(
             "",
-            xy=(arrow_x, bar_y - bar_height/2 - 0.05),
-            xytext=(arrow_x, bar_y + bar_height/2 + 0.3),
-            arrowprops=arrow_props
+            xy=(arrow_x, bar_y - bar_height / 2),  # Arrow tip at bottom of bar
+            xytext=(arrow_x, bar_y + bar_height / 2),  # Arrow start at TOP of bar
+            arrowprops=arrow_props,
         )
 
         # Add score label above arrow
         score_text = f"{score:+.0f}"
         ax.text(
             arrow_x,
-            bar_y + bar_height/2 + 0.35,
+            bar_y + bar_height / 2 + 0.35,
             score_text,
             ha="center",
             va="bottom",
             fontsize=16,
             fontweight="bold",
-            color=text_color
+            color=text_color,
         )
 
         # Determine current zone label
         current_zone = next(
-            (z["label"] for z in zones if z["min"] <= score <= z["max"]),
-            "Neutral"
+            (z["label"] for z in zones if z["min"] <= score <= z["max"]), "Neutral"
         )
 
         # Add zone label below arrow
         ax.text(
             arrow_x,
-            bar_y - bar_height/2 - 0.15,
+            bar_y - bar_height / 2 - 0.15,
             current_zone,
             ha="center",
             va="top",
             fontsize=11,
             color=text_color,
-            style="italic"
+            style="italic",
         )
 
         # Add scale markers
@@ -173,19 +170,19 @@ def generate_sentiment_gauge(
             x_pos = (value + 100) / 200
             ax.plot(
                 [x_pos, x_pos],
-                [bar_y - bar_height/2 - 0.02, bar_y - bar_height/2],
+                [bar_y - bar_height / 2 - 0.02, bar_y - bar_height / 2],
                 color=border_color,
-                linewidth=1
+                linewidth=1,
             )
             ax.text(
                 x_pos,
-                bar_y - bar_height/2 - 0.05,
+                bar_y - bar_height / 2 - 0.05,
                 str(value),
                 ha="center",
                 va="top",
                 fontsize=8,
                 color=text_color,
-                alpha=0.7
+                alpha=0.7,
             )
 
         # Add title
@@ -199,7 +196,7 @@ def generate_sentiment_gauge(
             fontsize=14,
             fontweight="bold",
             color=text_color,
-            transform=ax.transAxes
+            transform=ax.transAxes,
         )
 
         # Set axis limits and remove axes
@@ -216,24 +213,27 @@ def generate_sentiment_gauge(
             facecolor=fig.get_facecolor(),
             edgecolor="none",
             bbox_inches="tight",
-            dpi=100
+            dpi=100,
         )
         plt.close(fig)
 
-        log.info("gauge_generated ticker=%s score=%.1f path=%s", ticker, score, save_path.name)
+        log.info(
+            "gauge_generated ticker=%s score=%.1f path=%s",
+            ticker,
+            score,
+            save_path.name,
+        )
         return save_path
 
     except Exception as e:
-        log.warning("gauge_generation_failed ticker=%s score=%.1f err=%s",
-                   ticker, score, str(e))
+        log.warning(
+            "gauge_generation_failed ticker=%s score=%.1f err=%s", ticker, score, str(e)
+        )
         return None
 
 
 def log_sentiment_score(
-    ticker: str,
-    score: float,
-    price_at_alert: float = None,
-    metadata: dict = None
+    ticker: str, score: float, price_at_alert: float = None, metadata: dict = None
 ) -> None:
     """Log sentiment score for calibration and backtesting.
 
@@ -263,7 +263,7 @@ def log_sentiment_score(
             "ticker": ticker,
             "score": round(score, 2),
             "price_at_alert": round(price_at_alert, 4) if price_at_alert else None,
-            "metadata": metadata or {}
+            "metadata": metadata or {},
         }
 
         with open(log_file, "a", encoding="utf-8") as f:
@@ -293,7 +293,6 @@ def analyze_sentiment_performance(lookback_days: int = 30) -> dict:
     """
     try:
         import json
-        from collections import defaultdict
 
         log_file = Path("data/sentiment_scores.jsonl")
         if not log_file.exists():
@@ -319,10 +318,10 @@ def analyze_sentiment_performance(lookback_days: int = 30) -> dict:
         # Group by score ranges
         ranges = {
             "strong_bearish": [],  # -100 to -40
-            "bearish": [],         # -40 to -10
-            "neutral": [],         # -10 to +10
-            "bullish": [],         # +10 to +40
-            "strong_bullish": []   # +40 to +100
+            "bearish": [],  # -40 to -10
+            "neutral": [],  # -10 to +10
+            "bullish": [],  # +10 to +40
+            "strong_bullish": [],  # +40 to +100
         }
 
         for entry in scores:
@@ -345,7 +344,9 @@ def analyze_sentiment_performance(lookback_days: int = 30) -> dict:
                 stats[range_name] = {
                     "count": len(entries),
                     "avg_score": sum(e.get("score", 0) for e in entries) / len(entries),
-                    "tickers": list(set(e.get("ticker") for e in entries if e.get("ticker")))[:10]
+                    "tickers": list(
+                        set(e.get("ticker") for e in entries if e.get("ticker"))
+                    )[:10],
                 }
 
         stats["total_alerts"] = len(scores)
@@ -364,20 +365,24 @@ if __name__ == "__main__":
 
     # Test different scores
     test_scores = [
-        (-75, "BEAR1"),   # Strong bearish
-        (-25, "BEAR2"),   # Bearish
-        (0, "NEUT"),      # Neutral
-        (25, "BULL1"),    # Bullish
-        (67, "BULL2"),    # Strong bullish
+        (-75, "BEAR1"),  # Strong bearish
+        (-25, "BEAR2"),  # Bearish
+        (0, "NEUT"),  # Neutral
+        (25, "BULL1"),  # Bullish
+        (67, "BULL2"),  # Strong bullish
     ]
 
     for score, ticker in test_scores:
         gauge_path = generate_sentiment_gauge(score, ticker, style="dark")
         if gauge_path:
-            print(f"  ✓ Generated gauge for {ticker} (score={score}): {gauge_path.name}")
+            print(
+                f"  ✓ Generated gauge for {ticker} (score={score}): {gauge_path.name}"
+            )
 
             # Log the score
-            log_sentiment_score(ticker, score, price_at_alert=10.5, metadata={"test": True})
+            log_sentiment_score(
+                ticker, score, price_at_alert=10.5, metadata={"test": True}
+            )
         else:
             print(f"  ✗ Failed to generate gauge for {ticker}")
 
@@ -388,6 +393,8 @@ if __name__ == "__main__":
         print(f"Total alerts: {stats.get('total_alerts', 0)}")
         for range_name, data in stats.items():
             if isinstance(data, dict) and "count" in data:
-                print(f"  {range_name}: {data['count']} alerts (avg score: {data['avg_score']:.1f})")
+                print(
+                    f"  {range_name}: {data['count']} alerts (avg score: {data['avg_score']:.1f})"
+                )
 
     print("\nAll tests passed!")

@@ -10,7 +10,6 @@ alternative approaches (like reaction-based switching) can be used.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,9 +19,12 @@ try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("discord_interactions")
+
 
 try:
     from .validation import validate_ticker, validate_timeframe
@@ -37,6 +39,7 @@ except Exception:
         if not tf:
             return None
         return str(tf).strip().upper()
+
 
 log = get_logger("discord_interactions")
 
@@ -73,11 +76,13 @@ def create_timeframe_buttons(
 
     for btn_config in TIMEFRAME_BUTTONS:
         tf = btn_config["label"]
-        is_current = (tf == current_timeframe)
+        is_current = tf == current_timeframe
 
         button = {
             "type": 2,  # Button component
-            "style": 1 if is_current else 2,  # Primary (blue) if current, else Secondary (gray)
+            "style": (
+                1 if is_current else 2
+            ),  # Primary (blue) if current, else Secondary (gray)
             "label": btn_config["label"],
             "custom_id": f"chart_{ticker}_{tf}",  # Include ticker in custom_id
             "disabled": is_current,  # Disable current timeframe button
@@ -90,18 +95,13 @@ def create_timeframe_buttons(
         buttons.append(button)
 
     # Discord requires buttons in action rows (max 5 buttons per row)
-    action_row = {
-        "type": 1,  # Action row
-        "components": buttons
-    }
+    action_row = {"type": 1, "components": buttons}  # Action row
 
     return [action_row]
 
 
 def add_components_to_payload(
-    payload: Dict[str, Any],
-    ticker: str,
-    current_timeframe: str = "1D"
+    payload: Dict[str, Any], ticker: str, current_timeframe: str = "1D"
 ) -> Dict[str, Any]:
     """Add interactive components (buttons) to a Discord webhook payload.
 
@@ -132,13 +132,14 @@ def add_components_to_payload(
 def _components_enabled() -> bool:
     """Check if Discord components are enabled via environment variable."""
     return os.getenv("FEATURE_CHART_BUTTONS", "1").strip().lower() in {
-        "1", "true", "yes", "on"
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
-def handle_interaction(
-    interaction_data: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
+def handle_interaction(interaction_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Handle a Discord interaction (button click).
 
     This function processes the interaction and returns a response payload
@@ -169,6 +170,7 @@ def handle_interaction(
         # Route admin interactions to admin handler
         if custom_id.startswith("admin_"):
             from .admin_interactions import handle_admin_interaction
+
             return handle_admin_interaction(interaction_data)
 
         if not custom_id.startswith("chart_"):
@@ -194,17 +196,14 @@ def handle_interaction(
                 "data": {
                     "content": "❌ Invalid ticker or timeframe",
                     "flags": 64,
-                }
+                },
             }
 
-        log.info(
-            "interaction_received ticker=%s tf=%s",
-            ticker, timeframe
-        )
+        log.info("interaction_received ticker=%s tf=%s", ticker, timeframe)
 
         # Generate new chart for the requested timeframe
-        from .charts_advanced import generate_multi_panel_chart
         from .chart_cache import get_cache
+        from .charts_advanced import generate_multi_panel_chart
 
         cache = get_cache()
 
@@ -214,9 +213,7 @@ def handle_interaction(
         if chart_path is None:
             # Generate new chart
             chart_path = generate_multi_panel_chart(
-                ticker,
-                timeframe=timeframe,
-                style="dark"
+                ticker, timeframe=timeframe, style="dark"
             )
 
             if chart_path:
@@ -229,8 +226,12 @@ def handle_interaction(
                 "data": {
                     "content": f"❌ Failed to generate {timeframe} chart for {ticker}",
                     "flags": 64,  # Ephemeral (only visible to user who clicked)
-                }
+                },
             }
+
+        # Build new embed with updated chart
+        # Note: Discord interaction responses with attachments are complex
+        # We'll upload via Bot API and return a deferred response
 
         # Extract metadata from interaction for editing
         message = interaction_data.get("message")
@@ -241,74 +242,137 @@ def handle_interaction(
         bot_token = os.getenv("DISCORD_BOT_TOKEN")
 
         if not (bot_token and message_id and channel_id):
-            log.warning("missing_bot_metadata bot_token=%s msg_id=%s ch_id=%s",
-                       bool(bot_token), bool(message_id), bool(channel_id))
+            log.warning(
+                "missing_bot_metadata bot_token=%s msg_id=%s ch_id=%s",
+                bool(bot_token),
+                bool(message_id),
+                bool(channel_id),
+            )
             return {
                 "type": 4,
                 "data": {
                     "content": "❌ Failed to update chart (missing configuration)",
                     "flags": 64,
-                }
+                },
             }
 
-        # Build new embed
-        embed = {
-            "color": 0x2ECC71,  # Green
-            "image": {
-                "url": f"attachment://{chart_path.name}"
-            },
-            "footer": {
-                "text": f"Timeframe: {timeframe} | Click a button to switch"
+        # Get original message embeds to preserve alert metadata
+        original_embeds = message.get("embeds", [])
+        original_attachments = message.get("attachments", [])
+
+        # Find sentiment gauge attachment if it exists
+        gauge_attachment = None
+        gauge_filename = None
+        for att in original_attachments:
+            if att.get("filename", "").startswith("gauge_"):
+                gauge_attachment = att
+                gauge_filename = att.get("filename")
+                break
+
+        # Build updated embeds list
+        new_embeds = []
+
+        if original_embeds:
+            # Preserve the first embed (alert metadata) but update the chart image
+            first_embed = original_embeds[0].copy()
+            first_embed["image"] = {"url": f"attachment://{chart_path.name}"}
+
+            # Preserve sentiment gauge thumbnail if it exists
+            if gauge_filename:
+                first_embed["thumbnail"] = {"url": f"attachment://{gauge_filename}"}
+
+            # Update footer to show new timeframe
+            first_embed["footer"] = {
+                "text": f"Chart: {timeframe} | Click buttons to switch timeframes"
             }
-        }
+            new_embeds.append(first_embed)
+        else:
+            # Fallback if no original embeds (shouldn't happen)
+            new_embeds.append(
+                {
+                    "color": 0x2ECC71,
+                    "image": {"url": f"attachment://{chart_path.name}"},
+                    "footer": {
+                        "text": f"Timeframe: {timeframe} | Click a button to switch"
+                    },
+                }
+            )
 
         # Edit message with new chart via bot API
-        import requests
         import json
+
+        import requests
 
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
 
-        headers = {
-            "Authorization": f"Bot {bot_token}"
-        }
+        headers = {"Authorization": f"Bot {bot_token}"}
 
         payload = {
-            "embeds": [embed],
+            "embeds": new_embeds,
             "components": create_timeframe_buttons(ticker, timeframe),
         }
 
-        data = {
-            "payload_json": json.dumps(payload)
-        }
+        data = {"payload_json": json.dumps(payload)}
 
         try:
-            with open(chart_path, "rb") as f:
-                files = {
-                    "file": (chart_path.name, f, "image/png")
-                }
-                resp = requests.patch(url, headers=headers, data=data, files=files, timeout=15)
+            # First, acknowledge the interaction immediately (type 6 = deferred update)
+            # This tells Discord we received the button click
+            import threading
 
-            if resp.ok:
-                log.info("chart_switched ticker=%s tf=%s", ticker, timeframe)
-                # Return deferred update (type 6) to acknowledge interaction
-                return {"type": 6}
-            else:
-                log.warning("chart_switch_failed status=%d body=%s", resp.status_code, resp.text[:200])
-                return {
-                    "type": 4,
-                    "data": {
-                        "content": f"❌ Failed to update chart (HTTP {resp.status_code})",
-                        "flags": 64,
-                    }
-                }
+            def update_message_async():
+                """Update the message in the background after acknowledging interaction"""
+                try:
+                    # Prepare files to upload
+                    files_dict = {}
+
+                    # Add chart file
+                    with open(chart_path, "rb") as f:
+                        chart_bytes = f.read()
+                    files_dict["files[0]"] = (chart_path.name, chart_bytes, "image/png")
+
+                    # Download and re-attach gauge if it exists
+                    if gauge_attachment and gauge_filename:
+                        try:
+                            gauge_url = gauge_attachment.get("url")
+                            if gauge_url:
+                                gauge_resp = requests.get(gauge_url, timeout=10)
+                                if gauge_resp.ok:
+                                    files_dict["files[1]"] = (
+                                        gauge_filename,
+                                        gauge_resp.content,
+                                        "image/png",
+                                    )
+                        except Exception as e:
+                            log.warning("gauge_download_failed err=%s", str(e))
+
+                    resp = requests.patch(
+                        url, headers=headers, data=data, files=files_dict, timeout=15
+                    )
+
+                    if resp.ok:
+                        log.info("chart_switched ticker=%s tf=%s", ticker, timeframe)
+                    else:
+                        log.warning(
+                            "chart_switch_failed status=%d body=%s",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                except Exception as e:
+                    log.warning("chart_switch_exception err=%s", str(e))
+
+            # Start async update
+            threading.Thread(target=update_message_async, daemon=True).start()
+
+            # Return immediate acknowledgment (type 6 = deferred update, no loading state)
+            return {"type": 6}
         except Exception as e:
-            log.warning("chart_switch_exception err=%s", str(e))
+            log.warning("chart_update_failed err=%s", str(e))
             return {
                 "type": 4,
                 "data": {
                     "content": f"❌ Failed to update chart: {str(e)}",
                     "flags": 64,
-                }
+                },
             }
 
     except Exception as e:
@@ -318,15 +382,12 @@ def handle_interaction(
             "data": {
                 "content": "❌ An error occurred while processing your request",
                 "flags": 64,
-            }
+            },
         }
 
 
 def verify_discord_signature(
-    signature: str,
-    timestamp: str,
-    body: bytes,
-    public_key: str
+    signature: str, timestamp: str, body: bytes, public_key: str
 ) -> bool:
     """Verify that a Discord interaction request is authentic.
 
@@ -347,8 +408,8 @@ def verify_discord_signature(
         True if signature is valid, False otherwise
     """
     try:
-        from nacl.signing import VerifyKey
         from nacl.exceptions import BadSignatureError
+        from nacl.signing import VerifyKey
 
         verify_key = VerifyKey(bytes.fromhex(public_key))
         message = timestamp.encode() + body
@@ -368,6 +429,7 @@ def verify_discord_signature(
 # Flask endpoint example (for reference - not auto-registered)
 # ============================================================================
 
+
 def create_interaction_endpoint_flask():
     """Create a Flask endpoint to handle Discord interactions.
 
@@ -382,7 +444,7 @@ def create_interaction_endpoint_flask():
     >>> app.run(host='0.0.0.0', port=3000)
     """
     try:
-        from flask import Flask, request, jsonify
+        from flask import Flask, jsonify, request
     except ImportError:
         raise ImportError(
             "Flask is required for interaction endpoints. "
@@ -425,12 +487,9 @@ def create_interaction_endpoint_flask():
 # Message editing helper (for webhook-based approach)
 # ============================================================================
 
+
 def edit_message_with_chart(
-    webhook_url: str,
-    message_id: str,
-    ticker: str,
-    timeframe: str,
-    chart_path: Path
+    webhook_url: str, message_id: str, ticker: str, timeframe: str, chart_path: Path
 ) -> bool:
     """Edit a Discord message to update its chart image.
 
@@ -471,55 +530,42 @@ def edit_message_with_chart(
         embed = {
             "title": f"{ticker} - {timeframe} Chart",
             "color": 0x2ECC71,
-            "image": {
-                "url": f"attachment://{chart_path.name}"
-            },
-            "footer": {
-                "text": f"Timeframe: {timeframe} | Generated charts"
-            }
+            "image": {"url": f"attachment://{chart_path.name}"},
+            "footer": {"text": f"Timeframe: {timeframe} | Generated charts"},
         }
 
         # Build components (buttons)
         components = create_timeframe_buttons(ticker, timeframe)
 
         # Prepare multipart upload
-        files = {
-            "file": (chart_path.name, chart_path.open("rb"), "image/png")
-        }
+        files = {"file": (chart_path.name, chart_path.open("rb"), "image/png")}
 
         payload = {
             "embeds": [embed],
             "components": components,
         }
 
-        data = {
-            "payload_json": json.dumps(payload)
-        }
+        data = {"payload_json": json.dumps(payload)}
 
         # Send PATCH request
-        resp = requests.patch(
-            edit_url,
-            data=data,
-            files=files,
-            timeout=15
-        )
+        resp = requests.patch(edit_url, data=data, files=files, timeout=15)
 
         if resp.ok:
             log.info(
                 "message_edited message_id=%s ticker=%s tf=%s",
-                message_id, ticker, timeframe
+                message_id,
+                ticker,
+                timeframe,
             )
             return True
         else:
             log.warning(
                 "message_edit_failed status=%d message_id=%s",
-                resp.status_code, message_id
+                resp.status_code,
+                message_id,
             )
             return False
 
     except Exception as e:
-        log.warning(
-            "message_edit_exception message_id=%s err=%s",
-            message_id, str(e)
-        )
+        log.warning("message_edit_exception message_id=%s err=%s", message_id, str(e))
         return False

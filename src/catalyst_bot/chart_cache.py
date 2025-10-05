@@ -9,17 +9,20 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 try:
     from .logging_utils import get_logger
 except Exception:
     import logging
+
     logging.basicConfig(level=logging.INFO)
+
     def get_logger(_):
         return logging.getLogger("chart_cache")
+
 
 log = get_logger("chart_cache")
 
@@ -76,8 +79,7 @@ class ChartCache:
         """Save the cache index to disk."""
         try:
             self.index_file.write_text(
-                json.dumps(self.index, indent=2, sort_keys=True),
-                encoding="utf-8"
+                json.dumps(self.index, indent=2, sort_keys=True), encoding="utf-8"
             )
         except Exception as e:
             log.warning("index_save_failed err=%s", str(e))
@@ -86,11 +88,7 @@ class ChartCache:
         """Create a cache key from ticker and timeframe."""
         return f"{ticker.upper()}_{timeframe.upper()}"
 
-    def get(
-        self,
-        ticker: str,
-        timeframe: str
-    ) -> Optional[Path]:
+    def get(self, ticker: str, timeframe: str) -> Optional[Path]:
         """Retrieve a cached chart if it exists and hasn't expired.
 
         Parameters
@@ -120,7 +118,9 @@ class ChartCache:
         if age > self.ttl_seconds:
             log.debug(
                 "cache_miss key=%s reason=expired age=%.1fs ttl=%ds",
-                key, age, self.ttl_seconds
+                key,
+                age,
+                self.ttl_seconds,
             )
             # Clean up expired entry
             self._remove(key)
@@ -136,12 +136,7 @@ class ChartCache:
         log.info("cache_hit key=%s age=%.1fs", key, age)
         return path
 
-    def put(
-        self,
-        ticker: str,
-        timeframe: str,
-        file_path: Path
-    ) -> None:
+    def put(self, ticker: str, timeframe: str, file_path: Path) -> None:
         """Store a chart in the cache.
 
         Parameters
@@ -251,10 +246,7 @@ class ChartCache:
         oldest = min(cached_times) if cached_times else 0
         newest = max(cached_times) if cached_times else 0
 
-        expired_count = sum(
-            1 for t in cached_times
-            if (now - t) > self.ttl_seconds
-        )
+        expired_count = sum(1 for t in cached_times if (now - t) > self.ttl_seconds)
 
         return {
             "size": len(self.index),

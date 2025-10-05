@@ -179,12 +179,29 @@ def init_tickers_db() -> None:
             pass
 
 
+def init_feedback_db() -> None:
+    """Initialise the alert outcomes database for breakout feedback tracking."""
+    try:
+        from .. import storage
+        from ..breakout_feedback import migrate_feedback_tables
+
+        conn = storage.connect()
+        migrate_feedback_tables(conn)
+        _set_wal_and_timeout(conn)
+        _vacuum(conn)
+        conn.close()
+        log.info("feedback_db_initialised path=%s", storage.DB_PATH)
+    except Exception as exc:
+        log.warning("feedback_db_init_failed", extra={"error": str(exc)})
+
+
 def main() -> None:
     """Run all database initialisation steps."""
     init_market_db()
     init_dedupe_db()
     init_seen_db()
     init_tickers_db()
+    init_feedback_db()
 
 
 if __name__ == "__main__":  # pragma: no cover
