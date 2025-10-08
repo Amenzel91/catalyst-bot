@@ -40,3 +40,4 @@ data/watchlist_state.json
 /data/logs
 data/logs/bot.jsonl
 env.env
+nul
