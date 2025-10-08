@@ -19,8 +19,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from queue import PriorityQueue, Empty
-from typing import Any, Dict, List, Optional, Callable
+from queue import Empty, PriorityQueue
+from typing import Any, Callable, Dict, List, Optional
 
 from .logging_utils import get_logger
 
@@ -30,6 +30,7 @@ log = get_logger("chart_queue")
 @dataclass
 class ChartRequest:
     """Chart generation request."""
+
     ticker: str
     timeframe: str = "1D"
     priority: int = 5  # 1=highest, 10=lowest
@@ -69,11 +70,11 @@ class ChartGenerationQueue:
 
         # Stats
         self.stats = {
-            'total_requests': 0,
-            'cache_hits': 0,
-            'cache_misses': 0,
-            'charts_generated': 0,
-            'avg_generation_time': 0.0,
+            "total_requests": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "charts_generated": 0,
+            "avg_generation_time": 0.0,
         }
         self.stats_lock = threading.Lock()
 
@@ -87,9 +88,7 @@ class ChartGenerationQueue:
 
         for i in range(self.max_workers):
             worker = threading.Thread(
-                target=self._worker_loop,
-                name=f"chart_worker_{i}",
-                daemon=True
+                target=self._worker_loop, name=f"chart_worker_{i}", daemon=True
             )
             worker.start()
             self.workers.append(worker)
@@ -146,7 +145,7 @@ class ChartGenerationQueue:
 
         if cached_path is not None:
             with self.stats_lock:
-                self.stats['cache_hits'] += 1
+                self.stats["cache_hits"] += 1
 
             log.debug(f"chart_cache_hit id={request_id} ticker={ticker}")
 
@@ -157,8 +156,8 @@ class ChartGenerationQueue:
 
         # Cache miss - queue request
         with self.stats_lock:
-            self.stats['total_requests'] += 1
-            self.stats['cache_misses'] += 1
+            self.stats["total_requests"] += 1
+            self.stats["cache_misses"] += 1
 
         request = ChartRequest(
             ticker=ticker,
@@ -170,7 +169,9 @@ class ChartGenerationQueue:
         )
 
         self.request_queue.put(request)
-        log.debug(f"chart_request_queued id={request_id} ticker={ticker} tf={timeframe}")
+        log.debug(
+            f"chart_request_queued id={request_id} ticker={ticker} tf={timeframe}"
+        )
 
         return request_id
 
@@ -192,11 +193,11 @@ class ChartGenerationQueue:
 
         for req in requests:
             req_id = self.submit(
-                ticker=req.get('ticker', ''),
-                timeframe=req.get('timeframe', '1D'),
-                priority=req.get('priority', 5),
-                chart_type=req.get('chart_type', 'advanced'),
-                callback=req.get('callback'),
+                ticker=req.get("ticker", ""),
+                timeframe=req.get("timeframe", "1D"),
+                priority=req.get("priority", 5),
+                chart_type=req.get("chart_type", "advanced"),
+                callback=req.get("callback"),
             )
             request_ids.append(req_id)
 
@@ -208,14 +209,14 @@ class ChartGenerationQueue:
         with self.stats_lock:
             stats_copy = self.stats.copy()
 
-        total = stats_copy['cache_hits'] + stats_copy['cache_misses']
+        total = stats_copy["cache_hits"] + stats_copy["cache_misses"]
         if total > 0:
-            stats_copy['cache_hit_rate'] = stats_copy['cache_hits'] / total
+            stats_copy["cache_hit_rate"] = stats_copy["cache_hits"] / total
         else:
-            stats_copy['cache_hit_rate'] = 0.0
+            stats_copy["cache_hit_rate"] = 0.0
 
-        stats_copy['queue_size'] = self.request_queue.qsize()
-        stats_copy['cache_size'] = len(self.cache)
+        stats_copy["queue_size"] = self.request_queue.qsize()
+        stats_copy["cache_size"] = len(self.cache)
 
         return stats_copy
 
@@ -246,15 +247,17 @@ class ChartGenerationQueue:
             # Update stats
             elapsed = time.time() - start_time
             with self.stats_lock:
-                self.stats['charts_generated'] += 1
+                self.stats["charts_generated"] += 1
                 # Exponential moving average
                 alpha = 0.2
-                self.stats['avg_generation_time'] = (
-                    alpha * elapsed + (1 - alpha) * self.stats['avg_generation_time']
+                self.stats["avg_generation_time"] = (
+                    alpha * elapsed + (1 - alpha) * self.stats["avg_generation_time"]
                 )
 
             # Cache result
-            cache_key = self._cache_key(request.ticker, request.timeframe, request.chart_type)
+            cache_key = self._cache_key(
+                request.ticker, request.timeframe, request.chart_type
+            )
             self._set_cached(cache_key, chart_path)
 
             # Invoke callback
@@ -267,12 +270,16 @@ class ChartGenerationQueue:
             )
 
         except Exception as e:
-            log.error(f"chart_generation_failed id={request.request_id} ticker={request.ticker} err={e}")
+            log.error(
+                f"chart_generation_failed id={request.request_id} ticker={request.ticker} err={e}"
+            )
 
             if request.callback:
                 request.callback(None)
 
-    def _generate_chart(self, ticker: str, timeframe: str, chart_type: str) -> Optional[str]:
+    def _generate_chart(
+        self, ticker: str, timeframe: str, chart_type: str
+    ) -> Optional[str]:
         """
         Generate chart and return path.
 
@@ -281,9 +288,11 @@ class ChartGenerationQueue:
         try:
             if chart_type == "advanced":
                 from .charts_advanced import generate_advanced_chart
+
                 chart_path = generate_advanced_chart(ticker, timeframe)
             else:
                 from .charts import generate_chart_url
+
                 chart_path = generate_chart_url(ticker, timeframe)
 
             return chart_path
@@ -332,8 +341,7 @@ class ChartGenerationQueue:
         """Remove expired cache entries."""
         now = time.time()
         expired_keys = [
-            k for k, (_, ts) in self.cache.items()
-            if now - ts > self.cache_ttl
+            k for k, (_, ts) in self.cache.items() if now - ts > self.cache_ttl
         ]
 
         for key in expired_keys:
@@ -352,8 +360,8 @@ def get_chart_queue() -> ChartGenerationQueue:
     global _chart_queue
 
     if _chart_queue is None:
-        max_workers = int(os.getenv('CHART_QUEUE_WORKERS', '4'))
-        cache_ttl = int(os.getenv('CHART_CACHE_TTL', '300'))
+        max_workers = int(os.getenv("CHART_QUEUE_WORKERS", "4"))
+        cache_ttl = int(os.getenv("CHART_CACHE_TTL", "300"))
 
         _chart_queue = ChartGenerationQueue(
             max_workers=max_workers,

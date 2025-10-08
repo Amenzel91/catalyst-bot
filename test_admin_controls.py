@@ -20,24 +20,23 @@ import pytest
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from catalyst_bot.admin_controls import (
-    generate_admin_report,
-    build_admin_embed,
+from catalyst_bot.admin_controls import (  # noqa: E402
     build_admin_components,
-    save_admin_report,
+    build_admin_embed,
+    generate_admin_report,
     load_admin_report,
+    save_admin_report,
 )
-from catalyst_bot.admin_interactions import (
-    handle_admin_interaction,
+from catalyst_bot.admin_interactions import (  # noqa: E402
     build_details_embed,
+    handle_admin_interaction,
 )
-from catalyst_bot.config_updater import (
-    validate_parameter,
+from catalyst_bot.config_updater import (  # noqa: E402
     apply_parameter_changes,
-    rollback_changes,
     create_backup,
+    rollback_changes,
+    validate_parameter,
 )
-from catalyst_bot.admin_reporter import post_admin_report
 
 
 def create_sample_events(target_date):
@@ -48,7 +47,12 @@ def create_sample_events(target_date):
     # Sample events with realistic data
     sample_events = [
         {
-            "ts": (datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(hours=9)).isoformat(),
+            "ts": (
+                datetime.combine(target_date, datetime.min.time()).replace(
+                    tzinfo=timezone.utc
+                )
+                + timedelta(hours=9)
+            ).isoformat(),
             "ticker": "AAPL",
             "price": 150.0,
             "cls": {
@@ -57,7 +61,12 @@ def create_sample_events(target_date):
             },
         },
         {
-            "ts": (datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(hours=10)).isoformat(),
+            "ts": (
+                datetime.combine(target_date, datetime.min.time()).replace(
+                    tzinfo=timezone.utc
+                )
+                + timedelta(hours=10)
+            ).isoformat(),
             "ticker": "TSLA",
             "price": 200.0,
             "cls": {
@@ -66,7 +75,12 @@ def create_sample_events(target_date):
             },
         },
         {
-            "ts": (datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(hours=11)).isoformat(),
+            "ts": (
+                datetime.combine(target_date, datetime.min.time()).replace(
+                    tzinfo=timezone.utc
+                )
+                + timedelta(hours=11)
+            ).isoformat(),
             "ticker": "NVDA",
             "price": 400.0,
             "cls": {
@@ -75,7 +89,12 @@ def create_sample_events(target_date):
             },
         },
         {
-            "ts": (datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(hours=14)).isoformat(),
+            "ts": (
+                datetime.combine(target_date, datetime.min.time()).replace(
+                    tzinfo=timezone.utc
+                )
+                + timedelta(hours=14)
+            ).isoformat(),
             "ticker": "AMD",
             "price": 100.0,
             "cls": {
@@ -84,7 +103,12 @@ def create_sample_events(target_date):
             },
         },
         {
-            "ts": (datetime.combine(target_date, datetime.min.time()).replace(tzinfo=timezone.utc) + timedelta(hours=15)).isoformat(),
+            "ts": (
+                datetime.combine(target_date, datetime.min.time()).replace(
+                    tzinfo=timezone.utc
+                )
+                + timedelta(hours=15)
+            ).isoformat(),
             "ticker": "META",
             "price": 300.0,
             "cls": {
@@ -104,13 +128,17 @@ def create_sample_events(target_date):
                 continue
             try:
                 event = json.loads(line)
-                event_ts = datetime.fromisoformat(event.get("ts", "").replace("Z", "+00:00"))
+                event_ts = datetime.fromisoformat(
+                    event.get("ts", "").replace("Z", "+00:00")
+                )
                 if event_ts.date() != target_date:
                     filtered_lines.append(line)
             except Exception:
                 filtered_lines.append(line)
 
-        events_path.write_text("\n".join(filtered_lines) + "\n" if filtered_lines else "", encoding="utf-8")
+        events_path.write_text(
+            "\n".join(filtered_lines) + "\n" if filtered_lines else "", encoding="utf-8"
+        )
 
     # Append sample events
     with events_path.open("a", encoding="utf-8") as f:
@@ -123,9 +151,9 @@ def create_sample_events(target_date):
 @pytest.fixture
 def report():
     """Generate admin report for testing."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("FIXTURE: Admin Report Generation")
-    print("="*60)
+    print("=" * 60)
 
     target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 
@@ -139,7 +167,7 @@ def report():
     # Validate report
     assert report is not None, "Report generation failed"
     assert report.date == target_date, "Report date mismatch"
-    print(f"[OK] Report generated successfully")
+    print("[OK] Report generated successfully")
     print(f"   Total alerts: {report.total_alerts}")
     print(f"   Backtest trades: {report.backtest_summary.n}")
     print(f"   Win rate: {report.backtest_summary.hit_rate:.1%}")
@@ -151,20 +179,20 @@ def report():
 
 def test_report_generation(report):
     """Test admin report generation."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 1: Admin Report Generation")
-    print("="*60)
+    print("=" * 60)
 
     # The fixture already validates the report, just confirm it exists
     assert report is not None, "Report fixture failed"
-    print(f"[OK] Report fixture working correctly")
+    print("[OK] Report fixture working correctly")
 
 
 def test_report_persistence(report):
     """Test saving and loading reports."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 2: Report Persistence")
-    print("="*60)
+    print("=" * 60)
 
     # Save report
     print("\nSaving report...")
@@ -178,21 +206,21 @@ def test_report_persistence(report):
     loaded_report = load_admin_report(report_id)
     assert loaded_report is not None, "Report load failed"
     assert loaded_report.date == report.date, "Loaded report date mismatch"
-    print(f"[OK] Report loaded successfully")
+    print("[OK] Report loaded successfully")
 
 
 def test_embed_building(report):
     """Test Discord embed and component building."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 3: Discord Embed Building")
-    print("="*60)
+    print("=" * 60)
 
     # Build embed
     print("\nBuilding embed...")
     embed = build_admin_embed(report)
     assert "title" in embed, "Embed missing title"
     assert "fields" in embed, "Embed missing fields"
-    print(f"[OK] Embed built successfully")
+    print("[OK] Embed built successfully")
     print(f"   Fields: {len(embed['fields'])}")
     print(f"   Color: 0x{embed['color']:06X}")
 
@@ -202,7 +230,7 @@ def test_embed_building(report):
     components = build_admin_components(report_id)
     assert len(components) > 0, "No components generated"
     assert components[0]["type"] == 1, "Invalid component type"
-    print(f"[OK] Components built successfully")
+    print("[OK] Components built successfully")
     print(f"   Action rows: {len(components)}")
     print(f"   Buttons: {len(components[0]['components'])}")
 
@@ -211,17 +239,19 @@ def test_embed_building(report):
 
 def test_interaction_handling(report):
     """Test button interaction handling."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 4: Button Interaction Handling")
-    print("="*60)
+    print("=" * 60)
 
     report_id = report.date.isoformat()
 
     # Test "View Details" interaction
     print("\nTesting 'View Details' interaction...")
     details_response = build_details_embed(report_id)
-    assert "embeds" in details_response or "content" in details_response, "Details response invalid"
-    print(f"[OK] View Details interaction works")
+    assert (
+        "embeds" in details_response or "content" in details_response
+    ), "Details response invalid"
+    print("[OK] View Details interaction works")
 
     # Test "Approve" interaction simulation
     print("\nTesting interaction routing...")
@@ -233,14 +263,14 @@ def test_interaction_handling(report):
     }
     response = handle_admin_interaction(interaction_data)
     assert response is not None, "Interaction handler failed"
-    print(f"[OK] Interaction routing works")
+    print("[OK] Interaction routing works")
 
 
 def test_parameter_validation():
     """Test parameter validation."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 5: Parameter Validation")
-    print("="*60)
+    print("=" * 60)
 
     # Valid parameters
     valid_tests = [
@@ -270,14 +300,14 @@ def test_parameter_validation():
         assert not is_valid, f"Invalid parameter accepted: {name}={value}"
         print(f"   [OK] {name}={value} correctly rejected: {error}")
 
-    print(f"\n[OK] All validation tests passed")
+    print("\n[OK] All validation tests passed")
 
 
 def test_parameter_updates():
     """Test parameter updates and rollback."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 6: Parameter Updates & Rollback")
-    print("="*60)
+    print("=" * 60)
 
     # Create backup first
     print("\nCreating backup...")
@@ -292,9 +322,9 @@ def test_parameter_updates():
         "PRICE_CEILING": 7.5,
     }
     success, message = apply_parameter_changes(changes)
-    assert success, f"Parameter update failed"
+    assert success, "Parameter update failed"
     # Don't print message to avoid emoji encoding issues on Windows
-    print(f"[OK] Parameters applied successfully")
+    print("[OK] Parameters applied successfully")
 
     # Verify changes were applied
     print("\nVerifying changes...")
@@ -303,31 +333,35 @@ def test_parameter_updates():
         env_content = env_path.read_text(encoding="utf-8")
         assert "MIN_SCORE=0.25" in env_content, "MIN_SCORE not updated"
         assert "PRICE_CEILING=7.5" in env_content, "PRICE_CEILING not updated"
-        print(f"[OK] Changes verified in .env file")
+        print("[OK] Changes verified in .env file")
 
     # Test rollback
     print("\nTesting rollback...")
     success, message = rollback_changes(backup_path)
-    assert success, f"Rollback failed"
+    assert success, "Rollback failed"
     # Don't print message to avoid emoji encoding issues on Windows
-    print(f"[OK] Rollback successful")
+    print("[OK] Rollback successful")
 
 
 def test_discord_posting(report):
     """Test Discord posting (dry run)."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("TEST 7: Discord Posting (Dry Run)")
-    print("="*60)
+    print("=" * 60)
 
     # Check if credentials are configured
     bot_token = os.getenv("DISCORD_BOT_TOKEN")
     channel_id = os.getenv("DISCORD_ADMIN_CHANNEL_ID")
 
     if bot_token and channel_id:
-        print("\n[INFO] Discord credentials found. Set FEATURE_ADMIN_REPORTS=1 to enable posting.")
+        print(
+            "\n[INFO] Discord credentials found. Set FEATURE_ADMIN_REPORTS=1 to enable posting."
+        )
         print(f"   Bot token: {bot_token[:20]}...")
         print(f"   Channel ID: {channel_id}")
-        print("[INFO] Skipping Discord post in automated test (set FEATURE_ADMIN_REPORTS=1 to enable)")
+        print(
+            "[INFO] Skipping Discord post in automated test (set FEATURE_ADMIN_REPORTS=1 to enable)"
+        )
     else:
         print("\n[WARN] Discord credentials not configured")
         print("   Set DISCORD_BOT_TOKEN and DISCORD_ADMIN_CHANNEL_ID to test posting")
@@ -361,21 +395,23 @@ def main():
         test_discord_posting(loaded_report)
 
         # Summary
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("ALL TESTS PASSED!")
-        print("="*60)
-        print(f"\nAdmin controls system is fully functional:")
-        print(f"  [OK] Report generation")
-        print(f"  [OK] Report persistence")
-        print(f"  [OK] Discord embed building")
-        print(f"  [OK] Button interaction handling")
-        print(f"  [OK] Parameter validation")
-        print(f"  [OK] Parameter updates & rollback")
-        print(f"\nNext steps:")
-        print(f"  1. Enable admin reports: Set FEATURE_ADMIN_REPORTS=1 in .env")
-        print(f"  2. Configure Discord: Set DISCORD_BOT_TOKEN and DISCORD_ADMIN_CHANNEL_ID")
-        print(f"  3. Test live posting: Run this script with Discord configured")
-        print(f"  4. Schedule nightly reports in runner.py")
+        print("=" * 60)
+        print("\nAdmin controls system is fully functional:")
+        print("  [OK] Report generation")
+        print("  [OK] Report persistence")
+        print("  [OK] Discord embed building")
+        print("  [OK] Button interaction handling")
+        print("  [OK] Parameter validation")
+        print("  [OK] Parameter updates & rollback")
+        print("\nNext steps:")
+        print("  1. Enable admin reports: Set FEATURE_ADMIN_REPORTS=1 in .env")
+        print(
+            "  2. Configure Discord: Set DISCORD_BOT_TOKEN and DISCORD_ADMIN_CHANNEL_ID"
+        )
+        print("  3. Test live posting: Run this script with Discord configured")
+        print("  4. Schedule nightly reports in runner.py")
 
     except AssertionError as e:
         print(f"\n[FAIL] TEST FAILED: {e}")
@@ -383,6 +419,7 @@ def main():
     except Exception as e:
         print(f"\n[ERROR] {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

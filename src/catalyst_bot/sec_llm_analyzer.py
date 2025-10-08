@@ -31,18 +31,18 @@ def _extract_amount(text: str) -> Optional[float]:
 
     # Match patterns like "$5.2M", "$10 million", "5.2MM"
     patterns = [
-        r'\$?(\d+\.?\d*)\s*million',
-        r'\$?(\d+\.?\d*)\s*M(?:M)?(?!\w)',
-        r'\$(\d+,?\d*,?\d*)',
+        r"\$?(\d+\.?\d*)\s*million",
+        r"\$?(\d+\.?\d*)\s*M(?:M)?(?!\w)",
+        r"\$(\d+,?\d*,?\d*)",
     ]
 
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            value_str = match.group(1).replace(',', '')
+            value_str = match.group(1).replace(",", "")
             try:
                 value = float(value_str)
-                if 'million' in pattern or 'M' in pattern:
+                if "million" in pattern or "M" in pattern:
                     return value * 1_000_000
                 return value
             except ValueError:
@@ -138,7 +138,7 @@ Respond ONLY with valid JSON. No additional text."""
         import json
 
         # Try to extract JSON from response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        json_match = re.search(r"\{.*\}", response, re.DOTALL)
         if json_match:
             response = json_match.group(0)
 
@@ -159,7 +159,7 @@ Respond ONLY with valid JSON. No additional text."""
         # Extract numeric values
         result["deal_size_usd"] = _extract_amount(result["deal_size_str"])
 
-        dilution_match = re.search(r'(\d+\.?\d*)%?', result["dilution_str"])
+        dilution_match = re.search(r"(\d+\.?\d*)%?", result["dilution_str"])
         if dilution_match:
             try:
                 result["dilution_pct"] = float(dilution_match.group(1))
@@ -237,7 +237,8 @@ Respond with JSON:
   "reason": "<brief explanation>"
 }
 
-Catalyst types: earnings, fda, merger, acquisition, partnership, contract, upgrade, downgrade, insider_buying, short_squeeze, dilution, bankruptcy, halt"""
+Catalyst types: earnings, fda, merger, acquisition, partnership, contract,
+upgrade, downgrade, insider_buying, short_squeeze, dilution, bankruptcy, halt"""
 
     user_prompt = f"""Headline: {title}
 Keywords detected: {', '.join(keywords) if keywords else 'None'}
@@ -256,7 +257,8 @@ Is this a meaningful catalyst? Respond with JSON only."""
             return {}
 
         import json
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+
+        json_match = re.search(r"\{.*\}", response, re.DOTALL)
         if json_match:
             response = json_match.group(0)
 
@@ -289,9 +291,9 @@ def should_use_llm_for_filing(filing_type: str) -> bool:
     llm_worthy_filings = {
         "8-K",
         "424B5",  # Prospectus supplement (offerings)
-        "FWP",    # Free writing prospectus
-        "13D",    # Beneficial ownership (5%+)
-        "13G",    # Passive ownership
+        "FWP",  # Free writing prospectus
+        "13D",  # Beneficial ownership (5%+)
+        "13G",  # Passive ownership
         "SC 13D",
         "SC 13G",
     }

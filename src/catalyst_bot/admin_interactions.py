@@ -74,10 +74,10 @@ def build_details_embed(report_id: str) -> Dict[str, Any]:
     if report.keyword_performance:
         kw_lines = []
         for kp in report.keyword_performance[:5]:
-            kp.hits + kp.misses + kp.neutrals
+            total_trades = kp.hits + kp.misses + kp.neutrals
             kw_lines.append(
                 f"**{kp.category}:** {kp.hit_rate:.0%} win rate "
-                f"({kp.hits}W/{kp.misses}L/{kp.neutrals}N) | "
+                f"({kp.hits}W/{kp.misses}L/{kp.neutrals}N, {total_trades} total) | "
                 f"Avg: {kp.avg_return:+.1f}%"
             )
         fields.append(

@@ -16,11 +16,10 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .logging_utils import get_logger
-from .storage import connect, DB_PATH
+from .storage import DB_PATH, connect
 
 log = get_logger("breakout_feedback")
 
@@ -143,7 +142,15 @@ def register_alert_for_tracking(
             (alert_id, ticker, entry_price, entry_volume, timestamp, keywords, confidence)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (alert_id, ticker.upper(), entry_price, entry_volume, ts_unix, keywords_json, confidence),
+            (
+                alert_id,
+                ticker.upper(),
+                entry_price,
+                entry_volume,
+                ts_unix,
+                keywords_json,
+                confidence,
+            ),
         )
 
         conn.commit()
@@ -303,20 +310,30 @@ def get_pending_alerts(interval: str) -> List[Dict[str, Any]]:
 
         results = []
         for row in cursor.fetchall():
-            alert_id, ticker, entry_price, entry_volume, ts, keywords_json, confidence = row
+            (
+                alert_id,
+                ticker,
+                entry_price,
+                entry_volume,
+                ts,
+                keywords_json,
+                confidence,
+            ) = row
 
             keywords = json.loads(keywords_json) if keywords_json else []
             alert_time = datetime.fromtimestamp(ts, tz=timezone.utc)
 
-            results.append({
-                "alert_id": alert_id,
-                "ticker": ticker,
-                "entry_price": entry_price,
-                "entry_volume": entry_volume,
-                "timestamp": alert_time,
-                "keywords": keywords,
-                "confidence": confidence,
-            })
+            results.append(
+                {
+                    "alert_id": alert_id,
+                    "ticker": ticker,
+                    "entry_price": entry_price,
+                    "entry_volume": entry_volume,
+                    "timestamp": alert_time,
+                    "keywords": keywords,
+                    "confidence": confidence,
+                }
+            )
 
         conn.close()
 
@@ -366,7 +383,9 @@ def track_pending_outcomes() -> Dict[str, int]:
                         update_counts[interval] += 1
 
             except Exception as e:
-                log.warning(f"outcome_tracking_failed ticker={ticker} interval={interval} err={e}")
+                log.warning(
+                    f"outcome_tracking_failed ticker={ticker} interval={interval} err={e}"
+                )
                 continue
 
     total = sum(update_counts.values())
@@ -455,19 +474,23 @@ def get_keyword_performance_stats(
             success_rate = stats["successes"] / stats["total"]
             avg_return = stats["total_return"] / stats["total"]
 
-            results.append({
-                "keyword": keyword,
-                "success_rate": success_rate,
-                "avg_return": avg_return,
-                "total_alerts": stats["total"],
-                "successes": stats["successes"],
-                "failures": stats["failures"],
-            })
+            results.append(
+                {
+                    "keyword": keyword,
+                    "success_rate": success_rate,
+                    "avg_return": avg_return,
+                    "total_alerts": stats["total"],
+                    "successes": stats["successes"],
+                    "failures": stats["failures"],
+                }
+            )
 
         # Sort by success rate descending
         results.sort(key=lambda x: x["success_rate"], reverse=True)
 
-        log.info(f"keyword_performance_analyzed count={len(results)} days={lookback_days}")
+        log.info(
+            f"keyword_performance_analyzed count={len(results)} days={lookback_days}"
+        )
         return results
 
     except Exception as e:
@@ -502,32 +525,38 @@ def suggest_keyword_weight_adjustments(
     # Suggest increases for high performers (>70% success, >10 samples)
     for stat in performance_stats:
         if stat["success_rate"] >= 0.7 and stat["total_alerts"] >= 10:
-            suggestions.append({
-                "keyword": stat["keyword"],
-                "action": "increase",
-                "current_weight": None,  # Would need to fetch from config
-                "suggested_weight": None,  # +0.1 or similar
-                "reason": (
-                    f"{stat['success_rate']:.0%} success rate over {stat['total_alerts']} alerts, "
-                    f"{stat['avg_return']:+.1f}% avg return"
-                ),
-                "impact": "high" if stat["total_alerts"] >= 20 else "medium",
-            })
+            suggestions.append(
+                {
+                    "keyword": stat["keyword"],
+                    "action": "increase",
+                    "current_weight": None,  # Would need to fetch from config
+                    "suggested_weight": None,  # +0.1 or similar
+                    "reason": (
+                        f"{stat['success_rate']:.0%} success rate over "
+                        f"{stat['total_alerts']} alerts, "
+                        f"{stat['avg_return']:+.1f}% avg return"
+                    ),
+                    "impact": "high" if stat["total_alerts"] >= 20 else "medium",
+                }
+            )
 
     # Suggest decreases for poor performers (<40% success, >10 samples)
     for stat in performance_stats[-10:]:  # Look at worst performers
         if stat["success_rate"] < 0.4 and stat["total_alerts"] >= 10:
-            suggestions.append({
-                "keyword": stat["keyword"],
-                "action": "decrease",
-                "current_weight": None,
-                "suggested_weight": None,  # -0.1 or similar
-                "reason": (
-                    f"Only {stat['success_rate']:.0%} success rate over {stat['total_alerts']} alerts, "
-                    f"{stat['avg_return']:+.1f}% avg return"
-                ),
-                "impact": "high" if stat["total_alerts"] >= 20 else "medium",
-            })
+            suggestions.append(
+                {
+                    "keyword": stat["keyword"],
+                    "action": "decrease",
+                    "current_weight": None,
+                    "suggested_weight": None,  # -0.1 or similar
+                    "reason": (
+                        f"Only {stat['success_rate']:.0%} success rate over "
+                        f"{stat['total_alerts']} alerts, "
+                        f"{stat['avg_return']:+.1f}% avg return"
+                    ),
+                    "impact": "high" if stat["total_alerts"] >= 20 else "medium",
+                }
+            )
 
     log.info(f"weight_adjustments_suggested count={len(suggestions)}")
     return suggestions

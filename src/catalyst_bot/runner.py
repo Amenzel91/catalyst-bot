@@ -74,8 +74,24 @@ from .health_endpoint import start_health_server, update_health_status
 from .log_reporter import deliver_report
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
+from .market_hours import get_market_info  # WAVE 0.0 Phase 2: Market hours detection
 from .seen_store import should_filter  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
+
+# WAVE 1.2: Feedback Loop imports
+try:
+    from .feedback import init_database, score_pending_alerts
+    from .feedback.weekly_report import (
+        send_weekly_report_if_scheduled as send_feedback_weekly_report,
+    )
+    from .feedback.weight_adjuster import (
+        analyze_keyword_performance,
+        apply_weight_adjustments,
+    )
+
+    FEEDBACK_AVAILABLE = True
+except Exception:
+    FEEDBACK_AVAILABLE = False
 
 try:
     import yfinance as yf  # type: ignore
@@ -102,6 +118,55 @@ LAST_CYCLE_STATS: Dict[str, Any] = {}
 # heartbeats.  Keys mirror LAST_CYCLE_STATS; values start at zero and
 # are incremented at the end of each cycle.  See update in _cycle().
 TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts": 0}
+
+
+class HeartbeatAccumulator:
+    """Track cumulative stats between heartbeat messages."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Reset all counters (called after sending heartbeat)."""
+        self.total_scanned = 0
+        self.total_alerts = 0
+        self.total_errors = 0
+        self.cycles_completed = 0
+        self.last_heartbeat_time = datetime.now(timezone.utc)
+
+    def add_cycle(self, scanned: int, alerts: int, errors: int):
+        """Record stats from a completed cycle."""
+        self.total_scanned += scanned
+        self.total_alerts += alerts
+        self.total_errors += errors
+        self.cycles_completed += 1
+
+    def should_send_heartbeat(self, interval_minutes: int = 60) -> bool:
+        """Check if it's time to send heartbeat."""
+        elapsed = (
+            datetime.now(timezone.utc) - self.last_heartbeat_time
+        ).total_seconds()
+        return elapsed >= (interval_minutes * 60)
+
+    def get_stats(self) -> dict:
+        """Get cumulative stats for heartbeat message."""
+        elapsed_min = (
+            datetime.now(timezone.utc) - self.last_heartbeat_time
+        ).total_seconds() / 60
+        return {
+            "total_scanned": self.total_scanned,
+            "total_alerts": self.total_alerts,
+            "total_errors": self.total_errors,
+            "cycles_completed": self.cycles_completed,
+            "elapsed_minutes": round(elapsed_min, 1),
+            "avg_alerts_per_cycle": round(
+                self.total_alerts / max(self.cycles_completed, 1), 1
+            ),
+        }
+
+
+# Global heartbeat accumulator instance
+_heartbeat_acc = HeartbeatAccumulator()
 
 
 def _sig_handler(signum, frame):
@@ -389,32 +454,81 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         skipped_val = _fmt_counter(skipped_cnt, "skipped")
         alerts_val = _fmt_counter(alerted_cnt, "alerts")
 
+        # WAVE ALPHA Agent 1: Get accumulator stats for interval/endday heartbeats
+        acc_stats = None
+        if reason in ("interval", "endday"):
+            try:
+                acc = globals().get("_heartbeat_acc")
+                if acc and hasattr(acc, "get_stats"):
+                    acc_stats = acc.get_stats()
+            except Exception:
+                acc_stats = None
+
+        embed_fields = [
+            {"name": "Target", "value": target_label, "inline": True},
+            {
+                "name": "Record Only",
+                "value": str(settings.feature_record_only),
+                "inline": True,
+            },
+            {"name": "Skip Sources", "value": skip_sources, "inline": False},
+            {"name": "Min Score", "value": min_score, "inline": True},
+            {"name": "Min |sent|", "value": min_sent, "inline": True},
+            {"name": "Price Ceiling", "value": price_ceiling, "inline": True},
+            {"name": "Watchlist", "value": watchlist_size, "inline": True},
+            {"name": "Cascade", "value": cascade_counts, "inline": True},
+            {"name": "Providers", "value": provider_order, "inline": True},
+            {"name": "Features", "value": features_value, "inline": False},
+        ]
+
+        # Add accumulator period summary for interval/endday heartbeats
+        if acc_stats:
+            embed_fields.append(
+                {
+                    "name": "📊 Period Summary",
+                    "value": (
+                        f"Last {acc_stats.get('elapsed_minutes', 0)} minutes • "
+                        f"{acc_stats.get('cycles_completed', 0)} cycles"
+                    ),
+                    "inline": False,
+                }
+            )
+            embed_fields.extend(
+                [
+                    {
+                        "name": "Feeds Scanned",
+                        "value": f"{acc_stats.get('total_scanned', 0):,}",
+                        "inline": True,
+                    },
+                    {
+                        "name": "Alerts Posted",
+                        "value": f"{acc_stats.get('total_alerts', 0)}",
+                        "inline": True,
+                    },
+                    {
+                        "name": "Avg Alerts/Cycle",
+                        "value": f"{acc_stats.get('avg_alerts_per_cycle', 0)}",
+                        "inline": True,
+                    },
+                ]
+            )
+
+        # Always show per-cycle and cumulative stats
+        embed_fields.extend(
+            [
+                {"name": "Items", "value": items_val, "inline": True},
+                {"name": "Deduped", "value": dedup_val, "inline": True},
+                {"name": "Skipped", "value": skipped_val, "inline": True},
+                {"name": "Alerts", "value": alerts_val, "inline": True},
+            ]
+        )
+
         payload["embeds"] = [
             {
                 "title": f"Catalyst-Bot heartbeat ({reason})",
                 "color": 0x5865F2,  # discord blurple-ish
                 "timestamp": ts,
-                "fields": [
-                    {"name": "Target", "value": target_label, "inline": True},
-                    {
-                        "name": "Record Only",
-                        "value": str(settings.feature_record_only),
-                        "inline": True,
-                    },
-                    {"name": "Skip Sources", "value": skip_sources, "inline": False},
-                    {"name": "Min Score", "value": min_score, "inline": True},
-                    {"name": "Min |sent|", "value": min_sent, "inline": True},
-                    {"name": "Price Ceiling", "value": price_ceiling, "inline": True},
-                    {"name": "Watchlist", "value": watchlist_size, "inline": True},
-                    {"name": "Cascade", "value": cascade_counts, "inline": True},
-                    {"name": "Providers", "value": provider_order, "inline": True},
-                    {"name": "Features", "value": features_value, "inline": False},
-                    # Patch‑2: include counts from the most recent cycle and cumulative totals
-                    {"name": "Items", "value": items_val, "inline": True},
-                    {"name": "Deduped", "value": dedup_val, "inline": True},
-                    {"name": "Skipped", "value": skipped_val, "inline": True},
-                    {"name": "Alerts", "value": alerts_val, "inline": True},
-                ],
+                "fields": embed_fields,
                 "footer": {"text": "Catalyst-Bot"},
             }
         ]
@@ -708,8 +822,20 @@ def _keywords_of(scored: Any) -> List[str]:
     return []
 
 
-def _cycle(log, settings) -> None:
-    """One ingest→dedupe→enrich→classify→alert pass with clean skip behavior."""
+def _cycle(log, settings, market_info: dict | None = None) -> None:
+    """One ingest→dedupe→enrich→classify→alert pass with clean skip behavior.
+
+    Parameters
+    ----------
+    log : Logger
+        Logger instance
+    settings : Settings
+        Bot settings
+    market_info : dict, optional
+        Market hours information from get_market_info(). If provided and
+        market hours detection is enabled, features will be gated based on
+        market status.
+    """
     # Ingest + dedupe
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
@@ -750,8 +876,18 @@ def _cycle(log, settings) -> None:
     # feed items and will be scored/classified below.  When the
     # feature is disabled, this call returns an empty list.  Errors
     # during scanning are caught to avoid crashing the cycle.
+    #
+    # WAVE 0.0 Phase 2: When market hours detection is enabled, the
+    # breakout scanner will be skipped if market_info indicates it
+    # should be disabled based on current market status.
     try:
-        if getattr(settings, "feature_52w_low_scanner", False):
+        breakout_enabled = True
+        if market_info and getattr(settings, "feature_market_hours_detection", False):
+            breakout_enabled = market_info.get("features", {}).get(
+                "breakout_enabled", True
+            )
+
+        if breakout_enabled and getattr(settings, "feature_52w_low_scanner", False):
             from catalyst_bot.scanner import scan_52week_lows
 
             low_events = scan_52week_lows(
@@ -764,6 +900,8 @@ def _cycle(log, settings) -> None:
                 # scanner events because their IDs include a timestamp and
                 # ticker, making collisions unlikely.
                 deduped.extend(low_events)
+        elif not breakout_enabled:
+            log.debug("breakout_scanner_skipped reason=market_closed")
     except Exception:
         # Ignore scanner failures
         pass
@@ -955,6 +1093,10 @@ def _cycle(log, settings) -> None:
             "last_change_pct": last_chg,
             "record_only": settings.feature_record_only,
             "webhook_url": _resolve_main_webhook(settings),
+            # WAVE 0.0 Phase 2: Pass market info to alerts for feature gating
+            # The alerts module can use this to skip LLM classification and
+            # chart generation when market is closed (if configured).
+            "market_info": market_info,
         }
 
         # Send (or record-only) alert with compatibility shim
@@ -1101,7 +1243,7 @@ def _cycle(log, settings) -> None:
             "skipped": skipped_total,
             "alerts": alerted,
         }
-        # Add this cycle’s counts to the cumulative totals
+        # Add this cycle's counts to the cumulative totals
         try:
             TOTAL_STATS["items"] += len(items)
             TOTAL_STATS["deduped"] += len(deduped)
@@ -1109,6 +1251,17 @@ def _cycle(log, settings) -> None:
             TOTAL_STATS["alerts"] += alerted
         except Exception:
             # ensure totals exist; fallback silently
+            pass
+        # WAVE ALPHA Agent 1: Update heartbeat accumulator with cycle stats
+        try:
+            global _heartbeat_acc
+            _heartbeat_acc.add_cycle(
+                scanned=len(items),
+                alerts=alerted,
+                errors=0,  # Could track errors in future enhancement
+            )
+        except Exception:
+            # ignore accumulator errors
             pass
     except Exception:
         # ignore any errors when updating stats
@@ -1223,17 +1376,110 @@ def _cycle(log, settings) -> None:
             track_pending_outcomes()
         except Exception as e:
             log.warning("outcome_tracking_failed err=%s", str(e))
+
+        # WAVE 1.2: Feedback loop periodic tasks
+        if FEEDBACK_AVAILABLE:
+            s = get_settings()
+
+            # Score pending alerts (check every cycle)
+            if getattr(s, "feature_feedback_loop", False):
+                try:
+                    scored_count = score_pending_alerts()
+                    if scored_count > 0:
+                        log.info("feedback_alerts_scored count=%d", scored_count)
+                except Exception as e:
+                    log.warning("feedback_scoring_failed err=%s", str(e))
+
+            # Send weekly report if scheduled
+            if getattr(s, "feature_feedback_weekly_report", False):
+                try:
+                    send_feedback_weekly_report()
+                except Exception as e:
+                    log.warning("feedback_weekly_report_failed err=%s", str(e))
+
+            # Analyze keyword performance and send recommendations (once per day)
+            # Piggybacking on the same time as admin reports
+            if getattr(s, "feature_feedback_loop", False):
+                try:
+                    from datetime import datetime, timezone
+
+                    now = datetime.now(timezone.utc)
+                    # Run at same time as analyzer (21:30 UTC by default)
+                    if (
+                        now.hour == getattr(s, "analyzer_utc_hour", 21)
+                        and now.minute >= getattr(s, "analyzer_utc_minute", 30)
+                        and now.minute < getattr(s, "analyzer_utc_minute", 30) + 5
+                    ):
+                        recommendations = analyze_keyword_performance(lookback_days=7)
+                        auto_apply = getattr(s, "feedback_auto_adjust", False)
+
+                        if recommendations:
+                            applied = apply_weight_adjustments(
+                                recommendations, auto_apply=auto_apply
+                            )
+                            if applied:
+                                log.info(
+                                    "keyword_weights_adjusted auto=%s count=%d",
+                                    auto_apply,
+                                    len(recommendations),
+                                )
+                except Exception as e:
+                    log.warning("feedback_keyword_analysis_failed err=%s", str(e))
     except Exception:
         # Ignore auto analyzer errors to keep the main loop alive
         pass
 
 
+def _set_process_priority(log, settings) -> None:
+    """
+    Set process priority on Windows to reduce CPU contention.
+
+    This function attempts to set the process priority using psutil if available.
+    On non-Windows platforms or if psutil is not installed, it silently skips.
+    """
+    try:
+        import sys
+
+        import psutil
+
+        if sys.platform != "win32":
+            return
+
+        priority_name = getattr(settings, "bot_process_priority", "BELOW_NORMAL")
+        priority_map = {
+            "IDLE": psutil.IDLE_PRIORITY_CLASS,
+            "BELOW_NORMAL": psutil.BELOW_NORMAL_PRIORITY_CLASS,
+            "NORMAL": psutil.NORMAL_PRIORITY_CLASS,
+            "ABOVE_NORMAL": psutil.ABOVE_NORMAL_PRIORITY_CLASS,
+            "HIGH": psutil.HIGH_PRIORITY_CLASS,
+            "REALTIME": psutil.REALTIME_PRIORITY_CLASS,
+        }
+
+        priority = priority_map.get(
+            priority_name.upper(), psutil.BELOW_NORMAL_PRIORITY_CLASS
+        )
+        proc = psutil.Process()
+        proc.nice(priority)
+        log.info("process_priority_set priority=%s", priority_name)
+    except ImportError:
+        # psutil not available, skip silently
+        log.debug("process_priority_skip reason=psutil_not_available")
+    except Exception as e:
+        # Any other error, log but don't fail
+        log.warning("process_priority_failed err=%s", e.__class__.__name__)
+
+
 def runner_main(
     once: bool = False, loop: bool = False, sleep_s: float | None = None
 ) -> int:
+    global FEEDBACK_AVAILABLE
+
     settings = get_settings()
     setup_logging(settings.log_level)
     log = get_logger("runner")
+
+    # Set process priority (Windows only)
+    _set_process_priority(log, settings)
 
     # Finviz token probe
     finviz_cookie = settings.finviz_auth_token
@@ -1292,6 +1538,41 @@ def runner_main(
         except Exception as e:
             log.warning("health_endpoint_failed err=%s", str(e))
 
+    # WAVE 1.2: Initialize feedback loop database
+    if FEEDBACK_AVAILABLE and getattr(settings, "feature_feedback_loop", False):
+        try:
+            from pathlib import Path
+
+            init_database()
+
+            # Verify database was created successfully
+            db_path = Path("data/feedback/alert_performance.db")
+            if not db_path.exists():
+                log.error("feedback_database_not_created path=%s", db_path)
+                FEEDBACK_AVAILABLE = False
+            else:
+                log.info("feedback_loop_database_initialized path=%s", db_path)
+
+                # Only start tracker if database is ready and tracking interval is set
+                if getattr(settings, "feedback_tracking_interval", 0) > 0:
+                    import threading
+
+                    from .feedback.price_tracker import run_tracker_loop
+
+                    tracker_thread = threading.Thread(
+                        target=run_tracker_loop,
+                        daemon=True,
+                        name="FeedbackTracker",
+                    )
+                    tracker_thread.start()
+                    log.info(
+                        "feedback_tracker_started interval=%ds",
+                        settings.feedback_tracking_interval,
+                    )
+        except Exception as e:
+            log.error("feedback_init_failed err=%s", str(e), exc_info=True)
+            FEEDBACK_AVAILABLE = False
+
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
 
@@ -1302,13 +1583,62 @@ def runner_main(
         )
     except Exception:
         HEARTBEAT_INTERVAL_S = 0
-    next_heartbeat_ts = (
-        time.time() + HEARTBEAT_INTERVAL_S if HEARTBEAT_INTERVAL_S > 0 else None
-    )
+
+    # Track whether market hours detection is enabled
+    market_hours_enabled = getattr(settings, "feature_market_hours_detection", False)
+
+    # WAVE ALPHA Agent 3: Track last market status for transition logging
+    last_market_status = None
 
     while True:
         # Start of cycle: clear any per-cycle alert downgrade
         from .alerts import reset_cycle_downgrade
+
+        # WAVE 0.0 Phase 2: Check market status and adjust cycle parameters
+        current_market_info = None
+        if market_hours_enabled:
+            try:
+                current_market_info = get_market_info()
+                market_status = current_market_info["status"]
+                market_features = current_market_info["features"]
+                market_cycle_sec = current_market_info["cycle_seconds"]
+
+                # Override sleep_interval with market-aware cycle time
+                sleep_interval = float(market_cycle_sec)
+
+                # WAVE ALPHA Agent 3: Log market status transitions
+                if (
+                    last_market_status is not None
+                    and last_market_status != market_status
+                ):
+                    log.info(
+                        "market_status_changed from=%s to=%s cycle_sec=%d features=%s",
+                        last_market_status,
+                        market_status,
+                        market_cycle_sec,
+                        ",".join([k for k, v in market_features.items() if v])
+                        or "none",
+                    )
+                last_market_status = market_status
+
+                # Log market status and feature configuration
+                enabled_features = [k for k, v in market_features.items() if v]
+                log.info(
+                    "market_status status=%s cycle=%ds features=%s warmup=%s weekend=%s holiday=%s",
+                    market_status,
+                    market_cycle_sec,
+                    ",".join(enabled_features) if enabled_features else "none",
+                    current_market_info["is_warmup"],
+                    current_market_info["is_weekend"],
+                    current_market_info["is_holiday"],
+                )
+            except Exception as e:
+                log.warning(
+                    "market_hours_check_failed err=%s",
+                    e.__class__.__name__,
+                    exc_info=True,
+                )
+                current_market_info = None
 
         # Optional: poll approval marker → promote analyzer plan (no-op if disabled)
         try:
@@ -1335,7 +1665,7 @@ def runner_main(
         if STOP:
             break
         t0 = time.time()
-        _cycle(log, settings)
+        _cycle(log, settings, market_info=current_market_info)
         cycle_time = time.time() - t0
         log.info("CYCLE_DONE took=%.2fs", cycle_time)
 
@@ -1349,6 +1679,23 @@ def runner_main(
             )
         except Exception:
             pass
+
+        # WAVE ALPHA Agent 1: Check if it's time to send heartbeat with cumulative stats
+        try:
+            global _heartbeat_acc
+            # Get interval from env (default 60 minutes)
+            heartbeat_interval = (
+                HEARTBEAT_INTERVAL_S // 60 if HEARTBEAT_INTERVAL_S > 0 else 60
+            )
+            if _heartbeat_acc.should_send_heartbeat(
+                interval_minutes=heartbeat_interval
+            ):
+                # Send heartbeat with cumulative stats instead of just last cycle
+                _send_heartbeat(log, settings, reason="interval")
+                _heartbeat_acc.reset()
+        except Exception as e:
+            log.debug("heartbeat_check_failed err=%s", e.__class__.__name__)
+
         if not do_loop or STOP:
             break
         # sleep between cycles, but wake early if STOP flips
@@ -1357,10 +1704,6 @@ def runner_main(
             if STOP:
                 break
             time.sleep(0.2)
-            # periodic heartbeat (loop mode only)
-            if next_heartbeat_ts and time.time() >= next_heartbeat_ts:
-                _send_heartbeat(log, settings, reason="interval")
-                next_heartbeat_ts = time.time() + HEARTBEAT_INTERVAL_S
 
     log.info("boot_end")
     # At the end of the run, send a final heartbeat summarising totals.  This

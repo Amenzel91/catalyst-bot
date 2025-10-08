@@ -1,17 +1,16 @@
-"""Chart caching system to avoid regenerating identical charts.
+"""SQLite-based chart caching system to avoid regenerating identical charts.
 
-Caches charts by (ticker, timeframe) with TTL-based expiration. Charts are
-stored as files on disk with a lightweight JSON index tracking metadata.
+Caches chart URLs by (ticker, timeframe) with TTL-based expiration. Charts are
+stored in a SQLite database with automatic cleanup of expired entries.
 """
 
 from __future__ import annotations
 
-import json
 import os
+import sqlite3
 import time
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 try:
     from .logging_utils import get_logger
@@ -28,68 +27,112 @@ log = get_logger("chart_cache")
 
 
 class ChartCache:
-    """File-based cache for generated chart images.
+    """SQLite-based cache for chart URLs with TTL expiration.
 
     Attributes
     ----------
-    cache_dir : Path
-        Directory where chart images are stored
-    index_file : Path
-        JSON file tracking cache metadata
-    ttl_seconds : int
-        Time-to-live for cached charts (default: 5 minutes)
+    db_path : Path
+        Path to SQLite database file
+    ttl_map : dict
+        Mapping of timeframe -> TTL in seconds
     """
+
+    # TTL strategy (in seconds)
+    TTL_MAP = {
+        "1D": 60,  # 1 minute (intraday, volatile)
+        "5D": 300,  # 5 minutes
+        "1M": 900,  # 15 minutes
+        "3M": 3600,  # 1 hour
+        "1Y": 3600,  # 1 hour
+    }
 
     def __init__(
         self,
-        cache_dir: str | Path = "out/charts/cache",
-        ttl_seconds: int = 300,  # 5 minutes default
+        db_path: str | Path = "data/chart_cache.db",
+        ttl_map: Optional[dict] = None,
     ):
         """Initialize the chart cache.
 
         Parameters
         ----------
-        cache_dir : str | Path
-            Directory to store cached charts
-        ttl_seconds : int
-            Cache TTL in seconds (default: 300 = 5 minutes)
+        db_path : str | Path
+            Path to SQLite database file
+        ttl_map : Optional[dict]
+            Custom TTL mapping (timeframe -> seconds)
         """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.index_file = self.cache_dir / "cache_index.json"
-        self.ttl_seconds = ttl_seconds
+        # Allow custom TTL map or use defaults
+        self.ttl_map = ttl_map or self.TTL_MAP.copy()
 
-        # Load existing index
-        self.index = self._load_index()
+        # Override from environment variables if provided
+        env_ttls = {
+            "1D": os.getenv("CHART_CACHE_1D_TTL"),
+            "5D": os.getenv("CHART_CACHE_5D_TTL"),
+            "1M": os.getenv("CHART_CACHE_1M_TTL"),
+            "3M": os.getenv("CHART_CACHE_3M_TTL"),
+        }
+        for tf, val in env_ttls.items():
+            if val:
+                try:
+                    self.ttl_map[tf] = int(val)
+                except ValueError:
+                    log.warning("invalid_ttl_env tf=%s val=%s", tf, val)
 
-    def _load_index(self) -> Dict[str, Dict]:
-        """Load the cache index from disk."""
-        if not self.index_file.exists():
-            return {}
+        # Initialize database schema
+        self._init_db()
 
-        try:
-            data = json.loads(self.index_file.read_text(encoding="utf-8"))
-            return data
-        except Exception as e:
-            log.warning("index_load_failed err=%s", str(e))
-            return {}
+        # Auto-cleanup on startup
+        self._cleanup_old_entries()
 
-    def _save_index(self):
-        """Save the cache index to disk."""
-        try:
-            self.index_file.write_text(
-                json.dumps(self.index, indent=2, sort_keys=True), encoding="utf-8"
+    def _init_db(self):
+        """Create the chart_cache table if it doesn't exist."""
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chart_cache (
+                    ticker TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    ttl INTEGER NOT NULL,
+                    PRIMARY KEY (ticker, timeframe)
+                )
+                """
             )
-        except Exception as e:
-            log.warning("index_save_failed err=%s", str(e))
+            # Create index for efficient cleanup queries
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_created_at
+                ON chart_cache(created_at)
+                """
+            )
+            conn.commit()
 
-    def _make_key(self, ticker: str, timeframe: str) -> str:
-        """Create a cache key from ticker and timeframe."""
-        return f"{ticker.upper()}_{timeframe.upper()}"
+        log.info("chart_cache_initialized db=%s", self.db_path)
 
-    def get(self, ticker: str, timeframe: str) -> Optional[Path]:
-        """Retrieve a cached chart if it exists and hasn't expired.
+    def _cleanup_old_entries(self):
+        """Delete entries older than 24 hours on startup."""
+        cutoff = int(time.time()) - (24 * 60 * 60)  # 24 hours ago
+
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                "DELETE FROM chart_cache WHERE created_at < ?",
+                (cutoff,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+
+        if deleted > 0:
+            log.info("chart_cache_cleanup deleted=%d", deleted)
+
+    def _get_ttl(self, timeframe: str) -> int:
+        """Get TTL for a timeframe (default: 300 seconds)."""
+        return self.ttl_map.get(timeframe.upper(), 300)
+
+    def get_cached_chart(self, ticker: str, timeframe: str) -> Optional[str]:
+        """Retrieve a cached chart URL if not expired.
 
         Parameters
         ----------
@@ -100,44 +143,52 @@ class ChartCache:
 
         Returns
         -------
-        Path or None
-            Path to cached chart image, or None if cache miss/expired
+        Optional[str]
+            Cached chart URL or None if cache miss/expired
         """
-        key = self._make_key(ticker, timeframe)
+        ticker = ticker.upper()
+        timeframe = timeframe.upper()
 
-        if key not in self.index:
-            log.debug("cache_miss key=%s reason=not_found", key)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                """
+                SELECT url, created_at, ttl
+                FROM chart_cache
+                WHERE ticker = ? AND timeframe = ?
+                """,
+                (ticker, timeframe),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            log.debug("cache_miss ticker=%s tf=%s reason=not_found", ticker, timeframe)
             return None
 
-        entry = self.index[key]
-        cached_at = entry.get("cached_at", 0)
-        file_path = entry.get("file_path")
+        url, created_at, ttl = row
+        age = int(time.time()) - created_at
 
         # Check if expired
-        age = time.time() - cached_at
-        if age > self.ttl_seconds:
+        if age > ttl:
             log.debug(
-                "cache_miss key=%s reason=expired age=%.1fs ttl=%ds",
-                key,
+                "cache_miss ticker=%s tf=%s reason=expired age=%ds ttl=%ds",
+                ticker,
+                timeframe,
                 age,
-                self.ttl_seconds,
+                ttl,
             )
-            # Clean up expired entry
-            self._remove(key)
             return None
 
-        # Check if file still exists
-        path = Path(file_path)
-        if not path.exists():
-            log.debug("cache_miss key=%s reason=file_not_found", key)
-            self._remove(key)
-            return None
+        log.info("cache_hit ticker=%s tf=%s age=%ds", ticker, timeframe, age)
+        return url
 
-        log.info("cache_hit key=%s age=%.1fs", key, age)
-        return path
-
-    def put(self, ticker: str, timeframe: str, file_path: Path) -> None:
-        """Store a chart in the cache.
+    def cache_chart(
+        self,
+        ticker: str,
+        timeframe: str,
+        url: str,
+        ttl_seconds: Optional[int] = None,
+    ) -> None:
+        """Store a chart URL in the cache.
 
         Parameters
         ----------
@@ -145,41 +196,36 @@ class ChartCache:
             Stock ticker symbol
         timeframe : str
             Timeframe (1D, 5D, 1M, 3M, 1Y)
-        file_path : Path
-            Path to the chart image file
+        url : str
+            Chart image URL
+        ttl_seconds : Optional[int]
+            Custom TTL in seconds (defaults to timeframe-based TTL)
         """
-        if not file_path.exists():
-            log.warning("cache_put_failed reason=file_not_found path=%s", file_path)
-            return
+        ticker = ticker.upper()
+        timeframe = timeframe.upper()
 
-        key = self._make_key(ticker, timeframe)
+        # Use custom TTL or default based on timeframe
+        ttl = ttl_seconds if ttl_seconds is not None else self._get_ttl(timeframe)
+        created_at = int(time.time())
 
-        self.index[key] = {
-            "ticker": ticker.upper(),
-            "timeframe": timeframe.upper(),
-            "file_path": str(file_path.absolute()),
-            "cached_at": time.time(),
-            "created_at": datetime.utcnow().isoformat() + "Z",
-        }
+        with sqlite3.connect(str(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO chart_cache
+                (ticker, timeframe, url, created_at, ttl)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ticker, timeframe, url, created_at, ttl),
+            )
+            conn.commit()
 
-        self._save_index()
-
-        log.info("cache_put key=%s path=%s", key, file_path)
-
-    def _remove(self, key: str) -> None:
-        """Remove an entry from the cache index."""
-        if key in self.index:
-            entry = self.index.pop(key)
-            self._save_index()
-
-            # Optionally delete the file
-            try:
-                file_path = Path(entry.get("file_path", ""))
-                if file_path.exists():
-                    file_path.unlink()
-                    log.debug("cache_file_deleted path=%s", file_path)
-            except Exception as e:
-                log.debug("cache_file_delete_failed err=%s", str(e))
+        log.info(
+            "cache_put ticker=%s tf=%s ttl=%ds url=%s",
+            ticker,
+            timeframe,
+            ttl,
+            url[:60],
+        )
 
     def clear_expired(self) -> int:
         """Remove all expired entries from the cache.
@@ -189,23 +235,23 @@ class ChartCache:
         int
             Number of entries removed
         """
-        now = time.time()
-        expired_keys = []
+        now = int(time.time())
 
-        for key, entry in self.index.items():
-            cached_at = entry.get("cached_at", 0)
-            age = now - cached_at
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM chart_cache
+                WHERE (created_at + ttl) < ?
+                """,
+                (now,),
+            )
+            deleted = cursor.rowcount
+            conn.commit()
 
-            if age > self.ttl_seconds:
-                expired_keys.append(key)
+        if deleted > 0:
+            log.info("cache_cleared_expired count=%d", deleted)
 
-        for key in expired_keys:
-            self._remove(key)
-
-        if expired_keys:
-            log.info("cache_cleared_expired count=%d", len(expired_keys))
-
-        return len(expired_keys)
+        return deleted
 
     def clear_all(self) -> int:
         """Remove all entries from the cache.
@@ -215,45 +261,54 @@ class ChartCache:
         int
             Number of entries removed
         """
-        count = len(self.index)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            cursor = conn.execute("DELETE FROM chart_cache")
+            deleted = cursor.rowcount
+            conn.commit()
 
-        for key in list(self.index.keys()):
-            self._remove(key)
+        log.info("cache_cleared_all count=%d", deleted)
+        return deleted
 
-        log.info("cache_cleared_all count=%d", count)
-        return count
-
-    def stats(self) -> Dict:
+    def stats(self) -> dict:
         """Get cache statistics.
 
         Returns
         -------
-        Dict
+        dict
             Cache statistics including size, oldest/newest entries
         """
-        if not self.index:
-            return {
-                "size": 0,
-                "oldest": None,
-                "newest": None,
-                "expired": 0,
-                "ttl_seconds": self.ttl_seconds,
-            }
+        with sqlite3.connect(str(self.db_path)) as conn:
+            # Get total count
+            cursor = conn.execute("SELECT COUNT(*) FROM chart_cache")
+            total = cursor.fetchone()[0]
 
-        now = time.time()
-        cached_times = [e.get("cached_at", 0) for e in self.index.values()]
+            if total == 0:
+                return {
+                    "size": 0,
+                    "oldest": None,
+                    "newest": None,
+                    "expired": 0,
+                }
 
-        oldest = min(cached_times) if cached_times else 0
-        newest = max(cached_times) if cached_times else 0
+            # Get oldest and newest timestamps
+            cursor = conn.execute(
+                "SELECT MIN(created_at), MAX(created_at) FROM chart_cache"
+            )
+            oldest, newest = cursor.fetchone()
 
-        expired_count = sum(1 for t in cached_times if (now - t) > self.ttl_seconds)
+            # Count expired entries
+            now = int(time.time())
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM chart_cache WHERE (created_at + ttl) < ?",
+                (now,),
+            )
+            expired = cursor.fetchone()[0]
 
         return {
-            "size": len(self.index),
-            "oldest": datetime.fromtimestamp(oldest).isoformat() if oldest else None,
-            "newest": datetime.fromtimestamp(newest).isoformat() if newest else None,
-            "expired": expired_count,
-            "ttl_seconds": self.ttl_seconds,
+            "size": total,
+            "oldest": oldest,
+            "newest": newest,
+            "expired": expired,
         }
 
 
@@ -266,14 +321,22 @@ def get_cache() -> ChartCache:
     global _CACHE
 
     if _CACHE is None:
-        # Read TTL from environment (default 5 minutes)
-        try:
-            ttl = int(os.getenv("CHART_CACHE_TTL_SECONDS", "300"))
-        except Exception:
-            ttl = 300
+        # Read cache settings from environment
+        db_path = os.getenv("CHART_CACHE_DB_PATH", "data/chart_cache.db")
 
-        cache_dir = os.getenv("CHART_CACHE_DIR", "out/charts/cache")
+        # Check if caching is enabled
+        cache_enabled = os.getenv("CHART_CACHE_ENABLED", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
-        _CACHE = ChartCache(cache_dir=cache_dir, ttl_seconds=ttl)
+        if not cache_enabled:
+            log.warning("chart_cache_disabled using_in_memory_cache")
+            # Return a cache instance anyway but with very short TTLs
+            _CACHE = ChartCache(db_path=":memory:")
+        else:
+            _CACHE = ChartCache(db_path=db_path)
 
     return _CACHE

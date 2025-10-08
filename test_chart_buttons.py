@@ -18,11 +18,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Load environment variables
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 env_path = Path(__file__).parent / "env.env"
 load_dotenv(env_path)
 
-from catalyst_bot.alerts import send_alert_safe
+from catalyst_bot.alerts import send_alert_safe  # noqa: E402
 
 
 def main():
@@ -31,7 +32,7 @@ def main():
         "ticker",
         nargs="?",
         default="AAPL",
-        help="Ticker symbol to test. Defaults to AAPL."
+        help="Ticker symbol to test. Defaults to AAPL.",
     )
     args = parser.parse_args()
 
@@ -40,7 +41,9 @@ def main():
     print(f"[*] Generating test alert for {ticker}...")
     print(f"[*] Using advanced charts: {os.getenv('FEATURE_ADVANCED_CHARTS', '0')}")
     print(f"[*] Bot token configured: {bool(os.getenv('DISCORD_BOT_TOKEN'))}")
-    print(f"[*] Alert channel configured: {bool(os.getenv('DISCORD_ALERT_CHANNEL_ID'))}")
+    print(
+        f"[*] Alert channel configured: {bool(os.getenv('DISCORD_ALERT_CHANNEL_ID'))}"
+    )
     print()
 
     # Create test event data
@@ -55,8 +58,8 @@ def main():
             "score": 0.75,
             "category": "earnings",
             "sentiment": 0.6,
-            "keywords": ["earnings", "revenue", "growth"]
-        }
+            "keywords": ["earnings", "revenue", "growth"],
+        },
     }
 
     # Create scored event
@@ -64,7 +67,7 @@ def main():
         "item": test_event,
         "score": 0.75,
         "sentiment": 0.6,
-        "category": "earnings"
+        "category": "earnings",
     }
 
     # Get webhook URL from environment
@@ -80,7 +83,7 @@ def main():
         scored=scored_event,
         last_price=152.50,
         last_change_pct=1.67,
-        webhook_url=webhook_url
+        webhook_url=webhook_url,
     )
 
     if success:

@@ -1,18 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Read(//c/Users/menza/Downloads/**)",
-      "Bash(pip install:*)",
-      "Bash(.venv/Scripts/python:*)",
-      "Bash(.venv/Scripts/pip install:*)",
-      "Bash(cmd /c:*)",
-      "Bash(.venv/Scripts/python.exe:*)",
-      "Bash(git add:*)",
-      "Bash(unzip:*)",
-      "Bash(.venvScriptspython.exe test_admin_controls.py)",
-      "Bash(cloudflare-tunnel-windows-amd64.exe tunnel:*)",
-      "Bash(curl -L -o cloudflare-tunnel-windows-amd64.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe)",
-      "Bash(./cloudflare-tunnel-windows-amd64.exe tunnel --url http://localhost:8081)"
+      "Bash(..venvScriptspre-commit.exe run --all-files --show-diff-on-failure)",
+      "Bash(Select-String -Pattern \"Failed|Passed|error\")",
+      "Bash(Select-Object -First 20)",
+      "Bash(for:*)",
+      "Bash(do sed -i '/^from catalyst_bot/s/$/ # noqa: E402/' \"$file\")",
+      "Bash(done)",
+      "Bash(..venvScriptspre-commit.exe run --all-files)",
+      "Bash(.venvScriptspre-commit.exe run --all-files)",
+      "Bash(\".venv/Scripts/pre-commit.exe\" run --all-files)"
     ],
     "deny": [],
     "ask": []

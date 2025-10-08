@@ -16,8 +16,9 @@ Requirements:
 
 import os
 import sys
-import requests
 from pathlib import Path
+
+import requests
 from dotenv import load_dotenv
 
 # Load environment
@@ -27,7 +28,9 @@ load_dotenv(env_path)
 # Get credentials
 BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 APPLICATION_ID = os.getenv("DISCORD_APPLICATION_ID")
-GUILD_ID = os.getenv("DISCORD_GUILD_ID")  # Optional - for faster guild-specific commands
+GUILD_ID = os.getenv(
+    "DISCORD_GUILD_ID"
+)  # Optional - for faster guild-specific commands
 
 if not BOT_TOKEN:
     print("[ERROR] DISCORD_BOT_TOKEN not found in .env")
@@ -36,11 +39,12 @@ if not BOT_TOKEN:
 # Auto-detect application ID from token if not provided
 if not APPLICATION_ID:
     import base64
+
     try:
         # Discord bot tokens are in format: base64(app_id).random.random
-        APPLICATION_ID = BOT_TOKEN.split('.')[0]
+        APPLICATION_ID = BOT_TOKEN.split(".")[0]
         # Decode base64
-        APPLICATION_ID = base64.b64decode(APPLICATION_ID + '==').decode('utf-8')
+        APPLICATION_ID = base64.b64decode(APPLICATION_ID + "==").decode("utf-8")
         print(f"[INFO] Auto-detected APPLICATION_ID: {APPLICATION_ID}")
     except Exception as e:
         print(f"[ERROR] Could not auto-detect APPLICATION_ID: {e}")
@@ -109,9 +113,9 @@ def register_global_commands():
         "Content-Type": "application/json",
     }
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Registering GLOBAL commands (takes ~1 hour to propagate)")
-    print("="*60)
+    print("=" * 60)
 
     for command in COMMANDS:
         print(f"\nRegistering: /{command['name']}")
@@ -139,9 +143,9 @@ def register_guild_commands():
         "Content-Type": "application/json",
     }
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(f"Registering GUILD commands for guild {GUILD_ID} (instant)")
-    print("="*60)
+    print("=" * 60)
 
     for command in COMMANDS:
         print(f"\nRegistering: /{command['name']}")
@@ -158,9 +162,9 @@ def register_guild_commands():
 
 def list_registered_commands():
     """List all currently registered commands."""
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Currently Registered Commands")
-    print("="*60)
+    print("=" * 60)
 
     # Global commands
     url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/commands"
@@ -177,7 +181,10 @@ def list_registered_commands():
 
     # Guild commands (if configured)
     if GUILD_ID:
-        url = f"https://discord.com/api/v10/applications/{APPLICATION_ID}/guilds/{GUILD_ID}/commands"
+        url = (
+            f"https://discord.com/api/v10/applications/{APPLICATION_ID}"
+            f"/guilds/{GUILD_ID}/commands"
+        )
         response = requests.get(url, headers=headers, timeout=10)
         if response.ok:
             commands = response.json()
@@ -191,10 +198,10 @@ def list_registered_commands():
 def main():
     """Main registration flow."""
     print("Discord Slash Command Registration")
-    print("="*60)
+    print("=" * 60)
     print(f"Application ID: {APPLICATION_ID}")
     print(f"Guild ID: {GUILD_ID or 'Not set (will register globally only)'}")
-    print("="*60)
+    print("=" * 60)
 
     # Show menu
     print("\nOptions:")
@@ -233,13 +240,15 @@ def main():
         print("\n")
         list_registered_commands()
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Registration Complete!")
-        print("="*60)
+        print("=" * 60)
         print("\nNext steps:")
         print("  1. If you registered guild commands, they're available now")
         print("  2. If you registered global commands, wait ~1 hour")
-        print("  3. Make sure interaction server is running: python interaction_server.py")
+        print(
+            "  3. Make sure interaction server is running: python interaction_server.py"
+        )
         print("  4. Test commands in Discord: /admin stats")
 
     except KeyboardInterrupt:

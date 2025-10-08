@@ -426,17 +426,176 @@ def _load_historical_trends(days: int = 7) -> Dict[str, Any]:
         return {}
 
 
+def _run_monte_carlo_sensitivity(
+    target_date: date_cls, current_params: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Run Monte Carlo sensitivity analysis on key parameters.
+
+    Parameters
+    ----------
+    target_date : date
+        Date to backtest
+    current_params : dict
+        Current parameter values
+
+    Returns
+    -------
+    dict
+        Monte Carlo insights including optimal parameter ranges
+    """
+    try:
+        from .backtesting.monte_carlo import MonteCarloSimulator
+
+        # Use 14-day window for speed
+        end_date = target_date
+        start_date = target_date - timedelta(days=14)
+
+        simulator = MonteCarloSimulator(
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+            initial_capital=10000.0,
+            base_strategy_params={
+                "take_profit_pct": current_params.get(
+                    "ANALYZER_HIT_UP_THRESHOLD_PCT", 5
+                )
+                / 100,
+                "stop_loss_pct": abs(
+                    current_params.get("ANALYZER_HIT_DOWN_THRESHOLD_PCT", -5)
+                )
+                / 100,
+            },
+        )
+
+        # Test MIN_SCORE parameter
+        min_score_results = simulator.run_parameter_sweep(
+            parameter="min_score",
+            values=[0.20, 0.25, 0.30, 0.35],
+            num_simulations=5,  # Keep lightweight
+            randomize=False,
+        )
+
+        # Test take_profit_pct parameter
+        tp_results = simulator.run_parameter_sweep(
+            parameter="take_profit_pct",
+            values=[0.15, 0.20, 0.25, 0.30],
+            num_simulations=5,
+            randomize=False,
+        )
+
+        insights = {
+            "min_score": {
+                "optimal_value": min_score_results.get("optimal_value"),
+                "confidence": min_score_results.get("confidence", 0),
+                "tested_values": [
+                    r["value"] for r in min_score_results.get("results", [])
+                ],
+                "sharpe_by_value": {
+                    r["value"]: r["avg_sharpe"]
+                    for r in min_score_results.get("results", [])
+                },
+            },
+            "take_profit_pct": {
+                "optimal_value": tp_results.get("optimal_value"),
+                "confidence": tp_results.get("confidence", 0),
+                "tested_values": [r["value"] for r in tp_results.get("results", [])],
+                "sharpe_by_value": {
+                    r["value"]: r["avg_sharpe"] for r in tp_results.get("results", [])
+                },
+            },
+        }
+
+        log.info(
+            f"monte_carlo_complete min_score_optimal={insights['min_score']['optimal_value']} "
+            f"tp_optimal={insights['take_profit_pct']['optimal_value']}"
+        )
+
+        return insights
+
+    except Exception as e:
+        log.warning(f"monte_carlo_sensitivity_failed err={e}")
+        return {}
+
+
 def _generate_parameter_recommendations(
     backtest: BacktestSummary,
     keyword_perf: List[KeywordPerformance],
     current_params: Dict[str, Any],
     include_feedback: bool = True,
+    monte_carlo_insights: Optional[Dict[str, Any]] = None,
 ) -> List[ParameterRecommendation]:
     """Generate recommended parameter adjustments based on performance and historical trends."""
     recommendations = []
 
     # Load historical performance trends (past 7 days)
     historical_trends = _load_historical_trends(days=7)
+
+    # WAVE BETA 2: Use Monte Carlo insights for parameter recommendations
+    if monte_carlo_insights:
+        # MIN_SCORE recommendation based on Monte Carlo
+        min_score_optimal = monte_carlo_insights.get("min_score", {}).get(
+            "optimal_value"
+        )
+        min_score_confidence = monte_carlo_insights.get("min_score", {}).get(
+            "confidence", 0
+        )
+
+        if min_score_optimal is not None and min_score_confidence > 0.5:
+            current_min_score = current_params.get("MIN_SCORE", 0)
+            if (
+                abs(min_score_optimal - current_min_score) > 0.05
+            ):  # Significant difference
+                sharpe_values = monte_carlo_insights["min_score"]["sharpe_by_value"]
+                sharpe_str = ", ".join(f"{v}={s:.2f}" for v, s in sharpe_values.items())
+                reason = (
+                    f"Monte Carlo analysis suggests MIN_SCORE={min_score_optimal} "
+                    f"(confidence: {min_score_confidence:.1%}). "
+                    f"Tested Sharpe ratios: {sharpe_str}"
+                )
+
+                recommendations.append(
+                    ParameterRecommendation(
+                        name="MIN_SCORE",
+                        current_value=current_min_score,
+                        proposed_value=min_score_optimal,
+                        reason=reason,
+                        impact="high",
+                    )
+                )
+
+        # TAKE_PROFIT threshold based on Monte Carlo
+        tp_optimal = monte_carlo_insights.get("take_profit_pct", {}).get(
+            "optimal_value"
+        )
+        tp_confidence = monte_carlo_insights.get("take_profit_pct", {}).get(
+            "confidence", 0
+        )
+
+        if tp_optimal is not None and tp_confidence > 0.5:
+            current_tp = current_params.get("ANALYZER_HIT_UP_THRESHOLD_PCT", 5)
+            proposed_tp = tp_optimal * 100  # Convert to percentage
+            if abs(proposed_tp - current_tp) > 1.0:  # At least 1% difference
+                sharpe_values = monte_carlo_insights["take_profit_pct"][
+                    "sharpe_by_value"
+                ]
+                sharpe_str = ", ".join(
+                    f"{v*100:.0f}%={s:.2f}" for v, s in sharpe_values.items()
+                )
+                reason = (
+                    f"Monte Carlo analysis suggests take profit at {proposed_tp:.0f}% "
+                    f"(confidence: {tp_confidence:.1%}). "
+                    f"Tested Sharpe ratios: {sharpe_str}"
+                )
+
+                recommendations.append(
+                    ParameterRecommendation(
+                        name="ANALYZER_HIT_UP_THRESHOLD_PCT",
+                        current_value=current_tp,
+                        proposed_value=proposed_tp,
+                        reason=reason,
+                        impact="high",
+                    )
+                )
 
     # 1. Adjust MIN_SCORE based on hit rate and historical trend
     if backtest.hit_rate < 0.5 and backtest.n > 10:
@@ -599,12 +758,30 @@ def _generate_parameter_recommendations(
 # ======================== Admin Report Generation ========================
 
 
-def generate_admin_report(target_date: Optional[date_cls] = None) -> AdminReport:
-    """Generate complete admin report for a given date."""
+def generate_admin_report(
+    target_date: Optional[date_cls] = None, include_monte_carlo: bool = True
+) -> AdminReport:
+    """
+    Generate complete admin report for a given date.
+
+    Parameters
+    ----------
+    target_date : date, optional
+        Target date for report (defaults to yesterday)
+    include_monte_carlo : bool
+        Whether to include Monte Carlo sensitivity analysis (default: True)
+
+    Returns
+    -------
+    AdminReport
+        Complete admin report with all metrics
+    """
     if target_date is None:
         target_date = (datetime.now(timezone.utc) - timedelta(days=1)).date()
 
-    log.info(f"generating_admin_report date={target_date}")
+    log.info(
+        f"generating_admin_report date={target_date} monte_carlo={include_monte_carlo}"
+    )
 
     # Load data
     events = _load_events_for_date(target_date)
@@ -614,8 +791,18 @@ def generate_admin_report(target_date: Optional[date_cls] = None) -> AdminReport
     # Compute metrics
     backtest_summary = _compute_backtest_summary(events)
     keyword_performance = _analyze_keyword_performance(events, keyword_weights)
+
+    # Run Monte Carlo sensitivity analysis if enabled
+    monte_carlo_insights = None
+    if include_monte_carlo and backtest_summary.n > 5:
+        monte_carlo_insights = _run_monte_carlo_sensitivity(target_date, current_params)
+
+    # Generate recommendations (now includes Monte Carlo insights)
     recommendations = _generate_parameter_recommendations(
-        backtest_summary, keyword_performance, current_params
+        backtest_summary,
+        keyword_performance,
+        current_params,
+        monte_carlo_insights=monte_carlo_insights,
     )
 
     # Calculate total P&L (simulated)
@@ -816,6 +1003,39 @@ def build_admin_embed(report: AdminReport) -> Dict[str, Any]:
         fields.append(
             {"name": "🏆 Top Keywords", "value": kw_text or "No data", "inline": True}
         )
+
+    # WAVE 1.2: Add feedback loop stats if enabled
+    try:
+        from ..config import get_settings
+
+        settings = get_settings()
+        if getattr(settings, "feature_feedback_loop", False):
+            try:
+                from ..feedback.database import get_performance_stats
+
+                feedback_stats = get_performance_stats(lookback_days=7)
+
+                if feedback_stats and feedback_stats.get("total_alerts", 0) > 0:
+                    fb_text = (
+                        f"**Total Alerts:** {feedback_stats.get('total_alerts', 0)}\n"
+                        f"**Win Rate:** {feedback_stats.get('win_rate', 0):.1%}\n"
+                        f"**Avg Return:** {feedback_stats.get('avg_return_1d', 0):+.2%}\n"
+                        f"**Wins:** {feedback_stats.get('wins', 0)} | "
+                        f"**Losses:** {feedback_stats.get('losses', 0)} | "
+                        f"**Neutral:** {feedback_stats.get('neutral', 0)}"
+                    )
+
+                    fields.append(
+                        {
+                            "name": "🔄 Feedback Loop (7d)",
+                            "value": fb_text,
+                            "inline": True,
+                        }
+                    )
+            except Exception:
+                pass  # Skip feedback data if unavailable
+    except Exception:
+        pass
 
     # Add top 1-2 recommendations preview
     if report.parameter_recommendations:

@@ -9,3 +9,7 @@ Examples:
 - /research TSLA "What catalysts are coming up?"
 - /compare NVDA AMD "Which has better momentum?"
 - /tune "Increase selectivity for biotech alerts"
+"""
+
+# TODO: Implement LLM-powered slash commands
+# This module will integrate with llm_hybrid.py for natural language processing

@@ -1,7 +1,11 @@
-"""Simple health check endpoint for monitoring bot status.
+"""Enhanced health check endpoint for monitoring bot status.
 
-This module provides a lightweight HTTP server that exposes a /health endpoint
-for monitoring tools, container orchestrators, or uptime checks.
+This module provides a lightweight HTTP server that exposes multiple health endpoints:
+- /health/ping - Simple "ok" response for uptime monitoring
+- /health - Basic health status
+- /health/detailed - Comprehensive health metrics with GPU, disk, services
+
+WAVE 2.3: 24/7 Deployment Infrastructure
 
 Usage:
     Run in a separate thread alongside the main bot:
@@ -21,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict
 
 try:
+    from .health_monitor import get_health_status, is_healthy
     from .logging_utils import get_logger
 except Exception:
     import logging
@@ -29,6 +34,12 @@ except Exception:
 
     def get_logger(_):
         return logging.getLogger("health_endpoint")
+
+    def get_health_status():
+        return {"status": "unknown", "error": "health_monitor not available"}
+
+    def is_healthy():
+        return True
 
 
 log = get_logger("health_endpoint")
@@ -104,11 +115,24 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         """Suppress default HTTP server logging to avoid noise."""
 
     def do_GET(self):
-        """Handle GET requests to /health endpoint."""
-        if self.path == "/health":
+        """Handle GET requests to health endpoints."""
+        if self.path == "/health/ping":
+            self._handle_ping()
+        elif self.path == "/health/detailed":
+            self._handle_detailed()
+        elif self.path == "/health":
             self._handle_health()
         elif self.path == "/":
             self._handle_root()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not Found")
+
+    def do_POST(self):
+        """Handle POST requests for Discord interactions."""
+        if self.path == "/interactions":
+            self._handle_discord_interaction()
         else:
             self.send_response(404)
             self.end_headers()
@@ -119,7 +143,50 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Catalyst-Bot Health Check Server\nGET /health for status")
+        msg = (
+            b"Catalyst-Bot Health Check Server\n"
+            b"Endpoints:\n"
+            b"  GET /health/ping     - Simple uptime check\n"
+            b"  GET /health          - Basic health status\n"
+            b"  GET /health/detailed - Comprehensive metrics\n"
+        )
+        self.wfile.write(msg)
+
+    def _handle_ping(self):
+        """Simple ping endpoint for uptime monitoring (UptimeRobot compatible)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def _handle_detailed(self):
+        """Detailed health endpoint with comprehensive metrics."""
+        try:
+            # Get comprehensive health status from health_monitor
+            health = get_health_status()
+
+            # Merge with existing _HEALTH_STATUS for backward compatibility
+            health["start_time"] = _HEALTH_STATUS.get("start_time")
+
+            status_code = 200 if health.get("status") == "healthy" else 503
+
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(health, indent=2).encode())
+        except Exception as e:
+            log.error(
+                f"detailed_health_error err={e.__class__.__name__}", exc_info=True
+            )
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            error_response = {
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            self.wfile.write(json.dumps(error_response).encode())
 
     def _handle_health(self):
         """Health endpoint returns JSON status."""
@@ -150,6 +217,77 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(response, indent=2).encode())
+
+    def _handle_discord_interaction(self):
+        """Handle Discord interaction (component interactions, slash commands)."""
+        try:
+            # Read request body
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+
+            # Parse interaction payload
+            interaction = json.loads(body.decode())
+
+            # Route based on interaction type
+            interaction_type = interaction.get("type")
+
+            # Type 1: PING (Discord verification)
+            if interaction_type == 1:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"type": 1}).encode())
+                return
+
+            # Type 3: MESSAGE_COMPONENT (button/select menu interactions)
+            elif interaction_type == 3:
+                custom_id = interaction.get("data", {}).get("custom_id", "")
+
+                # Route chart indicator toggle interactions
+                if custom_id.startswith("chart_toggle_"):
+                    try:
+                        from .commands.chart_interactions import (
+                            handle_chart_indicator_toggle,
+                        )
+
+                        response = handle_chart_indicator_toggle(interaction)
+
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps(response).encode())
+                        return
+
+                    except Exception as e:
+                        log.error(f"chart_interaction_error err={e}", exc_info=True)
+                        error_response = {
+                            "type": 4,
+                            "data": {
+                                "content": f"❌ Error: {str(e)}",
+                                "flags": 64,
+                            },
+                        }
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps(error_response).encode())
+                        return
+
+            # Unknown interaction type
+            log.warning(f"unknown_interaction_type type={interaction_type}")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            error = {"error": "Unknown interaction type"}
+            self.wfile.write(json.dumps(error).encode())
+
+        except Exception as e:
+            log.error(f"interaction_handler_error err={e}", exc_info=True)
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            error = {"error": str(e)}
+            self.wfile.write(json.dumps(error).encode())
 
 
 def _run_server(port: int):

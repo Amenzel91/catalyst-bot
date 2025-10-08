@@ -1,6 +1,7 @@
 # src/catalyst_bot/alerts.py
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import threading
@@ -515,6 +516,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
         last_change_pct = payload.get("last_change_pct")
         record_only = bool(payload.get("record_only", False))
         webhook_url = payload.get("webhook_url")
+        market_info = payload.get("market_info") or {}
     else:
         item_dict = kwargs.get("item_dict") or (args[0] if len(args) > 0 else {})
         scored = kwargs.get("scored") or (args[1] if len(args) > 1 else None)
@@ -528,6 +530,12 @@ def send_alert_safe(*args, **kwargs) -> bool:
             else (args[4] if len(args) > 4 else False)
         )
         webhook_url = kwargs.get("webhook_url") or (args[5] if len(args) > 5 else None)
+        market_info = kwargs.get("market_info") or {}
+
+    # Extract feature flags from market_info (WAVE 0.0 Phase 2)
+    features = market_info.get("features", {})
+    features.get("llm_enabled", True)
+    charts_enabled = features.get("charts_enabled", True)
 
     source = item_dict.get("source") or "unknown"
     ticker = (item_dict.get("ticker") or "").upper()
@@ -695,6 +703,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
         log.warning("sentiment_gauge_failed ticker=%s err=%s", ticker, str(e))
 
     # Optional Advanced Multi-Panel Charts with Timeframe Buttons
+    # Gate charts based on market_info when available
     try:
         use_advanced = os.getenv("FEATURE_ADVANCED_CHARTS", "0").strip().lower() in (
             "1",
@@ -702,14 +711,18 @@ def send_alert_safe(*args, **kwargs) -> bool:
             "yes",
             "on",
         )
+        # Respect market hours chart gating
+        use_advanced = use_advanced and charts_enabled
+
         log.debug(
             "advanced_charts_check use_advanced=%s has_advanced=%s "
-            "embeds_in_payload=%s payload_embeds=%s ticker=%s",
+            "embeds_in_payload=%s payload_embeds=%s ticker=%s charts_enabled=%s",
             use_advanced,
             HAS_ADVANCED_CHARTS,
             "embeds" in payload,
             bool(payload.get("embeds")),
             ticker,
+            charts_enabled,
         )
 
         if (
@@ -837,7 +850,289 @@ def send_alert_safe(*args, **kwargs) -> bool:
     if not ok:
         # Add source/ticker context on failure to aid triage
         log.warning("alert_error source=%s ticker=%s", source, ticker)
+
+    # WAVE 1.2: Record alert for feedback tracking
+    if ok:
+        try:
+            s = get_settings()
+            if getattr(s, "feature_feedback_loop", False):
+                # Import feedback module
+                try:
+                    # Generate alert ID from ticker, title, and link
+                    import hashlib
+
+                    from .feedback.database import record_alert
+
+                    title = item_dict.get("title", "")
+                    link = item_dict.get("link", "")
+                    alert_content = f"{ticker}:{title}:{link}"
+                    alert_id = hashlib.md5(alert_content.encode()).hexdigest()[:16]
+
+                    # Extract keywords from scored item
+                    keywords = []
+                    if scored:
+                        if isinstance(scored, dict):
+                            keywords = (
+                                scored.get("keywords")
+                                or scored.get("tags")
+                                or scored.get("categories")
+                                or []
+                            )
+                        else:
+                            keywords = (
+                                getattr(scored, "keywords", None)
+                                or getattr(scored, "tags", None)
+                                or getattr(scored, "categories", None)
+                                or []
+                            )
+
+                    # Determine catalyst type from scored data
+                    catalyst_type = "unknown"
+                    if scored:
+                        if isinstance(scored, dict):
+                            catalyst_type = (
+                                scored.get("category")
+                                or scored.get("catalyst_type")
+                                or "unknown"
+                            )
+                        else:
+                            catalyst_type = (
+                                getattr(scored, "category", None)
+                                or getattr(scored, "catalyst_type", None)
+                                or "unknown"
+                            )
+
+                    # Record the alert
+                    record_alert(
+                        alert_id=alert_id,
+                        ticker=ticker,
+                        source=source,
+                        catalyst_type=str(catalyst_type),
+                        keywords=list(keywords) if keywords else None,
+                        posted_price=last_price,
+                    )
+
+                except Exception as feedback_err:
+                    # Don't fail the alert if feedback recording fails
+                    log.debug("feedback_recording_failed error=%s", str(feedback_err))
+        except Exception:
+            pass
+
     return ok
+
+
+# ============================================================================
+# WAVE 2: Progressive Alerts - Send First, Update Later Pattern
+# ============================================================================
+
+
+async def send_progressive_alert(
+    alert_data: dict,
+    webhook_url: str,
+) -> Optional[dict]:
+    """
+    Send alert in 2 phases: immediate basic info, then update with LLM sentiment.
+
+    Phase 1: Post immediately with VADER + keywords + price data
+    Phase 2: Update embed with LLM sentiment when available (background)
+
+    This pattern ensures traders see critical price data in 100-200ms, while
+    LLM sentiment analysis (2-5s) is delivered asynchronously without blocking.
+
+    Args:
+        alert_data: Alert payload with item, scored, last_price, etc.
+        webhook_url: Discord webhook URL
+
+    Returns:
+        Message dict with 'id' for editing later, or None on failure
+
+    Environment Variables:
+        FEATURE_PROGRESSIVE_ALERTS: Enable progressive alerts (default: 0)
+    """
+    try:
+        import aiohttp
+        import discord
+        from discord import Webhook
+    except ImportError:
+        log.warning(
+            "progressive_alerts_unavailable reason=discord_py_missing "
+            "install with: pip install discord.py"
+        )
+        return None
+
+    item = alert_data.get("item", {})
+    scored = alert_data.get("scored", {})
+    ticker = item.get("ticker", "???")
+    title = item.get("title", "")
+
+    # Build basic embed (no LLM yet)
+    embed = discord.Embed(
+        title=f"📈 {ticker} Alert",
+        description=_deping(title[:200]),
+        color=0xFFA500,  # Orange for pending
+    )
+
+    # Add price data (always available)
+    last_price = alert_data.get("last_price")
+    last_change = alert_data.get("last_change_pct")
+    if last_price:
+        embed.add_field(
+            name="Price",
+            value=(
+                f"${last_price:,.2f} ({last_change:+.2f}%)"
+                if last_change
+                else f"${last_price:,.2f}"
+            ),
+            inline=True,
+        )
+
+    # Add fast sentiment (VADER + keywords)
+    vader_sentiment = scored.get("sentiment", 0.0) if scored else 0.0
+    keywords = scored.get("keywords", []) or scored.get("tags", []) if scored else []
+
+    sentiment_emoji = (
+        "🟢" if vader_sentiment > 0.1 else ("🔴" if vader_sentiment < -0.1 else "⚪")
+    )
+    kw_text = ", ".join(keywords[:3]) if keywords else "none"
+    embed.add_field(
+        name=f"{sentiment_emoji} Initial Sentiment",
+        value=f"**Score:** {vader_sentiment:.3f}\n**Keywords:** {kw_text}",
+        inline=False,
+    )
+
+    # LLM processing indicator
+    embed.add_field(
+        name="🤖 AI Analysis",
+        value="⏳ **Processing...** *(2-5 seconds)*",
+        inline=False,
+    )
+
+    embed.set_footer(text="Real-time alert • AI analysis pending")
+    embed.timestamp = discord.utils.utcnow()
+
+    # Phase 1: Send immediately
+    try:
+        async with aiohttp.ClientSession() as session:
+            webhook = Webhook.from_url(webhook_url, session=session)
+            message = await webhook.send(embed=embed, wait=True)
+
+        # Phase 2: Queue for LLM processing (background task)
+        asyncio.create_task(
+            _enrich_alert_with_llm(
+                message_id=message.id,
+                webhook_url=webhook_url,
+                alert_data=alert_data,
+                initial_embed=embed,
+            )
+        )
+
+        return {"id": message.id, "channel_id": message.channel_id}
+    except Exception as e:
+        log.error("progressive_alert_send_failed err=%s", str(e))
+        return None
+
+
+async def _enrich_alert_with_llm(
+    message_id: int, webhook_url: str, alert_data: dict, initial_embed: Any
+):
+    """
+    Background task: Add LLM sentiment to existing alert.
+
+    Runs after initial alert is posted, updates embed when LLM completes.
+    """
+    try:
+        # Call LLM (async, with timeout)
+        from .llm_async import query_llm_async
+
+        item = alert_data.get("item", {})
+        title = item.get("title", "")
+
+        llm_prompt = (
+            "Analyze this financial news headline. "
+            "Is it bullish, bearish, or neutral? Be concise.\n\n"
+            f"Headline: {title}"
+        )
+
+        llm_result = await asyncio.wait_for(
+            query_llm_async(llm_prompt, priority="normal"), timeout=10.0
+        )
+
+        # Update embed with LLM result
+        if llm_result:
+            # Parse LLM sentiment
+            llm_sentiment = _parse_llm_sentiment(llm_result)
+
+            sentiment_emoji = (
+                "🟢"
+                if "bullish" in llm_sentiment.lower()
+                else ("🔴" if "bearish" in llm_sentiment.lower() else "⚪")
+            )
+
+            # Update AI Analysis field
+            initial_embed.set_field_at(
+                index=2,  # AI Analysis field
+                name=f"{sentiment_emoji} AI Analysis Complete",
+                value=f"**Result:** {llm_sentiment[:150]}...",
+                inline=False,
+            )
+
+            # Update color based on sentiment
+            if "bullish" in llm_sentiment.lower():
+                initial_embed.color = 0x00FF00  # Green
+            elif "bearish" in llm_sentiment.lower():
+                initial_embed.color = 0xFF0000  # Red
+            else:
+                initial_embed.color = 0xFFFF00  # Yellow
+
+            # Edit message
+            import aiohttp
+            from discord import Webhook
+
+            async with aiohttp.ClientSession() as session:
+                webhook = Webhook.from_url(webhook_url, session=session)
+                await webhook.edit_message(message_id, embed=initial_embed)
+
+            log.info("llm_enrichment_success message_id=%d", message_id)
+        else:
+            # LLM failed - update with timeout indicator
+            await _handle_llm_timeout(message_id, webhook_url, initial_embed)
+
+    except asyncio.TimeoutError:
+        await _handle_llm_timeout(message_id, webhook_url, initial_embed)
+    except Exception as e:
+        log.warning("llm_enrichment_failed message_id=%d err=%s", message_id, str(e))
+
+
+async def _handle_llm_timeout(message_id: int, webhook_url: str, embed: Any):
+    """Update message with timeout indicator."""
+    try:
+        embed.set_field_at(
+            index=2,
+            name="⏱️ AI Analysis Timeout",
+            value="*Analysis took longer than expected*\n*Price data above remains accurate*",
+            inline=False,
+        )
+        embed.color = 0xFFA500  # Orange
+
+        import aiohttp
+        from discord import Webhook
+
+        async with aiohttp.ClientSession() as session:
+            webhook = Webhook.from_url(webhook_url, session=session)
+            await webhook.edit_message(message_id, embed=embed)
+    except Exception as e:
+        log.error("timeout_update_failed message_id=%d err=%s", message_id, str(e))
+
+
+def _parse_llm_sentiment(llm_text: str) -> str:
+    """Extract sentiment direction from LLM response."""
+    text_lower = llm_text.lower()
+    if "bullish" in text_lower:
+        return "Bullish"
+    elif "bearish" in text_lower:
+        return "Bearish"
+    else:
+        return "Neutral"
 
 
 def _build_discord_embed(

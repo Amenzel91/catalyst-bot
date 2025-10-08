@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
-from datetime import datetime, date as date_cls, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .logging_utils import get_logger
 
@@ -351,7 +351,10 @@ def build_weekly_report_embed(stats: Dict[str, Any]) -> Dict[str, Any]:
 
         best_text = "\n".join(
             [
-                f"**{kw['keyword']}:** {kw['hit_rate']:.0%} ({kw['hits']}/{kw['count']}), {kw['avg_return']:+.1f}%"
+                (
+                    f"**{kw['keyword']}:** {kw['hit_rate']:.0%} "
+                    f"({kw['hits']}/{kw['count']}), {kw['avg_return']:+.1f}%"
+                )
                 for kw in best_keywords
             ]
         )
@@ -360,7 +363,10 @@ def build_weekly_report_embed(stats: Dict[str, Any]) -> Dict[str, Any]:
 
         worst_text = "\n".join(
             [
-                f"**{kw['keyword']}:** {kw['hit_rate']:.0%} ({kw['hits']}/{kw['count']}), {kw['avg_return']:+.1f}%"
+                (
+                    f"**{kw['keyword']}:** {kw['hit_rate']:.0%} "
+                    f"({kw['hits']}/{kw['count']}), {kw['avg_return']:+.1f}%"
+                )
                 for kw in worst_keywords
             ]
         )
@@ -419,7 +425,10 @@ def build_weekly_report_embed(stats: Dict[str, Any]) -> Dict[str, Any]:
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"Analysis Period: {datetime.now(timezone.utc).strftime('%Y-%m-%d')} (past {stats['period_days']} days)"
+            "text": (
+                f"Analysis Period: {datetime.now(timezone.utc).strftime('%Y-%m-%d')} "
+                f"(past {stats['period_days']} days)"
+            )
         },
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

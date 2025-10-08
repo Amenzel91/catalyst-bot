@@ -11,19 +11,27 @@ Features:
 - Rollback to previous configuration
 - Validate parameter values before applying
 - Thread-safe configuration updates
+- Change history tracking
+- Rate limiting
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from .logging_utils import get_logger
 
 log = get_logger("config_updater")
+
+# Rate limiting: track last change timestamp
+_LAST_CHANGE_TIME = 0
+_MIN_CHANGE_INTERVAL = 60  # seconds
 
 
 # ======================== Path Management ========================
@@ -46,6 +54,14 @@ def _get_backup_dir() -> Path:
     backup_dir = root / "data" / "config_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     return backup_dir
+
+
+def _get_change_history_path() -> Path:
+    """Get path to change history log."""
+    root = _get_repo_root()
+    history_dir = root / "data"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    return history_dir / "admin_changes.jsonl"
 
 
 # ======================== Validation ========================
@@ -171,6 +187,111 @@ def rollback_changes(backup_path: Optional[Path] = None) -> Tuple[bool, str]:
         return False, f"Rollback failed: {e}"
 
 
+# ======================== Change History ========================
+
+
+def _log_parameter_change(
+    changes: Dict[str, Any], source: str = "admin", user_id: Optional[str] = None
+) -> None:
+    """
+    Log parameter change to history file.
+
+    Parameters
+    ----------
+    changes : dict
+        Dictionary of parameter changes
+    source : str
+        Source of change (e.g., "admin", "api", "manual")
+    user_id : str, optional
+        Discord user ID who made the change
+    """
+    history_path = _get_change_history_path()
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "user_id": user_id,
+        "changes": changes,
+    }
+
+    try:
+        with history_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        log.info(f"change_logged count={len(changes)}")
+    except Exception as e:
+        log.warning(f"change_log_failed err={e}")
+
+
+def get_change_history(limit: int = 10) -> list:
+    """
+    Get recent parameter changes.
+
+    Parameters
+    ----------
+    limit : int
+        Maximum number of changes to return
+
+    Returns
+    -------
+    list
+        List of change entries (most recent first)
+    """
+    history_path = _get_change_history_path()
+
+    if not history_path.exists():
+        return []
+
+    try:
+        entries = []
+        with history_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except Exception:
+                    continue
+
+        # Return most recent first
+        return sorted(entries, key=lambda x: x.get("timestamp", ""), reverse=True)[
+            :limit
+        ]
+    except Exception as e:
+        log.warning(f"history_load_failed err={e}")
+        return []
+
+
+def check_rate_limit() -> Tuple[bool, str]:
+    """
+    Check if enough time has passed since last change.
+
+    Returns
+    -------
+    tuple
+        (can_proceed: bool, message: str)
+    """
+    global _LAST_CHANGE_TIME
+
+    now = time.time()
+    elapsed = now - _LAST_CHANGE_TIME
+
+    if elapsed < _MIN_CHANGE_INTERVAL and _LAST_CHANGE_TIME > 0:
+        remaining = int(_MIN_CHANGE_INTERVAL - elapsed)
+        return (
+            False,
+            f"Rate limit: Please wait {remaining}s before making another change",
+        )
+
+    return True, ""
+
+
+def _update_rate_limit_timestamp():
+    """Update the last change timestamp."""
+    global _LAST_CHANGE_TIME
+    _LAST_CHANGE_TIME = time.time()
+
+
 # ======================== Environment Updates ========================
 
 
@@ -198,7 +319,9 @@ def _reload_environment():
         log.error(f"reload_failed err={e}")
 
 
-def apply_parameter_changes(changes: Dict[str, Any]) -> Tuple[bool, str]:
+def apply_parameter_changes(
+    changes: Dict[str, Any], user_id: Optional[str] = None, source: str = "admin"
+) -> Tuple[bool, str]:
     """
     Apply parameter changes to .env file and reload environment.
 
@@ -206,12 +329,21 @@ def apply_parameter_changes(changes: Dict[str, Any]) -> Tuple[bool, str]:
     ----------
     changes : dict
         Dictionary of parameter_name -> new_value
+    user_id : str, optional
+        Discord user ID who initiated the change
+    source : str
+        Source of the change (default: "admin")
 
     Returns
     -------
     tuple
         (success: bool, message: str)
     """
+    # Check rate limit
+    can_proceed, rate_msg = check_rate_limit()
+    if not can_proceed:
+        return False, rate_msg
+
     # Validate all changes first
     for name, value in changes.items():
         is_valid, error = validate_parameter(name, value)
@@ -270,6 +402,12 @@ def apply_parameter_changes(changes: Dict[str, Any]) -> Tuple[bool, str]:
 
         # Reload environment variables
         _reload_environment()
+
+        # Log the change to history
+        _log_parameter_change(changes, source=source, user_id=user_id)
+
+        # Update rate limit timestamp
+        _update_rate_limit_timestamp()
 
         # Build success message
         param_list = ", ".join(sorted(updated_params))

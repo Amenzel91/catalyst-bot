@@ -29,7 +29,46 @@ yfinance>=0.2.40,<0.3
 # Advanced charts (optional - for FEATURE_ADVANCED_CHARTS)
 matplotlib>=3.7,<4
 mplfinance>=0.12,<1
+scipy>=1.11,<2  # Required for pattern recognition (find_peaks)
 
-# Discord interactions (optional - for button functionality)
-# PyNaCl>=1.5,<2  # Uncomment if using Discord button interactions
-# Flask>=3.0,<4   # Uncomment if running interaction endpoint
+# NEW: Process management (for WAVE 2.3)
+psutil>=5.9,<6
+
+# NEW: Python 3.9 compatibility
+backports.zoneinfo>=0.2.1;python_version<"3.9"
+
+# NEW: API clients (optional - for WAVE 0.1)
+finnhub-python>=2.4,<3
+
+# NEW: Discord features (optional - for WAVE 7.1)
+PyNaCl>=1.5,<2
+Flask>=3.0,<4
+
+# NEW: GPU support (optional - for WAVE 2.2)
+GPUtil>=1.4,<2
+pynvml>=11.5,<12
+
+# NEW: ML/NLP models (optional - for ML sentiment aggregation)
+torch>=2.0,<3
+transformers>=4.30,<5
+
+# WAVE 2: Async LLM Client & Progressive Alerts
+# aiohttp enables async HTTP with connection pooling (7x speedup)
+aiohttp>=3.9,<4
+# pybreaker provides circuit breaker pattern for resilience (optional)
+pybreaker>=1.0,<2
+# discord.py enables progressive Discord alerts with embeds
+discord.py>=2.0,<3
+
+# WAVE 3: Hybrid LLM Router (optional - for cloud API fallback)
+# These dependencies enable cloud API fallback when local LLM fails
+# Google Gemini API (free tier: 1500 req/day)
+google-generativeai>=0.3.0,<1;python_version>="3.9"
+# Anthropic Claude API (paid, high-accuracy fallback)
+anthropic>=0.18.0,<1
+
+# WAVE 3: Semantic Caching (optional - for LLM response caching)
+# Requires Redis server running (local or cloud)
+redis>=4.5.0,<6
+# Sentence embeddings for semantic similarity matching
+sentence-transformers>=2.2.0,<3

@@ -1,7 +1,7 @@
 # Catalyst-Bot Patch Roadmap
 
-**Last Updated:** October 4, 2025
-**Status:** Post-Foundation - Interactive Charts & Buttons Working
+**Last Updated:** October 6, 2025 (Sunday)
+**Status:** Production Running - Performance Optimization Needed
 
 ---
 
@@ -30,9 +30,72 @@
 
 ---
 
-## WAVE 0: Critical Fixes & Enhancements ⚡ IN PROGRESS
+## WAVE 0: Critical Performance & Stability ⚡ URGENT
 
-**Goal:** Address immediate issues and polish existing features.
+**Goal:** Fix system stuttering and optimize resource usage during market hours.
+
+### 0.0 Performance Throttling & Market Hours Detection
+**Status:** ✅ COMPLETED (Oct 6, 2025)
+**Patches:** CPU/GPU stuttering fix, Market hours feature toggling
+**Implementation:**
+
+**Phase 1: Immediate Stuttering Fix**
+- Lower process priority (Python process → Below Normal)
+- Add sleep delays between heavy operations (LLM, chart generation)
+- Implement request queuing with rate limiting:
+  - LLM: Max 1 request per 3 seconds
+  - Charts: Max 1 generation per 2 seconds
+- Reduce cycle frequency: 60s → 90-120s when market closed
+- Batch operations instead of real-time spikes
+
+**Phase 2: Market Hours Detection**
+- Detect market status: Pre-market (4am-9:30am ET), Regular (9:30am-4pm ET), After-hours (4pm-8pm ET), Closed
+- Feature toggling based on market status:
+  - **Market Open** (9:30am-4pm ET):
+    - All features enabled
+    - Standard 60s cycle
+  - **Extended Hours** (4am-9:30am, 4pm-8pm ET):
+    - LLM enabled (reduced frequency)
+    - Advanced charts disabled → use Finviz fallback
+    - 90s cycle
+  - **Market Closed** (8pm-4am ET):
+    - LLM disabled
+    - Charts disabled
+    - Breakout scanner disabled
+    - SEC filings only (low frequency)
+    - 180s cycle (3 min)
+- Pre-open warmup: Re-enable features 2 hours before market open (7:30am ET)
+
+**Configuration:**
+```ini
+# Process priority
+BOT_PROCESS_PRIORITY=BELOW_NORMAL  # NORMAL, BELOW_NORMAL, IDLE
+
+# Rate limiting
+LLM_MIN_INTERVAL_SEC=3
+CHART_MIN_INTERVAL_SEC=2
+
+# Market hours feature toggling
+FEATURE_MARKET_HOURS_DETECTION=1
+MARKET_OPEN_CYCLE_SEC=60
+EXTENDED_HOURS_CYCLE_SEC=90
+MARKET_CLOSED_CYCLE_SEC=180
+PREOPEN_WARMUP_HOURS=2
+
+# Disabled features when market closed
+CLOSED_DISABLE_LLM=1
+CLOSED_DISABLE_CHARTS=1
+CLOSED_DISABLE_BREAKOUT=1
+```
+
+**Dependencies:** None (standalone optimization)
+**Estimated Time:**
+- Phase 1 (stuttering fix): 2-3 hours
+- Phase 2 (market hours): 1 day
+**GPU Impact:** 70-90% reduction outside market hours
+**Expected Improvement:** Eliminate stuttering, 80% lower resource usage when market closed
+
+---
 
 ### 0.1 Smart Earnings Scorer
 **Patches:** Earnings calendar vs results detection
@@ -55,6 +118,75 @@
 **Research Docs:**
 - `EARNINGS_ALERTS_FIX.md` (implementation proposal)
 - Finnhub API docs for earnings calendar vs actual results
+
+---
+
+### 0.2 Ollama Stability & Heartbeat Fixes 🔥 TONIGHT
+**Patches:** Mistral GPU overload fix, Heartbeat cumulative tracking, Unicode logging fix
+**Status:** 🔴 CRITICAL - Discovered in production (Oct 6, 2025)
+**Implementation:**
+
+**PATCH 1: Ollama/Mistral GPU Overload Fix**
+- **Problem:** Mistral LLM returning HTTP 500 errors, losing 25% of sentiment analysis
+- **Root Cause:** Processing 136 items without batching or delays, GPU overload
+- **Solution:**
+  - Smart batching: Process 5 items at a time with 2s delays
+  - Pre-filtering: Only send items scoring >0.20 from VADER+FinBERT to expensive LLM (reduces 136 → ~40)
+  - Retry logic: 3 retries with exponential backoff on 500 errors
+  - Graceful degradation: Continue with 3/4 sentiment sources if Mistral fails
+- **Configuration:**
+  ```ini
+  MISTRAL_BATCH_SIZE=5          # Items per batch
+  MISTRAL_BATCH_DELAY=2.0       # Seconds between batches
+  MISTRAL_MIN_PRESCALE=0.20     # Only use Mistral on high-potential items
+  ```
+- **Files Modified:**
+  - `src/catalyst_bot/llm_client.py` - Add retry logic and batching
+  - `src/catalyst_bot/classify.py` - Add pre-filtering and batch processing
+- **Expected Impact:** 73% GPU load reduction, eliminate 500 errors, graceful fallback
+
+**PATCH 2: Heartbeat Cumulative Tracking**
+- **Problem:** Heartbeat only shows last scan counts, not cumulative since last heartbeat
+- **Root Cause:** Stats reset every cycle instead of accumulating
+- **Solution:**
+  - Add HeartbeatAccumulator class to track cumulative stats
+  - Accumulate: scanned, alerts, errors, cycles over 60-minute period
+  - Reset after each heartbeat sent
+  - Display elapsed time, cycles completed, avg alerts/cycle
+- **Configuration:**
+  ```ini
+  HEARTBEAT_INTERVAL_MINUTES=60    # Send heartbeat every 60 minutes
+  ```
+- **Files Modified:**
+  - `src/catalyst_bot/runner.py` - Add accumulator and periodic heartbeat
+  - `src/catalyst_bot/discord_utils.py` - Update heartbeat embed format
+- **Expected Impact:** Better visibility into bot performance trends
+
+**PATCH 3: Unicode Logging Fix (Quick Win)**
+- **Problem:** Windows console can't display special hyphen character (U+2011)
+- **Root Cause:** Non-breaking hyphen in log message
+- **Solution:** Replace with regular dash in `llm_client.py:135`
+- **Files Modified:** `src/catalyst_bot/llm_client.py`
+- **Expected Impact:** Eliminate log spam
+
+**Dependencies:** None (standalone fixes)
+**Estimated Time:**
+- PATCH 1: 30 min
+- PATCH 2: 20 min
+- PATCH 3: 5 min
+**Total:** ~1 hour
+
+**Testing:**
+```bash
+# Monitor Ollama health after PATCH 1
+tail -f data/logs/bot.jsonl | findstr "Ollama"
+# Should see: "Processing Mistral batch 1/8" instead of 500 errors
+
+# Verify heartbeat cumulative after PATCH 2
+# Wait 2 cycles, heartbeat should show scanned=272 (136*2), cycles=2
+```
+
+**Documentation:** See `TONIGHT_PATCHES.md` for detailed implementation
 
 ---
 

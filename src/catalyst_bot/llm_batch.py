@@ -17,10 +17,9 @@ import hashlib
 import os
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass
-from queue import PriorityQueue, Empty
-from typing import Any, Dict, List, Optional, Callable
+from queue import Empty, PriorityQueue
+from typing import Any, Callable, Dict, List, Optional
 
 from .llm_client import query_llm
 from .logging_utils import get_logger
@@ -31,6 +30,7 @@ log = get_logger("llm_batch")
 @dataclass
 class LLMRequest:
     """LLM request with priority and metadata."""
+
     prompt: str
     system: Optional[str] = None
     priority: int = 5  # 1=highest, 10=lowest
@@ -70,11 +70,11 @@ class LLMBatchProcessor:
 
         # Stats
         self.stats = {
-            'total_requests': 0,
-            'cache_hits': 0,
-            'cache_misses': 0,
-            'batches_processed': 0,
-            'avg_batch_size': 0.0,
+            "total_requests": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "batches_processed": 0,
+            "avg_batch_size": 0.0,
         }
         self.stats_lock = threading.Lock()
 
@@ -88,9 +88,7 @@ class LLMBatchProcessor:
 
         for i in range(self.max_workers):
             worker = threading.Thread(
-                target=self._worker_loop,
-                name=f"llm_worker_{i}",
-                daemon=True
+                target=self._worker_loop, name=f"llm_worker_{i}", daemon=True
             )
             worker.start()
             self.workers.append(worker)
@@ -138,7 +136,9 @@ class LLMBatchProcessor:
             Request ID for tracking
         """
         # Generate request ID
-        request_id = hashlib.md5(f"{prompt}{system}{time.time()}".encode()).hexdigest()[:12]
+        request_id = hashlib.md5(f"{prompt}{system}{time.time()}".encode()).hexdigest()[
+            :12
+        ]
 
         # Check cache first
         cache_key = self._cache_key(prompt, system)
@@ -146,7 +146,7 @@ class LLMBatchProcessor:
 
         if cached_response is not None:
             with self.stats_lock:
-                self.stats['cache_hits'] += 1
+                self.stats["cache_hits"] += 1
 
             log.debug(f"llm_cache_hit id={request_id}")
 
@@ -158,8 +158,8 @@ class LLMBatchProcessor:
 
         # Cache miss - queue request
         with self.stats_lock:
-            self.stats['total_requests'] += 1
-            self.stats['cache_misses'] += 1
+            self.stats["total_requests"] += 1
+            self.stats["cache_misses"] += 1
 
         request = LLMRequest(
             prompt=prompt,
@@ -193,11 +193,11 @@ class LLMBatchProcessor:
 
         for req in requests:
             req_id = self.submit(
-                prompt=req.get('prompt', ''),
-                system=req.get('system'),
-                priority=req.get('priority', 5),
-                timeout=req.get('timeout', 20.0),
-                callback=req.get('callback'),
+                prompt=req.get("prompt", ""),
+                system=req.get("system"),
+                priority=req.get("priority", 5),
+                timeout=req.get("timeout", 20.0),
+                callback=req.get("callback"),
             )
             request_ids.append(req_id)
 
@@ -210,14 +210,14 @@ class LLMBatchProcessor:
             stats_copy = self.stats.copy()
 
         # Calculate cache hit rate
-        total = stats_copy['cache_hits'] + stats_copy['cache_misses']
+        total = stats_copy["cache_hits"] + stats_copy["cache_misses"]
         if total > 0:
-            stats_copy['cache_hit_rate'] = stats_copy['cache_hits'] / total
+            stats_copy["cache_hit_rate"] = stats_copy["cache_hits"] / total
         else:
-            stats_copy['cache_hit_rate'] = 0.0
+            stats_copy["cache_hit_rate"] = 0.0
 
-        stats_copy['queue_size'] = self.request_queue.qsize()
-        stats_copy['cache_size'] = len(self.cache)
+        stats_copy["queue_size"] = self.request_queue.qsize()
+        stats_copy["cache_size"] = len(self.cache)
 
         return stats_copy
 
@@ -299,8 +299,7 @@ class LLMBatchProcessor:
         """Remove expired cache entries."""
         now = time.time()
         expired_keys = [
-            k for k, (_, ts) in self.cache.items()
-            if now - ts > self.cache_ttl
+            k for k, (_, ts) in self.cache.items() if now - ts > self.cache_ttl
         ]
 
         for key in expired_keys:
@@ -319,8 +318,8 @@ def get_batch_processor() -> LLMBatchProcessor:
     global _batch_processor
 
     if _batch_processor is None:
-        max_workers = int(os.getenv('LLM_BATCH_WORKERS', '3'))
-        cache_ttl = int(os.getenv('LLM_CACHE_TTL', '3600'))
+        max_workers = int(os.getenv("LLM_BATCH_WORKERS", "3"))
+        cache_ttl = int(os.getenv("LLM_CACHE_TTL", "3600"))
 
         _batch_processor = LLMBatchProcessor(
             max_workers=max_workers,

@@ -455,6 +455,55 @@ class Settings:
     # Optional explicit path for analyzer summary markdown to post
     admin_summary_path: Optional[str] = os.getenv("ADMIN_SUMMARY_PATH", None)
 
+    # --- WAVE 0.0 Phase 2: Market Hours Detection ---
+    # Enable market hours detection and adaptive cycling.  When this flag is
+    # enabled, the bot will adjust cycle times and feature availability based
+    # on the current market status (pre-market, regular, after-hours, closed).
+    # Use FEATURE_MARKET_HOURS_DETECTION=1 to enable.
+    feature_market_hours_detection: bool = _b("FEATURE_MARKET_HOURS_DETECTION", False)
+
+    # Process priority for Windows.  Valid values: IDLE, BELOW_NORMAL, NORMAL,
+    # ABOVE_NORMAL, HIGH, REALTIME.  Defaults to BELOW_NORMAL to reduce
+    # CPU contention with other applications.  Use BOT_PROCESS_PRIORITY to
+    # override.  On non-Windows platforms this setting is ignored.
+    bot_process_priority: str = os.getenv("BOT_PROCESS_PRIORITY", "BELOW_NORMAL")
+
+    # Minimum interval (in seconds) between LLM classification calls.  This
+    # throttle prevents excessive API requests during high-volume periods.
+    # Defaults to 3 seconds.
+    llm_min_interval_sec: int = int(os.getenv("LLM_MIN_INTERVAL_SEC", "3") or "3")
+
+    # Minimum interval (in seconds) between chart generation calls.  This
+    # throttle prevents excessive rendering during high-volume periods.
+    # Defaults to 2 seconds.
+    chart_min_interval_sec: int = int(os.getenv("CHART_MIN_INTERVAL_SEC", "2") or "2")
+
+    # Cycle time (in seconds) when market is open (9:30 AM - 4:00 PM ET).
+    # Defaults to 60 seconds.
+    market_open_cycle_sec: int = int(os.getenv("MARKET_OPEN_CYCLE_SEC", "60") or "60")
+
+    # Cycle time (in seconds) during extended hours (pre-market 4:00-9:30 AM,
+    # after-hours 4:00-8:00 PM ET).  Defaults to 90 seconds.
+    extended_hours_cycle_sec: int = int(
+        os.getenv("EXTENDED_HOURS_CYCLE_SEC", "90") or "90"
+    )
+
+    # Cycle time (in seconds) when market is closed (8:00 PM - 4:00 AM ET,
+    # weekends, holidays).  Defaults to 180 seconds.
+    market_closed_cycle_sec: int = int(
+        os.getenv("MARKET_CLOSED_CYCLE_SEC", "180") or "180"
+    )
+
+    # Number of hours before market open to start the pre-open warmup period.
+    # During warmup, features are gradually enabled.  Defaults to 2 hours.
+    preopen_warmup_hours: int = int(os.getenv("PREOPEN_WARMUP_HOURS", "2") or "2")
+
+    # Feature toggles for market closed periods.  When set to 1, the
+    # corresponding feature will be disabled when the market is closed.
+    closed_disable_llm: bool = _b("CLOSED_DISABLE_LLM", True)
+    closed_disable_charts: bool = _b("CLOSED_DISABLE_CHARTS", True)
+    closed_disable_breakout: bool = _b("CLOSED_DISABLE_BREAKOUT", True)
+
     # Misc
     tz: str = os.getenv("TZ", "America/Chicago")
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
@@ -604,6 +653,181 @@ class Settings:
     # the compact JSON console format.  Set LOG_PLAIN=1 in your environment
     # to enable readable console logs.
     log_plain: bool = _b("LOG_PLAIN", False)
+
+    # --- WAVE 1.2: Real-Time Breakout Feedback Loop ---
+    # Enable the feedback loop system that tracks alert performance and
+    # auto-adjusts keyword weights based on real outcomes. When enabled,
+    # the bot will record each alert to a database, monitor price/volume
+    # changes at 15m/1h/4h/1d intervals, score outcomes, and generate
+    # keyword weight recommendations. Set FEATURE_FEEDBACK_LOOP=1 to enable.
+    feature_feedback_loop: bool = _b("FEATURE_FEEDBACK_LOOP", False)
+
+    # Interval in seconds for the price tracking background task. The
+    # tracker queries current prices and volumes for all active alerts
+    # and updates the database. Defaults to 900 seconds (15 minutes).
+    feedback_tracking_interval: int = int(
+        os.getenv("FEEDBACK_TRACKING_INTERVAL", "900")
+    )
+
+    # When enabled, keyword weight adjustments are applied automatically
+    # to the dynamic weights file. When disabled (default), recommendations
+    # are sent to the admin channel for manual review. Set
+    # FEEDBACK_AUTO_ADJUST=1 to enable automatic adjustments.
+    feedback_auto_adjust: bool = _b("FEEDBACK_AUTO_ADJUST", False)
+
+    # Minimum number of alerts required for a keyword before its weight
+    # will be adjusted. This prevents premature adjustments based on
+    # insufficient data. Defaults to 20 alerts.
+    feedback_min_samples: int = int(os.getenv("FEEDBACK_MIN_SAMPLES", "20"))
+
+    # Enable weekly performance reports. When enabled, the bot will
+    # generate and send a comprehensive weekly report to the admin
+    # channel at the configured day/time. Set FEEDBACK_WEEKLY_REPORT=1
+    # to enable.
+    feature_feedback_weekly_report: bool = _b("FEEDBACK_WEEKLY_REPORT", False)
+
+    # Day of week for weekly reports (0=Monday, 6=Sunday). Defaults to
+    # Sunday (6).
+    feedback_weekly_report_day: int = int(os.getenv("FEEDBACK_WEEKLY_REPORT_DAY", "6"))
+
+    # Hour (UTC) for weekly reports. Defaults to 23 (11 PM UTC).
+    feedback_weekly_report_hour: int = int(
+        os.getenv("FEEDBACK_WEEKLY_REPORT_HOUR", "23")
+    )
+
+    # Path to the feedback database. Defaults to data/feedback/alert_performance.db
+    feedback_db_path: str = os.getenv(
+        "FEEDBACK_DB_PATH", "data/feedback/alert_performance.db"
+    )
+
+    # --- WAVE 0.1: Smart Earnings Scorer ---
+    feature_earnings_scorer: bool = _b("FEATURE_EARNINGS_SCORER", True)
+    earnings_beat_threshold_high: float = float(
+        os.getenv("EARNINGS_BEAT_THRESHOLD_HIGH", "0.10")
+    )
+    earnings_beat_threshold_low: float = float(
+        os.getenv("EARNINGS_BEAT_THRESHOLD_LOW", "0.05")
+    )
+    earnings_sentiment_beat_high: float = float(
+        os.getenv("EARNINGS_SENTIMENT_BEAT_HIGH", "0.85")
+    )
+    earnings_sentiment_beat_low: float = float(
+        os.getenv("EARNINGS_SENTIMENT_BEAT_LOW", "0.50")
+    )
+    earnings_sentiment_miss: float = float(
+        os.getenv("EARNINGS_SENTIMENT_MISS", "-0.60")
+    )
+
+    # --- WAVE 2.1: Chart Generation Optimization ---
+    # Note: feature_quickchart and quickchart_base_url already defined above (lines 240, 247)
+    quickchart_url: str = os.getenv("QUICKCHART_URL", "http://localhost:3400")
+    quickchart_api_key: str = os.getenv("QUICKCHART_API_KEY", "")
+    chart_cache_enabled: bool = _b("CHART_CACHE_ENABLED", True)
+    chart_cache_db_path: str = os.getenv("CHART_CACHE_DB_PATH", "data/chart_cache.db")
+    chart_cache_1d_ttl: int = int(os.getenv("CHART_CACHE_1D_TTL", "60"))
+    chart_cache_5d_ttl: int = int(os.getenv("CHART_CACHE_5D_TTL", "300"))
+    chart_cache_1m_ttl: int = int(os.getenv("CHART_CACHE_1M_TTL", "900"))
+    chart_cache_3m_ttl: int = int(os.getenv("CHART_CACHE_3M_TTL", "3600"))
+    chart_parallel_max_workers: int = int(os.getenv("CHART_PARALLEL_MAX_WORKERS", "3"))
+    quickchart_shorten_threshold: int = int(
+        os.getenv("QUICKCHART_SHORTEN_THRESHOLD", "3500")
+    )
+
+    # --- WAVE 2.2: GPU Usage Fine-Tuning ---
+    sentiment_model_name: str = os.getenv("SENTIMENT_MODEL_NAME", "finbert")
+    sentiment_batch_size: int = int(os.getenv("SENTIMENT_BATCH_SIZE", "10"))
+    gpu_memory_cleanup: bool = _b("GPU_MEMORY_CLEANUP", True)
+    gpu_profiling_enabled: bool = _b("GPU_PROFILING_ENABLED", False)
+    gpu_max_utilization_warn: int = int(os.getenv("GPU_MAX_UTILIZATION_WARN", "90"))
+    gpu_max_temperature_c: int = int(os.getenv("GPU_MAX_TEMPERATURE_C", "85"))
+    gpu_min_free_vram_mb: int = int(os.getenv("GPU_MIN_FREE_VRAM_MB", "500"))
+    feature_cuda_streams: bool = _b("FEATURE_CUDA_STREAMS", False)
+    feature_adaptive_sentiment: bool = _b("FEATURE_ADAPTIVE_SENTIMENT", False)
+    sentiment_model_open: str = os.getenv("SENTIMENT_MODEL_OPEN", "distilbert")
+    sentiment_model_closed: str = os.getenv("SENTIMENT_MODEL_CLOSED", "vader")
+
+    # --- WAVE 2.2+: Sentiment Aggregation Weights ---
+    # Weights for combining multiple sentiment sources
+    # Note: sentiment_weight_earnings already defined above (line 550)
+    # Redefining here for aggregation-specific weights
+    sentiment_weight_ml: float = float(os.getenv("SENTIMENT_WEIGHT_ML", "0.25"))
+    sentiment_weight_vader_agg: float = float(
+        os.getenv("SENTIMENT_WEIGHT_VADER", "0.25")
+    )
+    sentiment_weight_llm: float = float(os.getenv("SENTIMENT_WEIGHT_LLM", "0.15"))
+
+    # Feature flag for ML sentiment models (FinBERT/DistilBERT)
+    feature_ml_sentiment: bool = _b("FEATURE_ML_SENTIMENT", True)
+
+    # --- WAVE 2.3: 24/7 Deployment Infrastructure ---
+    health_check_enabled: bool = _b("HEALTH_CHECK_ENABLED", True)
+    health_check_port: int = int(os.getenv("HEALTH_CHECK_PORT", "8080"))
+    feature_health_endpoint: bool = _b("FEATURE_HEALTH_ENDPOINT", True)
+    watchdog_enabled: bool = _b("WATCHDOG_ENABLED", False)
+    watchdog_check_interval: int = int(os.getenv("WATCHDOG_CHECK_INTERVAL", "60"))
+    watchdog_restart_on_freeze: bool = _b("WATCHDOG_RESTART_ON_FREEZE", True)
+    watchdog_freeze_threshold: int = int(os.getenv("WATCHDOG_FREEZE_THRESHOLD", "300"))
+    watchdog_max_restarts: int = int(os.getenv("WATCHDOG_MAX_RESTARTS", "3"))
+    deployment_env: str = os.getenv("DEPLOYMENT_ENV", "development")
+    log_rotation_days: int = int(os.getenv("LOG_ROTATION_DAYS", "7"))
+    admin_alert_webhook: str = os.getenv("ADMIN_ALERT_WEBHOOK", "")
+
+    # --- WAVE 3.1: Advanced Chart Indicators ---
+    chart_show_bollinger: bool = _b("CHART_SHOW_BOLLINGER", True)
+    chart_show_fibonacci: bool = _b("CHART_SHOW_FIBONACCI", True)
+    chart_show_support_resistance: bool = _b("CHART_SHOW_SUPPORT_RESISTANCE", True)
+    chart_show_volume_profile: bool = _b("CHART_SHOW_VOLUME_PROFILE", False)
+    chart_mtf_analysis: bool = _b("CHART_MTF_ANALYSIS", True)
+    chart_bollinger_period: int = int(os.getenv("CHART_BOLLINGER_PERIOD", "20"))
+    chart_bollinger_std: float = float(os.getenv("CHART_BOLLINGER_STD", "2.0"))
+    chart_fibonacci_lookback: int = int(os.getenv("CHART_FIBONACCI_LOOKBACK", "20"))
+    chart_sr_sensitivity: float = float(os.getenv("CHART_SR_SENSITIVITY", "0.02"))
+    chart_sr_max_levels: int = int(os.getenv("CHART_SR_MAX_LEVELS", "5"))
+    chart_sr_min_touches: int = int(os.getenv("CHART_SR_MIN_TOUCHES", "2"))
+    chart_volume_bins: int = int(os.getenv("CHART_VOLUME_BINS", "20"))
+    chart_show_poc: bool = _b("CHART_SHOW_POC", True)
+    chart_show_value_area: bool = _b("CHART_SHOW_VALUE_AREA", True)
+    chart_default_indicators: str = os.getenv(
+        "CHART_DEFAULT_INDICATORS", "bollinger,sr"
+    )
+    indicator_cache_enabled: bool = _b("INDICATOR_CACHE_ENABLED", True)
+    indicator_cache_ttl_sec: int = int(os.getenv("INDICATOR_CACHE_TTL_SEC", "300"))
+    indicator_cache_max_size: int = int(os.getenv("INDICATOR_CACHE_MAX_SIZE", "1000"))
+
+    # --- WAVE 7.1: Discord Slash Commands & Embeds ---
+    discord_application_id: str = os.getenv("DISCORD_APPLICATION_ID", "")
+    discord_guild_id: str = os.getenv("DISCORD_GUILD_ID", "")
+    feature_slash_commands: bool = _b("FEATURE_SLASH_COMMANDS", True)
+    slash_command_cooldown: int = int(os.getenv("SLASH_COMMAND_COOLDOWN", "3"))
+    watchlist_max_size: int = int(os.getenv("WATCHLIST_MAX_SIZE", "50"))
+    watchlist_dm_notifications: bool = _b("WATCHLIST_DM_NOTIFICATIONS", False)
+
+    # --- WAVE ALPHA Agent 2: LLM Batching Enhancement ---
+    # Batch size for LLM processing (items per batch)
+    mistral_batch_size: int = int(os.getenv("MISTRAL_BATCH_SIZE", "5"))
+    # Delay in seconds between LLM batches
+    mistral_batch_delay: float = float(os.getenv("MISTRAL_BATCH_DELAY", "2.0"))
+    # Minimum prescale score (from VADER + keywords) to qualify for LLM
+    mistral_min_prescale: float = float(os.getenv("MISTRAL_MIN_PRESCALE", "0.20"))
+
+    # --- WAVE 1.3: Backtesting Engine ---
+    # Backtesting engine for validating strategies with historical data
+    backtest_initial_capital: float = float(
+        os.getenv("BACKTEST_INITIAL_CAPITAL", "10000.0")
+    )
+    backtest_position_size_pct: float = float(
+        os.getenv("BACKTEST_POSITION_SIZE_PCT", "0.10")
+    )
+    backtest_max_volume_pct: float = float(os.getenv("BACKTEST_MAX_VOLUME_PCT", "0.05"))
+    backtest_slippage_model: str = os.getenv(
+        "BACKTEST_SLIPPAGE_MODEL", "adaptive"
+    )  # fixed, adaptive, volume_based
+    backtest_take_profit_pct: float = float(
+        os.getenv("BACKTEST_TAKE_PROFIT_PCT", "0.20")
+    )
+    backtest_stop_loss_pct: float = float(os.getenv("BACKTEST_STOP_LOSS_PCT", "0.10"))
+    backtest_max_hold_hours: int = int(os.getenv("BACKTEST_MAX_HOLD_HOURS", "24"))
+    backtest_risk_free_rate: float = float(os.getenv("BACKTEST_RISK_FREE_RATE", "0.02"))
 
     # Paths (tests expect Path fields)
     project_root: Path = field(

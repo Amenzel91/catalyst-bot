@@ -1,0 +1,8 @@
+services:
+  quickchart:
+    image: ianw/quickchart
+    ports:
+      - "3400:3400"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
