@@ -9,7 +9,11 @@
       "Bash(done)",
       "Bash(..venvScriptspre-commit.exe run --all-files)",
       "Bash(.venvScriptspre-commit.exe run --all-files)",
-      "Bash(\".venv/Scripts/pre-commit.exe\" run --all-files)"
+      "Bash(\".venv/Scripts/pre-commit.exe\" run --all-files)",
+      "Read(//c/Users/menza/Downloads/**)",
+      "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/market.py src/catalyst_bot/runner.py)",
+      "Bash(python:*)",
+      "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/feeds.py)"
     ],
     "deny": [],
     "ask": []
