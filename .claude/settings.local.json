@@ -15,7 +15,8 @@
       "Bash(python:*)",
       "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/feeds.py)",
       "Bash(mv:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(git check-ignore:*)"
     ],
     "deny": [],
     "ask": []
