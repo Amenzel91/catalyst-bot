@@ -1,43 +1,126 @@
-# Local virtual environment directories
-.venv/
-__pycache__/
-*.pyc
-.env
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# =============================================================================
+# Catalyst-Bot .gitignore
+# =============================================================================
 
-# Log files
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# -----------------------------------------------------------------------------
+# Secrets & Sensitive Data
+# -----------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+env.env
+*.pem
+*.key
+*.crt
+credentials.json
+
+# -----------------------------------------------------------------------------
+# Data & Logs
+# -----------------------------------------------------------------------------
+# All runtime data
+data/
+!data/README.md
+!data/.gitkeep
+!data/sec/
+!data/sec/**
+
+# Logs
 *.log
 *.log.*
 run*.log
 
-# Temporary and output files
+# Databases
+*.db
+*.db-journal
+*.sqlite*
+
+# Event data
+*.jsonl
+events_backup_*.jsonl
+
+# Generated reports
+backtest_report_*.md
+analyzer_report_*.md
+
+# Analyzer pending files
+data/analyzer/pending_*.json
+data/watchlist_state.json
+
+# Output directory
+out/
+!out/.gitkeep
+
+# -----------------------------------------------------------------------------
+# Temporary Files
+# -----------------------------------------------------------------------------
+*.tmp
+*.bak
+*~
+*.swp
+*.swo
 out.txt
 hello.txt
-
-# Generated databases
-*.db
-*.sqlite*
-*.sqlite3
-
-# Data directory - ignore generated/runtime files but keep structure and reference data
-data/
-!data/
-!data/.gitkeep
-!data/README.md
-!data/sec/
-!data/sec/**
-
-# Output directories (created at runtime)
-out/
-data/analyzer/pending_66b8ecf7.json
-data/analyzer/pending_b201af2f.json
-data/watchlist_state.json
-/data
-/data
-/data/logs
-data/logs/bot.jsonl
-env.env
 nul
+
+# -----------------------------------------------------------------------------
+# OS-Specific
+# -----------------------------------------------------------------------------
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# -----------------------------------------------------------------------------
+# IDE & Editor
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# -----------------------------------------------------------------------------
+# Docker (if used)
+# -----------------------------------------------------------------------------
+.dockerignore
+docker-compose.override.yml

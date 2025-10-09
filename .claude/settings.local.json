@@ -13,7 +13,9 @@
       "Read(//c/Users/menza/Downloads/**)",
       "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/market.py src/catalyst_bot/runner.py)",
       "Bash(python:*)",
-      "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/feeds.py)"
+      "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/feeds.py)",
+      "Bash(mv:*)",
+      "Bash(mkdir:*)"
     ],
     "deny": [],
     "ask": []
