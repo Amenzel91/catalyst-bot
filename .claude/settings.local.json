@@ -16,7 +16,10 @@
       "Bash(\".venv/Scripts/pre-commit.exe\" run --files src/catalyst_bot/feeds.py)",
       "Bash(mv:*)",
       "Bash(mkdir:*)",
-      "Bash(git check-ignore:*)"
+      "Bash(git check-ignore:*)",
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch .env.staging\" --prune-empty --tag-name-filter cat -- --all)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
