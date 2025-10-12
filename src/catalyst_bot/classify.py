@@ -24,6 +24,7 @@ except Exception:  # pragma: no cover
 
 from .config import get_settings
 from .models import NewsItem, ScoredItem
+from .source_credibility import get_source_category, get_source_tier, get_source_weight
 
 # Import earnings scorer for earnings result detection and sentiment
 try:
@@ -92,6 +93,60 @@ def _init_ml_model():
         log = logging.getLogger(__name__)
         log.warning("ml_model_init_failed err=%s", str(e))
         return None
+
+
+def log_credibility_distribution(items: List[NewsItem]) -> None:
+    """Log the distribution of source credibility tiers across news items.
+
+    This function analyzes a batch of news items and logs statistics about
+    source quality distribution. Helps track the quality of incoming news
+    sources and identify potential issues with low-credibility sources.
+
+    Parameters
+    ----------
+    items : List[NewsItem]
+        News items to analyze for credibility distribution
+
+    Notes
+    -----
+    Logs at INFO level with the following metrics:
+        - Total items processed
+        - Count and percentage for each tier (1=HIGH, 2=MEDIUM, 3=LOW)
+        - Average credibility weight across all items
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    if not items:
+        return
+
+    tier_counts = {1: 0, 2: 0, 3: 0}
+    total_weight = 0.0
+
+    for item in items:
+        url = getattr(item, "canonical_url", None) or getattr(item, "link", None)
+        if url:
+            tier = get_source_tier(url)
+            weight = get_source_weight(url)
+            tier_counts[tier] += 1
+            total_weight += weight
+
+    total = len(items)
+    avg_weight = total_weight / total if total > 0 else 0.0
+
+    log.info(
+        "source_credibility_distribution total=%d tier1_high=%d(%.1f%%) "
+        "tier2_medium=%d(%.1f%%) tier3_low=%d(%.1f%%) avg_weight=%.3f",
+        total,
+        tier_counts[1],
+        (tier_counts[1] / total * 100) if total > 0 else 0,
+        tier_counts[2],
+        (tier_counts[2] / total * 100) if total > 0 else 0,
+        tier_counts[3],
+        (tier_counts[3] / total * 100) if total > 0 else 0,
+        avg_weight,
+    )
 
 
 def load_dynamic_keyword_weights(path: Optional[Path] = None) -> Dict[str, float]:
@@ -462,20 +517,72 @@ def classify(
         item, earnings_result=earnings_result
     )
 
+    # --- ENHANCEMENT #1: Extract multi-dimensional sentiment if available ---
+    # Check if item has multi-dimensional sentiment analysis from LLM
+    multi_dim_sentiment = None
+    if hasattr(item, "raw") and item.raw and isinstance(item.raw, dict):
+        multi_dim_data = item.raw.get("sentiment_analysis")
+        if multi_dim_data:
+            try:
+                from .llm_schemas import SentimentAnalysis
+                # Validate and parse multi-dimensional sentiment
+                multi_dim_sentiment = SentimentAnalysis(**multi_dim_data)
+
+                # Apply confidence threshold filtering (reject if confidence < 0.5)
+                if multi_dim_sentiment.confidence < 0.5:
+                    import logging
+                    log = logging.getLogger(__name__)
+                    log.debug(
+                        "multi_dim_sentiment_rejected_low_confidence ticker=%s confidence=%.2f",
+                        getattr(item, "ticker", "N/A"),
+                        multi_dim_sentiment.confidence,
+                    )
+                    multi_dim_sentiment = None  # Reject low-confidence sentiment
+                else:
+                    # Use multi-dimensional sentiment to enhance numeric sentiment
+                    # Override sentiment_confidence with LLM confidence if higher
+                    if multi_dim_sentiment.confidence > sentiment_confidence:
+                        sentiment_confidence = multi_dim_sentiment.confidence
+
+                    # Optionally blend numeric sentiment with categorical sentiment
+                    categorical_sentiment = multi_dim_sentiment.to_numeric_sentiment()
+                    # Weighted blend: 70% original, 30% categorical
+                    sentiment = 0.7 * sentiment + 0.3 * categorical_sentiment
+
+                    import logging
+                    log = logging.getLogger(__name__)
+                    log.info(
+                        "multi_dim_sentiment_applied ticker=%s market_sentiment=%s urgency=%s risk=%s confidence=%.2f",
+                        getattr(item, "ticker", "N/A"),
+                        multi_dim_sentiment.market_sentiment,
+                        multi_dim_sentiment.urgency,
+                        multi_dim_sentiment.risk_level,
+                        multi_dim_sentiment.confidence,
+                    )
+            except Exception as e:
+                import logging
+                log = logging.getLogger(__name__)
+                log.debug("multi_dim_sentiment_parse_failed err=%s", str(e))
+
     # Store breakdown in item for debugging/analysis
     if hasattr(item, "raw") and item.raw:
         item.raw["sentiment_breakdown"] = sentiment_breakdown
         item.raw["sentiment_confidence"] = sentiment_confidence
 
     # Keyword hits & weights (prefer analyzer dynamic weights)
+    # Search both title AND summary for keywords (enables SEC filing descriptions + news summaries)
     title_lower = (item.title or "").lower()
+    summary_lower = (getattr(item, "summary", None) or "").lower()
+    # Combine title and summary for keyword matching
+    combined_text = f"{title_lower} {summary_lower}"
+
     hits: List[str] = []
     total_keyword_score = 0.0
     dynamic_weights = keyword_weights or load_dynamic_keyword_weights()
 
     for category, keywords in keyword_categories.items():
         for kw in keywords:
-            if kw in title_lower:
+            if kw in combined_text:
                 hits.append(category)
                 weight = float(
                     dynamic_weights.get(category, settings.keyword_default_weight)
@@ -488,8 +595,34 @@ def classify(
     src_host = (item.source_host or "").lower()
     source_weight = settings.rss_sources.get(src_host, 1.0)
 
+    # --- ENHANCEMENT #2: Apply source credibility scoring ---
+    # Get credibility weight based on source URL/domain
+    # This applies a tier-based multiplier to prioritize high-quality sources
+    credibility_weight = 1.0
+    credibility_tier = 3  # Default to tier 3 (unknown)
+    source_url = getattr(item, "canonical_url", None) or getattr(item, "link", None)
+
+    if source_url:
+        credibility_tier = get_source_tier(source_url)
+        credibility_weight = get_source_weight(source_url)
+
+        # Log when low-credibility sources are downweighted
+        if credibility_tier == 3 and credibility_weight < 1.0:
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug(
+                "source_credibility_downweight url=%s tier=%d weight=%.2f",
+                source_url[:100] if source_url else "N/A",
+                credibility_tier,
+                credibility_weight,
+            )
+
+    # Combine legacy source weight with credibility weight
+    combined_source_weight = float(source_weight) * float(credibility_weight)
+
     # Aggregate relevance (keep simple/deterministic)
-    relevance = float(total_keyword_score) * float(source_weight)
+    relevance = float(total_keyword_score) * float(combined_source_weight)
 
     # Total score: simple combination that is deterministic and monotonic
     total_score = relevance + sentiment
@@ -549,6 +682,51 @@ def classify(
                 "keywords": hits,
                 "score": total_score,
             }
+
+    # --- ENHANCEMENT #1: Attach multi-dimensional sentiment metadata ---
+    # Add multi-dimensional sentiment fields to scored item for downstream use
+    if multi_dim_sentiment:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_md_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_md_attr(scored, "market_sentiment", multi_dim_sentiment.market_sentiment)
+            _set_md_attr(scored, "sentiment_confidence", multi_dim_sentiment.confidence)
+            _set_md_attr(scored, "urgency", multi_dim_sentiment.urgency)
+            _set_md_attr(scored, "risk_level", multi_dim_sentiment.risk_level)
+            _set_md_attr(scored, "institutional_interest", multi_dim_sentiment.institutional_interest)
+            _set_md_attr(scored, "retail_hype_score", multi_dim_sentiment.retail_hype_score)
+            _set_md_attr(scored, "sentiment_reasoning", multi_dim_sentiment.reasoning)
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- ENHANCEMENT #2: Attach source credibility metadata ---
+    # Add credibility tier and weight to scored item for downstream tracking
+    try:
+        # Helper to set attributes on both dict and object types
+        def _set_cred_attr(obj, key, value):
+            if isinstance(obj, dict):
+                obj[key] = value
+            else:
+                try:
+                    setattr(obj, key, value)
+                except Exception:
+                    pass
+
+        _set_cred_attr(scored, "source_credibility_tier", credibility_tier)
+        _set_cred_attr(scored, "source_credibility_weight", credibility_weight)
+        _set_cred_attr(scored, "source_credibility_category", get_source_category(source_url) if source_url else "unknown")
+    except Exception:
+        # Don't let metadata attachment break the pipeline
+        pass
 
     # --- WAVE 0.1: Attach earnings metadata to scored item ---
     # Add earnings result data to the scored item for downstream processing
