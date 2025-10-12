@@ -386,14 +386,31 @@ def _fetch_finnhub_sentiment(
     return score, label, 1, details
 
 
-# Mapping of provider identifiers to their fetch functions.  The order of
-# entries reflects the preferred sequence in which providers will be
-# queried.  Additional providers can be appended here in future patches.
+# Mapping of provider identifiers to their fetch functions.
+#
+# NEWS/SENTIMENT PROVIDER PRIORITY STRATEGY:
+# ===========================================
+# The order of entries reflects the preferred sequence in which providers
+# will be queried for news sentiment data:
+#
+# 1. PRIMARY: Finnhub (FREE tier, 60 calls/min)
+#    - Excellent news coverage and sentiment analysis
+#    - Company news, analyst ratings, earnings calendars
+#    - No cost, generous rate limits
+#
+# 2. BACKUP: Alpha Vantage (uses existing subscription)
+#    - News sentiment endpoint available
+#    - Already subscribed for price data
+#
+# 3. BACKUP: Marketaux (requires separate API key)
+# 4. BACKUP: StockNewsAPI (requires separate API key)
+#
+# Additional providers can be appended here in future patches.
 _PROVIDERS = {
-    "alpha": _fetch_alpha_sentiment,
-    "marketaux": _fetch_marketaux_sentiment,
-    "stocknews": _fetch_stocknews_sentiment,
-    "finnhub": _fetch_finnhub_sentiment,
+    "finnhub": _fetch_finnhub_sentiment,  # PRIMARY for news/sentiment
+    "alpha": _fetch_alpha_sentiment,  # BACKUP (existing subscription)
+    "marketaux": _fetch_marketaux_sentiment,  # BACKUP (optional)
+    "stocknews": _fetch_stocknews_sentiment,  # BACKUP (optional)
 }
 
 
@@ -401,6 +418,24 @@ def get_combined_sentiment_for_ticker(
     ticker: str, headlines: Optional[List[str]] = None
 ) -> Optional[Tuple[float, str, Dict[str, Any]]]:
     """Return an aggregated sentiment score, label and per‑provider details.
+
+    NEWS/SENTIMENT PROVIDER PRIORITY STRATEGY:
+    ==========================================
+    This function implements a prioritized fallback chain for news sentiment:
+
+    1. PRIMARY: Finnhub (FREE tier, 60 calls/min)
+       - Excellent news coverage and analyst sentiment
+       - Company news, earnings calendars, upgrades/downgrades
+       - No cost, generous rate limits
+       - Requires: FEATURE_FINNHUB_SENTIMENT=1, FINNHUB_API_KEY
+
+    2. BACKUP: Alpha Vantage News Sentiment
+       - Uses existing subscription (already paying for price data)
+       - Falls back when Finnhub unavailable
+       - Requires: FEATURE_ALPHA_SENTIMENT=1, ALPHAVANTAGE_API_KEY
+
+    3. BACKUP: Marketaux (optional, requires separate API key)
+    4. BACKUP: StockNewsAPI (optional, requires separate API key)
 
     The helper consults each enabled provider in turn.  Providers are
     enabled based on feature flags and the presence of API keys.  The
@@ -412,8 +447,23 @@ def get_combined_sentiment_for_ticker(
     articles is below ``sentiment_min_articles``, the function returns
     ``None``.
 
-    ``headlines`` is reserved for future use (e.g. for providers that
-    accept raw text rather than a ticker) and is currently ignored.
+    Provider usage is logged with role designation (PRIMARY/BACKUP) for
+    debugging and monitoring.
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol to fetch sentiment for
+    headlines : list of str, optional
+        Reserved for future use (e.g. for providers that accept raw text
+        rather than a ticker). Currently ignored.
+
+    Returns
+    -------
+    tuple of (float, str, dict) or None
+        (score, label, provider_details) where score is in range [-1, 1],
+        label is one of "Bullish"/"Neutral"/"Bearish", and provider_details
+        contains individual provider results. Returns None if insufficient data.
     """
     if not ticker:
         return None
@@ -493,6 +543,17 @@ def get_combined_sentiment_for_ticker(
             "label": label,
             "n_articles": n_articles,
         }
+        # Log provider usage with role designation
+        role = "PRIMARY" if name == "finnhub" else "BACKUP"
+        log.info(
+            "sentiment_provider provider=%s ticker=%s role=%s score=%.2f label=%s n_articles=%d",
+            name,
+            ticker_upper,
+            role,
+            score,
+            label,
+            n_articles,
+        )
         total_articles += n_articles
         try:
             weight = (

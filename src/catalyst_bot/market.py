@@ -405,15 +405,43 @@ def get_last_price_snapshot(
     """
     Return the best-effort last traded price and previous close for a ticker.
 
+    PROVIDER PRIORITY STRATEGY:
+    ===========================
+    This function implements a fallback chain for price data with clear priorities:
+
+    1. PRIMARY: Tiingo IEX API ($30/month)
+       - Real-time quotes with superior reliability
+       - Excellent rate limits (1000 req/hr on starter plan)
+       - Intraday OHLC data available
+       - Requires: FEATURE_TIINGO=1, TIINGO_API_KEY
+
+    2. BACKUP: Alpha Vantage GLOBAL_QUOTE
+       - Free tier: 25 API calls/day (very limited)
+       - Falls back when Tiingo unavailable
+       - Requires: ALPHAVANTAGE_API_KEY
+
+    3. BACKUP: yfinance
+       - Final fallback, no API key required
+       - Uses fast_info and history() methods
+       - May be slower and less reliable
+
     Respects the MARKET_PROVIDER_ORDER setting to determine provider precedence.
     Supported identifiers include:
-      - ``tiingo`` (Tiingo IEX API)
-      - ``av`` or ``alpha`` (Alpha Vantage global quote)
-      - ``yf`` or ``yahoo`` (yfinance)
+      - ``tiingo`` (Tiingo IEX API - PRIMARY)
+      - ``av`` or ``alpha`` (Alpha Vantage - BACKUP)
+      - ``yf`` or ``yahoo`` (yfinance - BACKUP)
+
     Providers are tried in order; missing values from earlier providers may be
-    filled by later ones. Telemetry is logged for each provider attempt.
+    filled by later ones. Telemetry is logged for each provider attempt, including
+    the provider role (PRIMARY/BACKUP).
+
     This function never raises; it returns (last, prev) where either component
     may be None.
+
+    Returns
+    -------
+    tuple of (float or None, float or None)
+        (last_price, previous_close) where either value may be None if unavailable
     """
     nt = _norm_ticker(ticker)
     if not nt:
@@ -475,6 +503,13 @@ def get_last_price_snapshot(
                         _log_provider("tiingo", t0, t_last, t_prev)
                         # If both values obtained, return immediately
                         if last is not None and prev is not None:
+                            log.info(
+                                "provider provider=tiingo ticker=%s role=PRIMARY "
+                                "last=%.2f prev=%.2f",
+                                nt,
+                                last,
+                                prev,
+                            )
                             return last, prev
                     except Exception as e:
                         _log_provider(
@@ -496,6 +531,13 @@ def get_last_price_snapshot(
                         prev = a_prev
                     _log_provider("alpha", t0, a_last, a_prev)
                     if last is not None and prev is not None:
+                        log.info(
+                            "provider provider=alpha_vantage ticker=%s role=BACKUP "
+                            "last=%.2f prev=%.2f",
+                            nt,
+                            last,
+                            prev,
+                        )
                         return last, prev
                 except Exception as e:
                     _log_provider(
@@ -544,6 +586,14 @@ def get_last_price_snapshot(
                         except Exception:
                             pass
                     _log_provider("yf", t0, last, prev)
+                    if last is not None and prev is not None:
+                        log.info(
+                            "provider provider=yfinance ticker=%s role=BACKUP "
+                            "last=%.2f prev=%.2f",
+                            nt,
+                            last,
+                            prev,
+                        )
                     # After one attempt (fast_info + possibly history), break out
                     break
                 except Exception as e:
