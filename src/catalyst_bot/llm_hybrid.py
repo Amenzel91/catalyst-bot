@@ -101,8 +101,10 @@ class HybridLLMRouter:
         if self.config.gemini_enabled and GEMINI_AVAILABLE:
             try:
                 genai.configure(api_key=self.config.gemini_api_key)
-                self.gemini_client = genai.GenerativeModel("gemini-2.0-flash-exp")
-                _logger.info("gemini_client_initialized model=gemini-2.0-flash-exp")
+                # Using stable gemini-2.5-flash (1000 RPM with Tier 1 billing)
+                # 100x better than experimental model (10 RPM limit)
+                self.gemini_client = genai.GenerativeModel("gemini-2.5-flash")
+                _logger.info("gemini_client_initialized model=gemini-2.5-flash")
             except Exception as e:
                 _logger.warning("gemini_init_failed err=%s", str(e))
                 self.config.gemini_enabled = False
@@ -112,7 +114,7 @@ class HybridLLMRouter:
                 self.anthropic_client = AsyncAnthropic(
                     api_key=self.config.anthropic_api_key
                 )
-                _logger.info("anthropic_client_initialized model=claude-3-5-sonnet")
+                _logger.info("anthropic_client_initialized model=claude-3-haiku")
             except Exception as e:
                 _logger.warning("anthropic_init_failed err=%s", str(e))
                 self.config.anthropic_enabled = False
@@ -235,8 +237,10 @@ class HybridLLMRouter:
             return None
 
         try:
+            # Using Claude 3 Haiku for cost-effective keyword extraction
+            # 91% cheaper than Sonnet ($0.44 vs $3.30/month for 5% fallback traffic)
             message = await self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-3-haiku-20240307",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
