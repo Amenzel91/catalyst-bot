@@ -26,6 +26,14 @@ from .config import get_settings
 from .models import NewsItem, ScoredItem
 from .source_credibility import get_source_category, get_source_tier, get_source_weight
 
+# Semantic keyword extraction (optional)
+try:
+    from .semantic_keywords import get_semantic_extractor
+
+    _semantic_extractor = get_semantic_extractor()
+except ImportError:
+    _semantic_extractor = None
+
 # Import earnings scorer for earnings result detection and sentiment
 try:
     from .earnings_scorer import score_earnings_event
@@ -93,6 +101,31 @@ def _init_ml_model():
         log = logging.getLogger(__name__)
         log.warning("ml_model_init_failed err=%s", str(e))
         return None
+
+
+def clear_ml_batch_scorer() -> None:
+    """Clear ML batch scorer to prevent memory leaks.
+
+    CRITICAL BUG FIX: This function should be called at the end of each cycle
+    in runner.py to prevent unbounded memory growth in the batch scorer.
+    The batch scorer may accumulate items without proper cleanup, causing
+    memory leaks in long-running processes.
+
+    This function is safe to call even if ML sentiment is disabled or the
+    batch scorer is not initialized.
+    """
+    global _ml_batch_scorer
+    if _ml_batch_scorer is not None:
+        try:
+            # Check if the batch scorer has a clear() method
+            if hasattr(_ml_batch_scorer, "clear"):
+                _ml_batch_scorer.clear()
+            # If not, try flush() to at least process pending items
+            elif hasattr(_ml_batch_scorer, "flush"):
+                _ml_batch_scorer.flush()
+        except Exception:
+            # Silently ignore errors - don't break the main loop
+            pass
 
 
 def log_credibility_distribution(items: List[NewsItem]) -> None:
@@ -525,12 +558,14 @@ def classify(
         if multi_dim_data:
             try:
                 from .llm_schemas import SentimentAnalysis
+
                 # Validate and parse multi-dimensional sentiment
                 multi_dim_sentiment = SentimentAnalysis(**multi_dim_data)
 
                 # Apply confidence threshold filtering (reject if confidence < 0.5)
                 if multi_dim_sentiment.confidence < 0.5:
                     import logging
+
                     log = logging.getLogger(__name__)
                     log.debug(
                         "multi_dim_sentiment_rejected_low_confidence ticker=%s confidence=%.2f",
@@ -550,9 +585,11 @@ def classify(
                     sentiment = 0.7 * sentiment + 0.3 * categorical_sentiment
 
                     import logging
+
                     log = logging.getLogger(__name__)
                     log.info(
-                        "multi_dim_sentiment_applied ticker=%s market_sentiment=%s urgency=%s risk=%s confidence=%.2f",
+                        "multi_dim_sentiment_applied ticker=%s "
+                        "market_sentiment=%s urgency=%s risk=%s confidence=%.2f",
                         getattr(item, "ticker", "N/A"),
                         multi_dim_sentiment.market_sentiment,
                         multi_dim_sentiment.urgency,
@@ -561,6 +598,7 @@ def classify(
                     )
             except Exception as e:
                 import logging
+
                 log = logging.getLogger(__name__)
                 log.debug("multi_dim_sentiment_parse_failed err=%s", str(e))
 
@@ -621,6 +659,39 @@ def classify(
     # Combine legacy source weight with credibility weight
     combined_source_weight = float(source_weight) * float(credibility_weight)
 
+    # --- SEMANTIC KEYWORD EXTRACTION (KeyBERT) ---
+    # Extract context-aware keyphrases to supplement traditional keyword matching
+    semantic_keywords = []
+    if _semantic_extractor and _semantic_extractor.is_available():
+        try:
+            import os
+
+            # Check if feature is enabled (default: enabled)
+            if os.getenv("FEATURE_SEMANTIC_KEYWORDS", "1") == "1":
+                top_n = int(os.getenv("SEMANTIC_KEYWORDS_TOP_N", "5"))
+                ngram_max = int(os.getenv("SEMANTIC_KEYWORDS_NGRAM_MAX", "3"))
+
+                semantic_keywords = _semantic_extractor.extract_from_feed_item(
+                    title=item.title or "",
+                    summary=getattr(item, "summary", None) or "",
+                    top_n=top_n,
+                    keyphrase_ngram_range=(1, ngram_max),
+                )
+
+                import logging
+
+                log = logging.getLogger(__name__)
+                log.debug(
+                    "semantic_keywords_extracted ticker=%s keywords=%s",
+                    getattr(item, "ticker", "N/A"),
+                    semantic_keywords,
+                )
+        except Exception as e:
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug("semantic_keyword_extraction_failed err=%s", str(e))
+
     # Aggregate relevance (keep simple/deterministic)
     relevance = float(total_keyword_score) * float(combined_source_weight)
 
@@ -657,6 +728,222 @@ def classify(
             label_keyword = sentiment_label.lower().replace(" ", "_")
             if label_keyword not in hits:
                 hits.append(label_keyword)
+
+    # --- FUNDAMENTAL DATA INTEGRATION: Float shares and short interest scoring ---
+    # Apply fundamental data boost if ticker is available and feature is enabled
+    fundamental_score = 0.0
+    fundamental_metadata = None
+    ticker = getattr(item, "ticker", None)
+
+    if ticker and ticker.strip():
+        try:
+            from .fundamental_scoring import calculate_fundamental_score
+
+            fundamental_score, fundamental_metadata = calculate_fundamental_score(
+                ticker
+            )
+            if fundamental_score > 0:
+                total_score += fundamental_score
+
+                # Add fundamental tags to hits list for downstream visibility
+                if fundamental_metadata.get("float_reason"):
+                    float_tag = f"fundamental_{fundamental_metadata['float_reason']}"
+                    if float_tag not in hits:
+                        hits.append(float_tag)
+
+                if fundamental_metadata.get("si_reason"):
+                    si_tag = f"fundamental_{fundamental_metadata['si_reason']}"
+                    if si_tag not in hits:
+                        hits.append(si_tag)
+
+                import logging
+
+                log = logging.getLogger(__name__)
+                log.info(
+                    "fundamental_boost_applied ticker=%s boost=%.3f float_score=%.3f si_score=%.3f",
+                    ticker,
+                    fundamental_score,
+                    fundamental_metadata.get("float_score", 0.0),
+                    fundamental_metadata.get("si_score", 0.0),
+                )
+        except ImportError:
+            # fundamental_scoring module not available (shouldn't happen)
+            pass
+        except Exception as e:
+            # Don't let fundamental scoring errors break classification
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug(
+                "fundamental_scoring_failed ticker=%s err=%s",
+                ticker,
+                e.__class__.__name__,
+            )
+
+    # --- MARKET REGIME ADJUSTMENT ---
+    # Apply regime multiplier to total_score based on current market conditions
+    # This adjusts scores based on overall market environment (VIX, SPY trend)
+    regime_multiplier = 1.0
+    regime_data = None
+
+    try:
+        from .market_regime import get_current_regime
+
+        regime_data = get_current_regime()
+        regime_multiplier = regime_data.get("multiplier", 1.0)
+
+        # Store pre-adjustment score for logging
+        pre_regime_score = total_score
+
+        # Apply regime adjustment to total_score
+        total_score = total_score * regime_multiplier
+
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.info(
+            "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
+            "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+            ticker or "N/A",
+            regime_data.get("regime", "UNKNOWN"),
+            regime_data.get("vix", 0.0),
+            regime_data.get("spy_trend", "UNKNOWN"),
+            regime_multiplier,
+            pre_regime_score,
+            total_score,
+        )
+    except ImportError:
+        # market_regime module not available yet
+        pass
+    except Exception as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+
+    # --- RVOL (RELATIVE VOLUME) BOOST ---
+    # Apply RVol multiplier to boost scores for tickers with unusual volume
+    # RVol >2.0x indicates elevated interest, often preceding significant price moves
+    rvol_multiplier = 1.0
+    rvol_data = None
+
+    if ticker and ticker.strip():
+        try:
+            from .rvol import calculate_rvol_intraday
+
+            rvol_data = calculate_rvol_intraday(ticker)
+            if rvol_data:
+                rvol_multiplier = rvol_data.get("multiplier", 1.0)
+
+                # Apply to total_score
+                pre_rvol_score = total_score
+                total_score = total_score * rvol_multiplier
+
+                import logging
+
+                log = logging.getLogger(__name__)
+                log.info(
+                    "rvol_adjustment ticker=%s rvol=%.2fx rvol_class=%s multiplier=%.2f "
+                    "current_vol=%d avg_vol=%.0f pre_score=%.3f post_score=%.3f",
+                    ticker,
+                    rvol_data.get("rvol", 1.0),
+                    rvol_data.get("rvol_class", "NORMAL"),
+                    rvol_multiplier,
+                    rvol_data.get("current_volume", 0),
+                    rvol_data.get("avg_volume_20d", 0.0),
+                    pre_rvol_score,
+                    total_score,
+                )
+        except ImportError:
+            # rvol module not available (shouldn't happen)
+            pass
+        except Exception as e:
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug(
+                "rvol_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
+            )
+
+    # --- FLOAT-BASED CONFIDENCE ADJUSTMENT ---
+    # Apply float multiplier to adjust scores based on volatility expectations
+    # Low float stocks (<5M shares) have 4.2x higher volatility
+    float_multiplier = 1.0
+    float_data = None
+
+    try:
+        from .float_data import get_float_data
+
+        if ticker:
+            float_data = get_float_data(ticker)
+            float_multiplier = float_data.get("multiplier", 1.0)
+
+            # Apply to total_score
+            pre_float_score = total_score
+            total_score = total_score * float_multiplier
+
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.info(
+                "float_adjustment_applied ticker=%s float_class=%s float_shares=%.2fM "
+                "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+                ticker,
+                float_data.get("float_class", "UNKNOWN"),
+                (float_data.get("float_shares") or 0) / 1_000_000,
+                float_multiplier,
+                pre_float_score,
+                total_score,
+            )
+    except Exception as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("float_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+
+    # --- VWAP (VOLUME WEIGHTED AVERAGE PRICE) ANALYSIS ---
+    # Calculate VWAP and determine if price is above/below (exit signal)
+    # VWAP breaks (price below VWAP) are strong sell signals - 91% accuracy
+    vwap_multiplier = 1.0
+    vwap_data = None
+
+    if ticker and ticker.strip():
+        try:
+            from .vwap_calculator import calculate_vwap, get_vwap_multiplier
+
+            vwap_data = calculate_vwap(ticker)
+            if vwap_data:
+                vwap_multiplier = get_vwap_multiplier(vwap_data)
+
+                # Apply to total_score
+                pre_vwap_score = total_score
+                total_score = total_score * vwap_multiplier
+
+                import logging
+
+                log = logging.getLogger(__name__)
+                log.info(
+                    "vwap_adjustment ticker=%s vwap=%.4f current_price=%.4f distance=%.2f%% "
+                    "signal=%s multiplier=%.2f pre_score=%.3f post_score=%.3f",
+                    ticker,
+                    vwap_data.get("vwap", 0.0),
+                    vwap_data.get("current_price", 0.0),
+                    vwap_data.get("distance_from_vwap_pct", 0.0),
+                    vwap_data.get("vwap_signal", "UNKNOWN"),
+                    vwap_multiplier,
+                    pre_vwap_score,
+                    total_score,
+                )
+        except ImportError:
+            # vwap_calculator module not available (shouldn't happen)
+            pass
+        except Exception as e:
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug(
+                "vwap_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
+            )
 
     # Build ScoredItem first (keep existing behavior), then optionally enrich.
     # Use keyword arguments to ensure fields map correctly and populate
@@ -697,12 +984,20 @@ def classify(
                     except Exception:
                         pass
 
-            _set_md_attr(scored, "market_sentiment", multi_dim_sentiment.market_sentiment)
+            _set_md_attr(
+                scored, "market_sentiment", multi_dim_sentiment.market_sentiment
+            )
             _set_md_attr(scored, "sentiment_confidence", multi_dim_sentiment.confidence)
             _set_md_attr(scored, "urgency", multi_dim_sentiment.urgency)
             _set_md_attr(scored, "risk_level", multi_dim_sentiment.risk_level)
-            _set_md_attr(scored, "institutional_interest", multi_dim_sentiment.institutional_interest)
-            _set_md_attr(scored, "retail_hype_score", multi_dim_sentiment.retail_hype_score)
+            _set_md_attr(
+                scored,
+                "institutional_interest",
+                multi_dim_sentiment.institutional_interest,
+            )
+            _set_md_attr(
+                scored, "retail_hype_score", multi_dim_sentiment.retail_hype_score
+            )
             _set_md_attr(scored, "sentiment_reasoning", multi_dim_sentiment.reasoning)
         except Exception:
             # Don't let metadata attachment break the pipeline
@@ -723,7 +1018,11 @@ def classify(
 
         _set_cred_attr(scored, "source_credibility_tier", credibility_tier)
         _set_cred_attr(scored, "source_credibility_weight", credibility_weight)
-        _set_cred_attr(scored, "source_credibility_category", get_source_category(source_url) if source_url else "unknown")
+        _set_cred_attr(
+            scored,
+            "source_credibility_category",
+            get_source_category(source_url) if source_url else "unknown",
+        )
     except Exception:
         # Don't let metadata attachment break the pipeline
         pass
@@ -783,6 +1082,171 @@ def classify(
                         setattr(scored, "tags", tags_list)
             except Exception:
                 pass
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- FUNDAMENTAL DATA: Attach fundamental metadata to scored item ---
+    # Add fundamental data to the scored item for downstream processing
+    if fundamental_metadata:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_fund_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_fund_attr(scored, "fundamental_score", fundamental_score)
+            _set_fund_attr(
+                scored,
+                "fundamental_float_shares",
+                fundamental_metadata.get("float_shares"),
+            )
+            _set_fund_attr(
+                scored,
+                "fundamental_short_interest",
+                fundamental_metadata.get("short_interest"),
+            )
+            _set_fund_attr(
+                scored,
+                "fundamental_float_score",
+                fundamental_metadata.get("float_score"),
+            )
+            _set_fund_attr(
+                scored, "fundamental_si_score", fundamental_metadata.get("si_score")
+            )
+            _set_fund_attr(
+                scored,
+                "fundamental_float_reason",
+                fundamental_metadata.get("float_reason"),
+            )
+            _set_fund_attr(
+                scored, "fundamental_si_reason", fundamental_metadata.get("si_reason")
+            )
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- MARKET REGIME: Attach regime metadata to scored item ---
+    # Add market regime data to the scored item for downstream processing
+    if regime_data:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_regime_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_regime_attr(scored, "market_regime", regime_data.get("regime"))
+            _set_regime_attr(scored, "market_vix", regime_data.get("vix"))
+            _set_regime_attr(scored, "market_spy_trend", regime_data.get("spy_trend"))
+            _set_regime_attr(scored, "market_regime_multiplier", regime_multiplier)
+            _set_regime_attr(
+                scored, "market_spy_20d_return", regime_data.get("spy_20d_return")
+            )
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- FLOAT DATA: Attach float metadata to scored item ---
+    # Add float data to the scored item for downstream processing
+    if float_data:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_float_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_float_attr(scored, "float_shares", float_data.get("float_shares"))
+            _set_float_attr(scored, "float_class", float_data.get("float_class"))
+            _set_float_attr(scored, "float_multiplier", float_data.get("multiplier"))
+            _set_float_attr(
+                scored, "short_interest_pct", float_data.get("short_interest_pct")
+            )
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- RVOL DATA: Attach RVol metadata to scored item ---
+    # Add relative volume data to the scored item for downstream processing
+    if rvol_data:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_rvol_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_rvol_attr(scored, "rvol", rvol_data.get("rvol"))
+            _set_rvol_attr(scored, "rvol_class", rvol_data.get("rvol_class"))
+            _set_rvol_attr(scored, "rvol_multiplier", rvol_data.get("multiplier"))
+            _set_rvol_attr(scored, "current_volume", rvol_data.get("current_volume"))
+            _set_rvol_attr(scored, "avg_volume_20d", rvol_data.get("avg_volume_20d"))
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- VWAP DATA: Attach VWAP metadata to scored item ---
+    # Add VWAP data to the scored item for downstream processing
+    if vwap_data:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_vwap_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_vwap_attr(scored, "vwap", vwap_data.get("vwap"))
+            _set_vwap_attr(scored, "vwap_signal", vwap_data.get("vwap_signal"))
+            _set_vwap_attr(scored, "vwap_multiplier", vwap_multiplier)
+            _set_vwap_attr(
+                scored, "vwap_distance_pct", vwap_data.get("distance_from_vwap_pct")
+            )
+            _set_vwap_attr(scored, "is_above_vwap", vwap_data.get("is_above_vwap"))
+            _set_vwap_attr(scored, "vwap_current_price", vwap_data.get("current_price"))
+            _set_vwap_attr(
+                scored, "vwap_cumulative_volume", vwap_data.get("cumulative_volume")
+            )
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- SEMANTIC KEYWORDS: Attach semantic keywords to scored item ---
+    # Add KeyBERT extracted keywords to the scored item for downstream processing
+    if semantic_keywords:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_semantic_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_semantic_attr(scored, "semantic_keywords", semantic_keywords)
         except Exception:
             # Don't let metadata attachment break the pipeline
             pass

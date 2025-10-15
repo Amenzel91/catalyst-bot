@@ -9,9 +9,10 @@ trading simulation, tracks performance, and generates reports.
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -30,6 +31,79 @@ from .trade_simulator import PennyStockTradeSimulator
 log = get_logger("backtesting.engine")
 
 
+class LRUCache:
+    """
+    Simple LRU (Least Recently Used) cache implementation.
+
+    Prevents unbounded memory growth by evicting least recently used items
+    when cache reaches max_size. Critical for long-running backtests.
+    """
+
+    def __init__(self, max_size: int = 50):
+        """
+        Initialize LRU cache.
+
+        Parameters
+        ----------
+        max_size : int
+            Maximum number of items to cache (default: 50)
+        """
+        self.cache: OrderedDict = OrderedDict()
+        self.max_size = max_size
+
+    def get(self, key: str) -> Optional[pd.DataFrame]:
+        """
+        Get item from cache and mark as recently used.
+
+        Parameters
+        ----------
+        key : str
+            Cache key
+
+        Returns
+        -------
+        pd.DataFrame or None
+            Cached value or None if not found
+        """
+        if key not in self.cache:
+            return None
+
+        # Move to end (mark as recently used)
+        self.cache.move_to_end(key)
+        return self.cache[key]
+
+    def set(self, key: str, value: pd.DataFrame) -> None:
+        """
+        Add item to cache, evicting oldest if necessary.
+
+        Parameters
+        ----------
+        key : str
+            Cache key
+        value : pd.DataFrame
+            Value to cache
+        """
+        if key in self.cache:
+            # Update existing key and move to end
+            self.cache.move_to_end(key)
+
+        self.cache[key] = value
+
+        # Evict oldest item if over max_size
+        if len(self.cache) > self.max_size:
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+            log.debug("lru_cache_evicted key=%s", oldest_key)
+
+    def __contains__(self, key: str) -> bool:
+        """Check if key exists in cache."""
+        return key in self.cache
+
+    def clear(self) -> None:
+        """Clear all items from cache."""
+        self.cache.clear()
+
+
 class BacktestEngine:
     """
     Main backtesting engine that:
@@ -45,6 +119,8 @@ class BacktestEngine:
         end_date: str,
         initial_capital: float = 10000.0,
         strategy_params: Optional[Dict] = None,
+        data_source: str = "data/events.jsonl",
+        data_filter: Optional[Callable] = None,
     ):
         """
         Initialize backtest engine.
@@ -66,6 +142,11 @@ class BacktestEngine:
             - max_hold_hours: Max hold time in hours (default: 24)
             - position_size_pct: Position size % (default: 0.10)
             - max_daily_volume_pct: Max % of daily volume (default: 0.05)
+        data_source : str, optional
+            Path to historical events data file (default: "data/events.jsonl")
+        data_filter : callable, optional
+            Optional filter function to apply to loaded alerts.
+            Function should accept an alert dict and return True to keep it.
         """
         self.start_date = datetime.strptime(start_date, "%Y-%m-%d").replace(
             tzinfo=timezone.utc
@@ -74,6 +155,8 @@ class BacktestEngine:
             tzinfo=timezone.utc
         )
         self.initial_capital = initial_capital
+        self.data_source = data_source
+        self.data_filter = data_filter
 
         # Default strategy params
         self.strategy_params = {
@@ -98,8 +181,8 @@ class BacktestEngine:
         )
         self.portfolio = Portfolio(initial_capital=initial_capital)
 
-        # Price cache to reduce API calls
-        self.price_cache: Dict[str, pd.DataFrame] = {}
+        # LRU cache to reduce API calls and prevent OOM in long backtests
+        self.price_cache = LRUCache(max_size=50)
 
         log.info(
             "backtest_engine_initialized start=%s end=%s capital=%.2f params=%s",
@@ -111,7 +194,7 @@ class BacktestEngine:
 
     def load_historical_alerts(self) -> List[Dict]:
         """
-        Load alerts from events.jsonl filtered by date range.
+        Load alerts from configured data source filtered by date range.
 
         Returns
         -------
@@ -120,8 +203,8 @@ class BacktestEngine:
         """
         alerts = []
 
-        # Try to load from events.jsonl
-        events_path = Path("data/events.jsonl")
+        # Load from configured data source
+        events_path = Path(self.data_source)
         if not events_path.exists():
             log.warning("events_file_not_found path=%s", events_path)
             return []
@@ -164,6 +247,16 @@ class BacktestEngine:
             log.error("failed_to_load_events path=%s error=%s", events_path, str(e))
             return []
 
+        # Apply custom data filter if provided
+        if self.data_filter is not None:
+            original_count = len(alerts)
+            alerts = [alert for alert in alerts if self.data_filter(alert)]
+            log.info(
+                "data_filter_applied original=%d filtered=%d",
+                original_count,
+                len(alerts),
+            )
+
         log.info(
             "historical_alerts_loaded count=%d start=%s end=%s",
             len(alerts),
@@ -172,6 +265,101 @@ class BacktestEngine:
         )
 
         return alerts
+
+    def prefetch_bulk_price_data(
+        self, tickers: List[str], start: datetime, end: datetime
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Bulk fetch price data for multiple tickers in parallel using Tiingo.
+
+        Uses ThreadPoolExecutor to fetch multiple tickers concurrently.
+        Falls back to yfinance if Tiingo is not available.
+
+        Parameters
+        ----------
+        tickers : list of str
+            List of ticker symbols to fetch
+        start : datetime
+            Start datetime
+        end : datetime
+            End datetime
+
+        Returns
+        -------
+        dict
+            Dict mapping ticker -> price DataFrame
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from ..config import get_settings
+
+        settings = get_settings()
+        tiingo_api_key = settings.tiingo_api_key
+
+        price_cache_dict = {}
+
+        def fetch_ticker_tiingo(ticker):
+            """Fetch single ticker from Tiingo."""
+            try:
+                import requests
+
+                url = f"https://api.tiingo.com/iex/{ticker}/prices"
+                params = {
+                    "startDate": start.strftime("%Y-%m-%d"),
+                    "endDate": end.strftime("%Y-%m-%d"),
+                    "resampleFreq": "1hour",
+                    "token": tiingo_api_key,
+                }
+                response = requests.get(url, params=params, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # Convert to DataFrame
+                df = pd.DataFrame(data)
+                if "date" in df.columns and not df.empty:
+                    df["date"] = pd.to_datetime(df["date"])
+                    df = df.set_index("date")
+                    df = df.rename(
+                        columns={
+                            "close": "Close",
+                            "open": "Open",
+                            "high": "High",
+                            "low": "Low",
+                            "volume": "Volume",
+                        }
+                    )
+                    return ticker, df
+
+                return ticker, None
+
+            except Exception as e:
+                log.debug("tiingo_fetch_failed ticker=%s error=%s", ticker, str(e))
+                return ticker, None
+
+        # Use ThreadPoolExecutor for parallel fetching
+        if tiingo_api_key:
+            log.info(
+                "prefetching_price_data_tiingo tickers=%d start=%s end=%s",
+                len(tickers),
+                start.date(),
+                end.date(),
+            )
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_ticker = {
+                    executor.submit(fetch_ticker_tiingo, ticker): ticker
+                    for ticker in tickers
+                }
+                for future in as_completed(future_to_ticker):
+                    ticker, df = future.result()
+                    if df is not None:
+                        price_cache_dict[ticker] = df
+
+        log.info(
+            "prefetch_complete cached=%d of %d tickers",
+            len(price_cache_dict),
+            len(tickers),
+        )
+        return price_cache_dict
 
     def load_price_data(
         self, ticker: str, start: datetime, end: datetime
@@ -196,10 +384,16 @@ class BacktestEngine:
         pd.DataFrame or None
             Price data with columns: Open, High, Low, Close, Volume
         """
+        # Check if we have prefetched data
+        if hasattr(self, "prefetch_cache") and ticker in self.prefetch_cache:
+            return self.prefetch_cache[ticker]
+
         cache_key = f"{ticker}_{start.date()}_{end.date()}"
 
-        if cache_key in self.price_cache:
-            return self.price_cache[cache_key]
+        # Check LRU cache first
+        cached_data = self.price_cache.get(cache_key)
+        if cached_data is not None:
+            return cached_data
 
         try:
             import yfinance as yf
@@ -209,7 +403,7 @@ class BacktestEngine:
                 ticker,
                 start=start.strftime("%Y-%m-%d"),
                 end=end.strftime("%Y-%m-%d"),
-                interval="1h",  # Hourly data for intraday tracking
+                interval="15m",  # 15-minute data for more granular intraday tracking
                 progress=False,
             )
 
@@ -222,8 +416,8 @@ class BacktestEngine:
                 )
                 return None
 
-            # Cache it
-            self.price_cache[cache_key] = df
+            # Store in LRU cache (auto-evicts oldest if full)
+            self.price_cache.set(cache_key, df)
 
             log.debug(
                 "price_data_loaded ticker=%s rows=%d start=%s end=%s",
@@ -403,6 +597,25 @@ class BacktestEngine:
         # Sort alerts by timestamp
         alerts.sort(key=lambda a: a.get("ts", "") or a.get("timestamp", ""))
 
+        # Extract unique tickers and prefetch price data in bulk
+        unique_tickers = list(
+            set(
+                alert.get("ticker", "").upper()
+                for alert in alerts
+                if alert.get("ticker")
+            )
+        )
+        if unique_tickers:
+            log.info("extracting_unique_tickers count=%d", len(unique_tickers))
+            # Add buffer to date range for price lookups
+            prefetch_start = self.start_date - timedelta(days=2)
+            prefetch_end = self.end_date + timedelta(days=2)
+            self.prefetch_cache = self.prefetch_bulk_price_data(
+                unique_tickers, prefetch_start, prefetch_end
+            )
+        else:
+            self.prefetch_cache = {}
+
         # Process each alert
         for alert in alerts:
             ticker = alert.get("ticker", "").upper()
@@ -556,8 +769,8 @@ class BacktestEngine:
                 int(current_time.timestamp()), current_prices
             )
 
-            # Move to next hour
-            current_time += timedelta(hours=1)
+            # Move to next 15-minute interval (more granular monitoring)
+            current_time += timedelta(minutes=15)
 
     def _get_catalyst_type(self, alert: Dict) -> str:
         """Extract catalyst type from alert keywords."""

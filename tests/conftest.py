@@ -16,6 +16,14 @@ def pytest_configure(config):
     )
 
 
+def pytest_collection_modifyitems(config, items):
+    """Skip trio backend tests since trio is not installed."""
+    skip_trio = pytest.mark.skip(reason="trio backend not installed")
+    for item in items:
+        if "trio" in item.nodeid:
+            item.add_marker(skip_trio)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _stub_feedparser_module():
     """

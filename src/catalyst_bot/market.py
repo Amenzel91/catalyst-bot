@@ -291,7 +291,8 @@ def _tiingo_intraday_series(
             params["startDate"] = start_date
         if end_date:
             params["endDate"] = end_date
-        r = requests.get(url, params=params, timeout=timeout)
+        # Use tuple timeout (connect_timeout, read_timeout) to properly handle hangs
+        r = requests.get(url, params=params, timeout=(timeout, timeout))
         if r.status_code != 200:
             return None
 

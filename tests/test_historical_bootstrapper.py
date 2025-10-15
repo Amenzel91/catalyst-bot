@@ -279,8 +279,12 @@ class TestSmartTimeframeSelection:
         assert "7d" in timeframes
         assert len(timeframes) == 6
 
-    def test_get_available_timeframes_old(self, bootstrapper):
+    def test_get_available_timeframes_old(self, bootstrapper, monkeypatch):
         """Test timeframe selection for old data (>60 days)."""
+        # Disable Tiingo to test yfinance-only behavior
+        monkeypatch.setenv("FEATURE_TIINGO", "0")
+        monkeypatch.setenv("TIINGO_API_KEY", "")
+
         # Date from 90 days ago
         old_date = datetime.now(timezone.utc) - timedelta(days=90)
 

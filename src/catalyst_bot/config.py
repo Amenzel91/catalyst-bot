@@ -700,6 +700,14 @@ class Settings:
         "FEEDBACK_DB_PATH", "data/feedback/alert_performance.db"
     )
 
+    # --- LLM Prompt Compression ---
+    # Enable intelligent prompt compression for SEC filings and long-form content.
+    # When enabled, the bot will use smart section extraction and prioritization
+    # to compress prompts by 30-50% while preserving critical information.
+    # This reduces LLM API costs and latency. Defaults to True (enabled).
+    # Set FEATURE_PROMPT_COMPRESSION=0 to disable and use naive truncation.
+    feature_prompt_compression: bool = _b("FEATURE_PROMPT_COMPRESSION", True)
+
     # --- WAVE 0.1: Smart Earnings Scorer ---
     feature_earnings_scorer: bool = _b("FEATURE_EARNINGS_SCORER", True)
     earnings_beat_threshold_high: float = float(
@@ -828,6 +836,105 @@ class Settings:
     backtest_stop_loss_pct: float = float(os.getenv("BACKTEST_STOP_LOSS_PCT", "0.10"))
     backtest_max_hold_hours: int = int(os.getenv("BACKTEST_MAX_HOLD_HOURS", "24"))
     backtest_risk_free_rate: float = float(os.getenv("BACKTEST_RISK_FREE_RATE", "0.02"))
+
+    # --- MOA (Missed Opportunities Analyzer) Nightly Scheduler ---
+    # Enable nightly MOA analysis. When enabled, the bot will automatically run
+    # the MOA historical analyzer and false positive analyzer at the configured
+    # hour (default 2 AM UTC). This analyzes rejected catalysts that became
+    # profitable and generates keyword weight recommendations. Runs in a
+    # background thread to avoid blocking the main feed processing loop.
+    # Set MOA_NIGHTLY_ENABLED=0 to disable. Defaults to enabled.
+    moa_nightly_enabled: bool = _b("MOA_NIGHTLY_ENABLED", True)
+
+    # Hour (UTC) to run nightly MOA analysis. Defaults to 2 AM UTC.
+    # Use MOA_NIGHTLY_HOUR=3 to run at 3 AM UTC instead.
+    moa_nightly_hour: int = int(os.getenv("MOA_NIGHTLY_HOUR", "2") or "2")
+
+    # --- Market Regime Classification (VIX/SPY Analysis) ---
+    # Enable market regime classification based on VIX and SPY trends.
+    # When enabled, the bot will classify market conditions (BULL_MARKET,
+    # NEUTRAL, HIGH_VOLATILITY, BEAR_MARKET, CRASH) and adjust catalyst
+    # score multipliers accordingly. This helps reduce false signals during
+    # volatile periods and boost confidence during calm bull markets.
+    # Set FEATURE_MARKET_REGIME=1 to enable.
+    feature_market_regime: bool = _b("FEATURE_MARKET_REGIME", False)
+
+    # Multiplier overrides for each regime type. When unset, defaults are used:
+    # BULL_MARKET (VIX < 15): 1.2x boost
+    # NEUTRAL (VIX 15-20): 1.0x baseline
+    # HIGH_VOLATILITY (VIX 20-30): 0.8x reduction
+    # BEAR_MARKET (VIX 30-40): 0.7x reduction
+    # CRASH (VIX >= 40): 0.5x strong reduction
+    regime_multiplier_bull: Optional[float] = _env_float_opt("REGIME_MULTIPLIER_BULL")
+    regime_multiplier_neutral: Optional[float] = _env_float_opt(
+        "REGIME_MULTIPLIER_NEUTRAL"
+    )
+    regime_multiplier_high_vol: Optional[float] = _env_float_opt(
+        "REGIME_MULTIPLIER_HIGH_VOL"
+    )
+    regime_multiplier_bear: Optional[float] = _env_float_opt("REGIME_MULTIPLIER_BEAR")
+    regime_multiplier_crash: Optional[float] = _env_float_opt("REGIME_MULTIPLIER_CRASH")
+
+    # --- RVol (Relative Volume) Scoring ---
+    # Enable RVol (Relative Volume) calculation and scoring boost.
+    # When enabled, the bot will calculate real-time RVol (current volume vs 20-day
+    # average, extrapolated for time-of-day) and apply confidence multipliers based
+    # on volume activity level. RVol >2.0x indicates elevated interest, often
+    # preceding significant price moves. Set FEATURE_RVOL=1 to enable.
+    feature_rvol: bool = _b("FEATURE_RVOL", False)
+
+    # Number of days to use for baseline volume calculation. Defaults to 20 days.
+    # RVol = estimated_full_day_volume / avg_volume_{baseline_days}
+    rvol_baseline_days: int = int(os.getenv("RVOL_BASELINE_DAYS", "20") or "20")
+
+    # Cache TTL in minutes for intraday RVol data. Defaults to 5 minutes.
+    # This prevents excessive API calls while keeping data reasonably fresh.
+    rvol_cache_ttl_minutes: int = int(os.getenv("RVOL_CACHE_TTL_MINUTES", "5") or "5")
+
+    # Minimum average volume (shares/day) required for RVol calculation.
+    # Tickers with avg volume below this threshold will skip RVol calculation
+    # to avoid false signals on illiquid stocks. Defaults to 100,000 shares.
+    rvol_min_avg_volume: int = int(
+        os.getenv("RVOL_MIN_AVG_VOLUME", "100000") or "100000"
+    )
+
+    # --- VWAP (Volume Weighted Average Price) Calculation ---
+    # Enable VWAP calculation and exit signal analysis.
+    # When enabled, the bot will calculate intraday VWAP and determine if the
+    # current price is above/below VWAP. VWAP breaks (price crossing below VWAP)
+    # are strong sell signals - research shows 91% accuracy for predicting
+    # continued decline. Set FEATURE_VWAP=1 to enable.
+    feature_vwap: bool = _b("FEATURE_VWAP", False)
+
+    # Cache TTL in minutes for VWAP data. Defaults to 5 minutes.
+    # VWAP changes throughout the trading day as new volume comes in.
+    vwap_cache_ttl_minutes: int = int(os.getenv("VWAP_CACHE_TTL_MINUTES", "5") or "5")
+
+    # Number of days for VWAP period. Defaults to 1 (intraday VWAP only).
+    # VWAP is typically calculated for the current trading day using 1-minute bars.
+    vwap_period_days: int = int(os.getenv("VWAP_PERIOD_DAYS", "1") or "1")
+
+    # --- Semantic Keyword Extraction (KeyBERT) ---
+    # Enable semantic keyword extraction using KeyBERT for context-aware keyphrases.
+    # KeyBERT uses BERT embeddings to extract multi-word phrases that capture
+    # domain-specific concepts (e.g., "fda approval", "merger acquisition").
+    # This supplements traditional keyword matching with ML-powered semantic understanding.
+    # Requires: keybert package (optional - gracefully degrades if unavailable)
+    # Set FEATURE_SEMANTIC_KEYWORDS=1 to enable. Defaults to enabled.
+    feature_semantic_keywords: bool = _b("FEATURE_SEMANTIC_KEYWORDS", True)
+
+    # Number of semantic keywords to extract per news item. Higher values provide
+    # more context but may include less relevant phrases. Defaults to 5 keywords.
+    semantic_keywords_top_n: int = int(os.getenv("SEMANTIC_KEYWORDS_TOP_N", "5") or "5")
+
+    # Maximum n-gram size for multi-word phrases:
+    # 1 = single words only (unigrams)
+    # 2 = up to 2-word phrases (bigrams)
+    # 3 = up to 3-word phrases (trigrams) - RECOMMENDED
+    # Defaults to 3 (unigrams, bigrams, trigrams) to capture multi-word concepts.
+    semantic_keywords_ngram_max: int = int(
+        os.getenv("SEMANTIC_KEYWORDS_NGRAM_MAX", "3") or "3"
+    )
 
     # Paths (tests expect Path fields)
     project_root: Path = field(

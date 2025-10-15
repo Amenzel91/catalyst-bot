@@ -15,7 +15,7 @@ Date: 2025-10-11
 """
 
 # Keyword Extraction Prompt (used for all SEC documents)
-KEYWORD_EXTRACTION_PROMPT = """Analyze this SEC filing and extract trading keywords that indicate material events.
+KEYWORD_EXTRACTION_PROMPT = """Analyze this SEC filing and extract trading keywords that indicate material events.  # noqa: E501
 
 Filing Type: {filing_type}
 Title: {title}
@@ -24,10 +24,10 @@ Document Content:
 {document_text}
 
 Identify material events related to:
-- **FDA approvals, clinical trials**: Keywords: fda, clinical, phase_1, phase_2, phase_3, approval, pivotal, trial_results
-- **Partnerships, collaborations**: Keywords: partnership, collaboration, agreement, joint_venture, strategic_alliance
+- **FDA approvals, clinical trials**: Keywords: fda, clinical, phase_1, phase_2, phase_3, approval, pivotal, trial_results  # noqa: E501
+- **Partnerships, collaborations**: Keywords: partnership, collaboration, agreement, joint_venture, strategic_alliance  # noqa: E501
 - **Uplisting, exchange changes**: Keywords: uplisting, nasdaq, nyse, exchange, listing
-- **Dilution events**: Keywords: dilution, offering, warrant, conversion, public_offering, registered_direct, atm
+- **Dilution events**: Keywords: dilution, offering, warrant, conversion, public_offering, registered_direct, atm  # noqa: E501
 - **Going concern warnings**: Keywords: going_concern, bankruptcy, liquidation, wind_down
 - **Earnings**: Keywords: earnings, revenue, eps, guidance, beat, miss
 - **Institutional investment**: Keywords: institutional, insider_buying, 13d, 13g
@@ -35,9 +35,9 @@ Identify material events related to:
 Perform multi-dimensional sentiment analysis:
 1. **market_sentiment**: "bullish", "neutral", or "bearish" - overall direction
 2. **confidence**: 0.0-1.0 - how confident are you in this analysis?
-3. **urgency**: "low", "medium", "high", "critical" - time sensitivity (e.g., FDA approval = high, routine filing = low)
-4. **risk_level**: "low", "medium", "high" - trading risk (e.g., Phase 3 success = low, early trial = high)
-5. **institutional_interest**: true/false - any signs of institutional involvement (13D/13G, large deals, tier 1 partners)?
+3. **urgency**: "low", "medium", "high", "critical" - time sensitivity (e.g., FDA approval = high, routine filing = low)  # noqa: E501
+4. **risk_level**: "low", "medium", "high" - trading risk (e.g., Phase 3 success = low, early trial = high)  # noqa: E501
+5. **institutional_interest**: true/false - any signs of institutional involvement (13D/13G, large deals, tier 1 partners)?  # noqa: E501
 6. **retail_hype_score**: 0.0-1.0 - potential for retail excitement (0=boring, 1=meme-worthy)
 7. **reasoning**: Brief 1-2 sentence explanation of your assessment
 
@@ -59,7 +59,7 @@ Return JSON matching this schema:
   }}
 }}
 
-If no material events found, return: {{"keywords": [], "material": false, "sentiment": 0.0, "confidence": 0.5, "summary": "Routine filing with no material catalysts", "sentiment_analysis": {{"market_sentiment": "neutral", "confidence": 0.5, "urgency": "low", "risk_level": "low", "institutional_interest": false, "retail_hype_score": 0.0, "reasoning": "No significant catalysts identified"}}}}"""
+If no material events found, return: {{"keywords": [], "material": false, "sentiment": 0.0, "confidence": 0.5, "summary": "Routine filing with no material catalysts", "sentiment_analysis": {{"market_sentiment": "neutral", "confidence": 0.5, "urgency": "low", "risk_level": "low", "institutional_interest": false, "retail_hype_score": 0.0, "reasoning": "No significant catalysts identified"}}}}"""  # noqa: E501
 
 # Earnings Report Prompt (Item 2.02)
 EARNINGS_PROMPT = """You are analyzing an SEC 8-K Item 2.02 earnings report for a penny stock.
@@ -315,12 +315,26 @@ def select_prompt_for_filing(document_text: str, filing_type: str) -> tuple[str,
         return EARNINGS_PROMPT, "EarningsAnalysis"
 
     # Check for clinical trials (biotech/pharma keywords)
-    clinical_keywords = ["clinical trial", "phase 1", "phase 2", "phase 3", "pivotal", "endpoint", "efficacy"]
+    clinical_keywords = [
+        "clinical trial",
+        "phase 1",
+        "phase 2",
+        "phase 3",
+        "pivotal",
+        "endpoint",
+        "efficacy",
+    ]
     if any(kw in doc_lower for kw in clinical_keywords):
         return CLINICAL_TRIAL_PROMPT, "ClinicalTrialAnalysis"
 
     # Check for partnerships
-    partnership_keywords = ["partnership", "collaboration", "strategic alliance", "joint venture", "co-develop"]
+    partnership_keywords = [
+        "partnership",
+        "collaboration",
+        "strategic alliance",
+        "joint venture",
+        "co-develop",
+    ]
     if any(kw in doc_lower for kw in partnership_keywords):
         return PARTNERSHIP_PROMPT, "PartnershipAnalysis"
 
@@ -328,7 +342,13 @@ def select_prompt_for_filing(document_text: str, filing_type: str) -> tuple[str,
     if filing_type in ["424B5", "FWP", "S-1", "S-3"]:
         return DILUTION_PROMPT, "DilutionAnalysis"
 
-    dilution_keywords = ["public offering", "registered direct", "at-the-market", "atm offering", "pipe"]
+    dilution_keywords = [
+        "public offering",
+        "registered direct",
+        "at-the-market",
+        "atm offering",
+        "pipe",
+    ]
     if any(kw in doc_lower for kw in dilution_keywords):
         return DILUTION_PROMPT, "DilutionAnalysis"
 

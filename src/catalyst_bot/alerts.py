@@ -42,6 +42,37 @@ _cached_ml_model = None
 _cached_ml_model_path = None
 
 
+def get_alert_downgraded() -> bool:
+    """Thread-safe getter for alert downgrade flag.
+
+    CRITICAL BUG FIX: Always access _alert_downgraded within lock context
+    to prevent race conditions in multi-threaded environments.
+
+    Returns
+    -------
+    bool
+        True if alerts are currently downgraded to record-only mode
+    """
+    with alert_lock:
+        return _alert_downgraded
+
+
+def set_alert_downgraded(val: bool) -> None:
+    """Thread-safe setter for alert downgrade flag.
+
+    CRITICAL BUG FIX: Always access _alert_downgraded within lock context
+    to prevent race conditions in multi-threaded environments.
+
+    Parameters
+    ----------
+    val : bool
+        New value for the alert downgrade flag
+    """
+    global _alert_downgraded
+    with alert_lock:
+        _alert_downgraded = val
+
+
 def _mask_webhook(url: str | None) -> str:
     """Return a scrubbed identifier for a Discord webhook (avoid leaking secrets)."""
     if not url:
@@ -54,6 +85,34 @@ def _mask_webhook(url: str | None) -> str:
 
 
 # --- Simple per-webhook rate limiter state ---
+# WARNING: SINGLE-PROCESS LIMITATION
+# This rate limiter uses in-memory state (_RL_STATE dict) which is NOT shared
+# across multiple bot processes. If you run multiple instances of the bot
+# (e.g., for redundancy or load balancing), each process will have its own
+# independent rate limit state.
+#
+# IMPLICATION: Multiple bot instances can collectively exceed Discord's rate
+# limits because they don't coordinate with each other. This can lead to 429
+# errors and temporary service degradation.
+#
+# SOLUTION FOR MULTI-INSTANCE DEPLOYMENTS:
+# For production deployments with multiple bot processes, implement a
+# Redis-based rate limiter that shares state across all instances. Example:
+#
+#   import redis
+#   client = redis.Redis(host='localhost', port=6379)
+#
+#   def _rl_should_wait_distributed(url: str) -> float:
+#       key = f"rl:{hashlib.md5(url.encode()).hexdigest()}"
+#       next_ok = client.get(key)
+#       if next_ok:
+#           return max(0, float(next_ok) - time.time())
+#       return 0
+#
+# Until Redis integration is implemented, this limiter is suitable for:
+# - Single-process deployments (most common use case)
+# - Development/testing environments
+# - Low-volume production deployments with a single bot instance
 _RL_LOCK = threading.Lock()
 _RL_STATE: Dict[str, Dict[str, float]] = {}
 _DEFAULT_MIN_INTERVAL = 0.45  # seconds between posts as a courtesy buffer
@@ -77,6 +136,10 @@ def _rl_should_wait(url: str) -> float:
     """
     Return seconds to wait before next post to this webhook (0 if safe to send).
     Uses 'next_ok_at' timestamp and a small default spacing to avoid 429s.
+
+    WARNING: This function uses in-memory state that is NOT shared across
+    multiple bot processes. For multi-instance deployments, implement a
+    Redis-based solution (see module-level comments above).
     """
     now = time.time()
     with _RL_LOCK:
@@ -1916,6 +1979,177 @@ def _build_discord_embed(
             )
     except Exception:
         pass
+    # Market Regime Field - Add regime indicator before momentum
+    try:
+        # Extract market regime data from scored object
+        regime = None
+        vix = None
+
+        if hasattr(scored, "market_regime"):
+            regime = getattr(scored, "market_regime", None)
+            vix = getattr(scored, "market_vix", None)
+        elif isinstance(scored, dict):
+            regime = scored.get("market_regime")
+            vix = scored.get("market_vix")
+
+        if regime and vix is not None:
+            # Emoji mapping for visual clarity
+            regime_emojis = {
+                "BULL_MARKET": "🐂",
+                "BEAR_MARKET": "🐻",
+                "HIGH_VOLATILITY": "⚡",
+                "NEUTRAL": "⚖️",
+                "CRASH": "💥",
+            }
+            emoji = regime_emojis.get(regime, "❓")
+
+            # Format regime name (convert BULL_MARKET -> Bull Market)
+            regime_display = regime.replace("_", " ").title()
+
+            fields.append(
+                {
+                    "name": "🌍 Market Regime",
+                    "value": f"{emoji} {regime_display} (VIX: {vix:.1f})",
+                    "inline": True,
+                }
+            )
+    except Exception:
+        # Don't break the embed if regime data is missing
+        pass
+
+    # Add float information field
+    try:
+        float_class = None
+        float_shares = None
+
+        # Extract float data from scored item
+        if hasattr(scored, "float_class"):
+            float_class = getattr(scored, "float_class", None)
+            float_shares = getattr(scored, "float_shares", None)
+        elif isinstance(scored, dict):
+            float_class = scored.get("float_class")
+            float_shares = scored.get("float_shares")
+
+        if float_class and float_shares:
+            float_emojis = {
+                "MICRO_FLOAT": "🔥",
+                "LOW_FLOAT": "⚡",
+                "MEDIUM_FLOAT": "📊",
+                "HIGH_FLOAT": "📈",
+                "UNKNOWN": "❓",
+            }
+            emoji = float_emojis.get(float_class, "❓")
+
+            # Format float class display name
+            float_display = float_class.replace("_", " ").title()
+
+            fields.append(
+                {
+                    "name": "📉 Float",
+                    "value": f"{emoji} {float_display} ({float_shares/1_000_000:.2f}M)",
+                    "inline": True,
+                }
+            )
+    except Exception:
+        # Don't break the embed if float data is missing
+        pass
+
+    # Add RVol (Relative Volume) information field
+    try:
+        rvol = None
+        rvol_class = None
+        current_volume = None
+        avg_volume_20d = None
+
+        # Extract RVol data from scored item
+        if hasattr(scored, "rvol"):
+            rvol = getattr(scored, "rvol", None)
+            rvol_class = getattr(scored, "rvol_class", None)
+            current_volume = getattr(scored, "current_volume", None)
+            avg_volume_20d = getattr(scored, "avg_volume_20d", None)
+        elif isinstance(scored, dict):
+            rvol = scored.get("rvol")
+            rvol_class = scored.get("rvol_class")
+            current_volume = scored.get("current_volume")
+            avg_volume_20d = scored.get("avg_volume_20d")
+
+        if rvol is not None and rvol_class:
+            rvol_emojis = {
+                "EXTREME_RVOL": "🚀",
+                "HIGH_RVOL": "🔥",
+                "ELEVATED_RVOL": "📈",
+                "NORMAL_RVOL": "➡️",
+                "LOW_RVOL": "📉",
+            }
+            emoji = rvol_emojis.get(rvol_class, "❓")
+
+            # Format RVol class display name
+            rvol_display = rvol_class.replace("_RVOL", "").replace("_", " ").title()
+
+            # Build value string with RVol and volume info
+            value_parts = [f"{emoji} {rvol_display} ({rvol:.2f}x)"]
+            if current_volume and avg_volume_20d:
+                # Show current volume vs average in millions
+                curr_vol_m = current_volume / 1_000_000
+                avg_vol_m = avg_volume_20d / 1_000_000
+                value_parts.append(f"Vol: {curr_vol_m:.1f}M / Avg: {avg_vol_m:.1f}M")
+
+            fields.append(
+                {"name": "📊 RVol", "value": "\n".join(value_parts), "inline": True}
+            )
+    except Exception:
+        # Don't break the embed if RVol data is missing
+        pass
+
+    # Add VWAP (Volume Weighted Average Price) information field
+    try:
+        vwap = None
+        vwap_signal = None
+        vwap_distance_pct = None
+
+        # Extract VWAP data from scored item
+        if hasattr(scored, "vwap"):
+            vwap = getattr(scored, "vwap", None)
+            vwap_signal = getattr(scored, "vwap_signal", None)
+            vwap_distance_pct = getattr(scored, "vwap_distance_pct", None)
+            getattr(scored, "is_above_vwap", None)
+        elif isinstance(scored, dict):
+            vwap = scored.get("vwap")
+            vwap_signal = scored.get("vwap_signal")
+            vwap_distance_pct = scored.get("vwap_distance_pct")
+            scored.get("is_above_vwap")
+
+        if vwap is not None and vwap_signal:
+            vwap_emojis = {
+                "STRONG_BULLISH": "🚀",  # >2% above VWAP
+                "BULLISH": "📈",  # 0.5-2% above VWAP
+                "NEUTRAL": "➡️",  # Within ±0.5% of VWAP
+                "BEARISH": "📉",  # 0.5-2% below VWAP
+                "STRONG_BEARISH": "⚠️",  # >2% below VWAP (VWAP break)
+            }
+            emoji = vwap_emojis.get(vwap_signal, "❓")
+
+            # Format VWAP signal display name
+            vwap_display = vwap_signal.replace("_", " ").title()
+
+            # Build value string with VWAP price and distance
+            value_parts = [f"{emoji} {vwap_display}"]
+            if vwap_distance_pct is not None:
+                sign = "+" if vwap_distance_pct >= 0 else ""
+                value_parts.append(f"Distance: {sign}{vwap_distance_pct:.2f}%")
+            value_parts.append(f"VWAP: ${vwap:.4f}")
+
+            # Add VWAP break warning if detected
+            if vwap_signal == "STRONG_BEARISH":
+                value_parts.append("⚠️ VWAP Break Detected (91% accuracy)")
+
+            fields.append(
+                {"name": "📊 VWAP", "value": "\n".join(value_parts), "inline": True}
+            )
+    except Exception:
+        # Don't break the embed if VWAP data is missing
+        pass
+
     # Summarise momentum indicators when available
     if momentum:
         parts: list[str] = []

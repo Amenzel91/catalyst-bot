@@ -14,6 +14,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+
 def test_sentiment_analysis_model():
     """Test the SentimentAnalysis Pydantic model."""
     from catalyst_bot.llm_schemas import SentimentAnalysis
@@ -28,17 +29,21 @@ def test_sentiment_analysis_model():
         "risk_level": "medium",
         "institutional_interest": True,
         "retail_hype_score": 0.7,
-        "reasoning": "FDA approval with strong clinical data"
+        "reasoning": "FDA approval with strong clinical data",
     }
 
     sentiment = SentimentAnalysis(**data)
-    print(f"[PASS] Created sentiment: {sentiment.market_sentiment}, confidence: {sentiment.confidence}")
+    print(
+        f"[PASS] Created sentiment: {sentiment.market_sentiment}, confidence: {sentiment.confidence}"  # noqa: E501
+    )
     print(f"  Numeric sentiment: {sentiment.to_numeric_sentiment()}")
 
     # Test defaults
     minimal_data = {}
     sentiment_default = SentimentAnalysis(**minimal_data)
-    print(f"[PASS] Defaults work: {sentiment_default.market_sentiment}, confidence: {sentiment_default.confidence}")
+    print(
+        f"[PASS] Defaults work: {sentiment_default.market_sentiment}, confidence: {sentiment_default.confidence}"  # noqa: E501
+    )
 
     # Test validation (should fail for invalid values)
     try:
@@ -64,7 +69,7 @@ def test_keyword_extraction_schema():
         sentiment=0.8,
         confidence=0.9,
         summary="FDA approval announced",
-        material=True
+        material=True,
     )
     print(f"[PASS] Basic extraction works: {len(extraction1.keywords)} keywords")
 
@@ -76,7 +81,7 @@ def test_keyword_extraction_schema():
         "risk_level": "low",
         "institutional_interest": True,
         "retail_hype_score": 0.8,
-        "reasoning": "Major FDA milestone"
+        "reasoning": "Major FDA milestone",
     }
 
     extraction2 = SECKeywordExtraction(
@@ -85,18 +90,21 @@ def test_keyword_extraction_schema():
         confidence=0.95,
         summary="FDA approval",
         material=True,
-        sentiment_analysis=SentimentAnalysis(**sentiment_data)
+        sentiment_analysis=SentimentAnalysis(**sentiment_data),
     )
-    print(f"[PASS] Enhanced extraction works: urgency={extraction2.sentiment_analysis.urgency}")
+    print(
+        f"[PASS] Enhanced extraction works: urgency={extraction2.sentiment_analysis.urgency}"
+    )
 
     return True
 
 
 def test_classification_integration():
     """Test classification with multi-dimensional sentiment."""
-    from catalyst_bot.models import NewsItem
-    from catalyst_bot.classify import classify
     from datetime import datetime, timezone
+
+    from catalyst_bot.classify import classify
+    from catalyst_bot.models import NewsItem
 
     print("\nTesting classification integration...")
 
@@ -104,11 +112,13 @@ def test_classification_integration():
     item1 = NewsItem(
         ts_utc=datetime.now(timezone.utc),
         title="Test news item about FDA approval",
-        ticker="TEST"
+        ticker="TEST",
     )
 
     scored1 = classify(item1)
-    print(f"[PASS] Basic classification: sentiment={scored1.sentiment:.2f}, relevance={scored1.relevance:.2f}")
+    print(
+        f"[PASS] Basic classification: sentiment={scored1.sentiment:.2f}, relevance={scored1.relevance:.2f}"  # noqa: E501
+    )
 
     # Test 2: Classification with multi-dim sentiment in raw data
     item2 = NewsItem(
@@ -123,21 +133,25 @@ def test_classification_integration():
                 "risk_level": "low",
                 "institutional_interest": True,
                 "retail_hype_score": 0.6,
-                "reasoning": "Strategic partnership expected to boost revenue"
+                "reasoning": "Strategic partnership expected to boost revenue",
             }
-        }
+        },
     )
 
     scored2 = classify(item2)
     print(f"[PASS] Enhanced classification: sentiment={scored2.sentiment:.2f}")
 
     # Check if multi-dim fields are attached
-    has_urgency = hasattr(scored2, "urgency") or (isinstance(scored2, dict) and "urgency" in scored2)
+    has_urgency = hasattr(scored2, "urgency") or (
+        isinstance(scored2, dict) and "urgency" in scored2
+    )
     if has_urgency:
         urgency = scored2.urgency if hasattr(scored2, "urgency") else scored2["urgency"]
         print(f"  Multi-dim fields attached: urgency={urgency}")
     else:
-        print("  [WARN] Multi-dim fields not attached (may be expected if feature disabled)")
+        print(
+            "  [WARN] Multi-dim fields not attached (may be expected if feature disabled)"
+        )
 
     # Test 3: Low confidence rejection (confidence < 0.5)
     item3 = NewsItem(
@@ -152,13 +166,15 @@ def test_classification_integration():
                 "risk_level": "high",
                 "institutional_interest": False,
                 "retail_hype_score": 0.1,
-                "reasoning": "Uncertain catalyst"
+                "reasoning": "Uncertain catalyst",
             }
-        }
+        },
     )
 
     scored3 = classify(item3)
-    has_urgency_3 = hasattr(scored3, "urgency") or (isinstance(scored3, dict) and "urgency" in scored3)
+    has_urgency_3 = hasattr(scored3, "urgency") or (
+        isinstance(scored3, dict) and "urgency" in scored3
+    )
     if not has_urgency_3:
         print("[PASS] Low confidence sentiment correctly rejected")
     else:
@@ -187,6 +203,7 @@ def run_all_tests():
         except Exception as e:
             print(f"\n[FAIL] {name} failed with exception: {e}")
             import traceback
+
             traceback.print_exc()
             results.append((name, False))
 

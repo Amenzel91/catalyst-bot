@@ -68,7 +68,7 @@ class SECKeywordExtraction(BaseModel):
 
     keywords: List[str] = Field(
         default_factory=list,
-        description="List of extracted trading keywords (e.g., ['fda', 'clinical', 'phase_3', 'partnership'])",
+        description="List of extracted trading keywords (e.g., ['fda', 'clinical', 'phase_3', 'partnership'])",  # noqa: E501
     )
     sentiment: float = Field(
         default=0.0,
@@ -132,7 +132,7 @@ class SEC8KAnalysis(BaseModel):
     )
     catalysts: List[str] = Field(
         default_factory=list,
-        description="List of catalyst types (e.g., ['capital_raise', 'partnership', 'clinical_trial'])",
+        description="List of catalyst types (e.g., ['capital_raise', 'partnership', 'clinical_trial'])",  # noqa: E501
     )
     summary: str = Field(
         description="1-2 sentence summary of the filing",
@@ -264,7 +264,7 @@ class PartnershipAnalysis(BaseModel):
         description="Name of partner company",
     )
     partner_tier: str = Field(
-        description="Partner quality: 'tier_1' (major pharma/Fortune 500), 'tier_2', 'tier_3', or 'unknown'",
+        description="Partner quality: 'tier_1' (major pharma/Fortune 500), 'tier_2', 'tier_3', or 'unknown'",  # noqa: E501
         pattern="^(tier_1|tier_2|tier_3|unknown)$",
     )
     deal_value_upfront: Optional[str] = Field(
@@ -281,7 +281,7 @@ class PartnershipAnalysis(BaseModel):
     )
     catalysts: List[str] = Field(
         default_factory=list,
-        description="Partnership catalysts (e.g., ['partnership', 'collaboration', 'tier_1_partner'])",
+        description="Partnership catalysts (e.g., ['partnership', 'collaboration', 'tier_1_partner'])",  # noqa: E501
     )
     summary: str = Field(
         description="Summary of partnership terms",

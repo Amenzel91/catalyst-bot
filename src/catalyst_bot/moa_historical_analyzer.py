@@ -7,8 +7,12 @@ generate keyword weight recommendations.
 This version reads pre-calculated outcomes from the bootstrapper instead
 of fetching live prices.
 
+Phase 3 (Agent 3): Added sector context analysis to identify which sectors
+have best catalyst response rates.
+
 Author: Claude Code (MOA Phase 2.5B)
 Date: 2025-10-11
+Updated: 2025-10-12 (Agent 3: Sector Analysis)
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from .llm_usage_monitor import get_monitor
 from .logging_utils import get_logger
 
 log = get_logger("moa_historical")
@@ -58,6 +63,9 @@ def load_outcomes() -> List[Dict[str, Any]]:
     """
     Load outcomes from data/moa/outcomes.jsonl.
 
+    Deduplicates by (ticker, rejection_ts) to handle cases where the
+    bootstrapper was run multiple times with overlapping date ranges.
+
     Returns:
         List of outcome dictionaries with rejection data and price outcomes
     """
@@ -69,6 +77,9 @@ def load_outcomes() -> List[Dict[str, Any]]:
         return []
 
     outcomes = []
+    seen_keys = set()  # Track (ticker, rejection_ts) to detect duplicates
+    duplicate_count = 0
+
     try:
         with open(outcomes_path, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
@@ -78,12 +89,35 @@ def load_outcomes() -> List[Dict[str, Any]]:
 
                 try:
                     outcome = json.loads(line)
+
+                    # Create deduplication key from ticker and rejection timestamp
+                    ticker = outcome.get("ticker", "")
+                    rejection_ts = outcome.get("rejection_ts", "")
+                    dedupe_key = (ticker, rejection_ts)
+
+                    # Skip if we've already seen this ticker+timestamp combination
+                    if dedupe_key in seen_keys:
+                        duplicate_count += 1
+                        log.debug(
+                            f"duplicate_outcome_skipped ticker={ticker} ts={rejection_ts}"
+                        )
+                        continue
+
+                    seen_keys.add(dedupe_key)
                     outcomes.append(outcome)
+
                 except json.JSONDecodeError as e:
                     log.debug(f"invalid_json line={line_num} err={e}")
                     continue
 
-        log.info(f"loaded_outcomes count={len(outcomes)}")
+        if duplicate_count > 0:
+            log.info(
+                f"loaded_outcomes_with_dedup count={len(outcomes)} "
+                f"duplicates_removed={duplicate_count}"
+            )
+        else:
+            log.info(f"loaded_outcomes count={len(outcomes)}")
+
         return outcomes
 
     except Exception as e:
@@ -540,6 +574,358 @@ def analyze_intraday_keyword_correlation(
     return results
 
 
+def analyze_sector_performance(
+    outcomes: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Analyze which sectors have best catalyst response rates.
+
+    Args:
+        outcomes: List of all outcomes with sector context
+
+    Returns:
+        Dict mapping sector -> performance stats
+    """
+    sector_stats = defaultdict(
+        lambda: {
+            "total": 0,
+            "missed_opportunities": 0,
+            "total_return": 0.0,
+            "missed_return": 0.0,
+            "hot_sector_count": 0,  # Count when sector was outperforming SPY
+            "cold_sector_count": 0,  # Count when sector was underperforming SPY
+        }
+    )
+
+    for outcome in outcomes:
+        sector_context = outcome.get("sector_context", {})
+        sector = sector_context.get("sector")
+
+        if not sector:
+            continue
+
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_missed = outcome.get("is_missed_opportunity", False)
+        sector_vs_spy = sector_context.get("sector_vs_spy")
+
+        sector_stats[sector]["total"] += 1
+        sector_stats[sector]["total_return"] += max_return
+
+        if is_missed:
+            sector_stats[sector]["missed_opportunities"] += 1
+            sector_stats[sector]["missed_return"] += max_return
+
+        # Track hot vs cold sector performance
+        if sector_vs_spy is not None:
+            if sector_vs_spy > 0:
+                sector_stats[sector]["hot_sector_count"] += 1
+            else:
+                sector_stats[sector]["cold_sector_count"] += 1
+
+    # Calculate statistics
+    results = {}
+    for sector, stats in sector_stats.items():
+        total = stats["total"]
+        missed = stats["missed_opportunities"]
+
+        if total < MIN_OCCURRENCES:
+            continue
+
+        results[sector] = {
+            "total": total,
+            "missed_opportunities": missed,
+            "miss_rate": round(missed / total, 3) if total > 0 else 0.0,
+            "avg_return_all": (
+                round(stats["total_return"] / total, 2) if total > 0 else 0.0
+            ),
+            "avg_return_missed": (
+                round(stats["missed_return"] / missed, 2) if missed > 0 else 0.0
+            ),
+            "hot_sector_rate": (
+                round(stats["hot_sector_count"] / total, 3) if total > 0 else 0.0
+            ),
+        }
+
+    log.info(f"analyzed_sector_performance sectors={len(results)}")
+    return results
+
+
+def analyze_rvol_correlation(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze correlation between RVOL and catalyst success.
+
+    Determines if high relative volume leads to better catalyst outcomes.
+
+    Args:
+        outcomes: List of outcomes with RVOL data
+
+    Returns:
+        Dict with RVOL category performance stats
+    """
+    rvol_stats = defaultdict(
+        lambda: {
+            "total": 0,
+            "missed_opportunities": 0,
+            "total_return": 0.0,
+            "missed_return": 0.0,
+        }
+    )
+
+    for outcome in outcomes:
+        rvol_category = outcome.get("rvol_category")
+
+        if not rvol_category:
+            continue
+
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_missed = outcome.get("is_missed_opportunity", False)
+
+        rvol_stats[rvol_category]["total"] += 1
+        rvol_stats[rvol_category]["total_return"] += max_return
+
+        if is_missed:
+            rvol_stats[rvol_category]["missed_opportunities"] += 1
+            rvol_stats[rvol_category]["missed_return"] += max_return
+
+    # Calculate statistics
+    results = {}
+    for category, stats in rvol_stats.items():
+        total = stats["total"]
+        missed = stats["missed_opportunities"]
+
+        if total < MIN_OCCURRENCES:
+            continue
+
+        results[category] = {
+            "total": total,
+            "missed_opportunities": missed,
+            "miss_rate": round(missed / total, 3) if total > 0 else 0.0,
+            "avg_return_all": (
+                round(stats["total_return"] / total, 2) if total > 0 else 0.0
+            ),
+            "avg_return_missed": (
+                round(stats["missed_return"] / missed, 2) if missed > 0 else 0.0
+            ),
+        }
+
+    # Generate recommendation
+    recommendation = ""
+    if "HIGH" in results and "LOW" in results:
+        high_miss_rate = results["HIGH"]["miss_rate"]
+        low_miss_rate = results["LOW"]["miss_rate"]
+
+        if high_miss_rate > low_miss_rate * 1.2:
+            recommendation = (
+                "High RVOL catalysts show significantly better success rates. "
+                "Prioritize catalysts with RVOL > 2.0 for best outcomes."
+            )
+        elif low_miss_rate > high_miss_rate * 1.2:
+            recommendation = (
+                "Low RVOL catalysts surprisingly perform better. "
+                "Volume may not be a strong predictor for this dataset."
+            )
+        else:
+            recommendation = (
+                "RVOL shows minimal correlation with catalyst success. "
+                "Focus on other factors (keywords, sector, timing)."
+            )
+
+    log.info(f"analyzed_rvol_correlation categories={len(results)}")
+
+    return {
+        "rvol_categories": results,
+        "recommendation": recommendation,
+    }
+
+
+def analyze_regime_performance(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze missed opportunity rates by market regime.
+
+    Identifies which market regimes have highest success rates for catalysts.
+
+    Args:
+        outcomes: List of outcomes with market regime data
+
+    Returns:
+        Dict mapping regime -> performance stats
+    """
+    regime_stats = defaultdict(
+        lambda: {
+            "total": 0,
+            "missed_opportunities": 0,
+            "total_return": 0.0,
+            "missed_return": 0.0,
+            "avg_vix": [],
+        }
+    )
+
+    for outcome in outcomes:
+        regime = outcome.get("market_regime")
+
+        if not regime:
+            continue
+
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_missed = outcome.get("is_missed_opportunity", False)
+        vix = outcome.get("market_vix")
+
+        regime_stats[regime]["total"] += 1
+        regime_stats[regime]["total_return"] += max_return
+
+        if is_missed:
+            regime_stats[regime]["missed_opportunities"] += 1
+            regime_stats[regime]["missed_return"] += max_return
+
+        # Track VIX levels for this regime
+        if vix is not None:
+            regime_stats[regime]["avg_vix"].append(vix)
+
+    # Calculate statistics
+    results = {}
+    for regime, stats in regime_stats.items():
+        total = stats["total"]
+        missed = stats["missed_opportunities"]
+
+        if total < MIN_OCCURRENCES:
+            continue
+
+        # Calculate average VIX for this regime
+        avg_vix = (
+            sum(stats["avg_vix"]) / len(stats["avg_vix"]) if stats["avg_vix"] else None
+        )
+
+        results[regime] = {
+            "total": total,
+            "missed_opportunities": missed,
+            "miss_rate": round(missed / total, 3) if total > 0 else 0.0,
+            "avg_return_all": (
+                round(stats["total_return"] / total, 2) if total > 0 else 0.0
+            ),
+            "avg_return_missed": (
+                round(stats["missed_return"] / missed, 2) if missed > 0 else 0.0
+            ),
+            "avg_vix": round(avg_vix, 2) if avg_vix is not None else None,
+        }
+
+    # Generate recommendation based on regime performance
+    recommendation = ""
+    if results:
+        # Find regime with highest miss rate
+        best_regime = max(results.items(), key=lambda x: x[1]["miss_rate"])
+        worst_regime = min(results.items(), key=lambda x: x[1]["miss_rate"])
+
+        if best_regime[1]["miss_rate"] > worst_regime[1]["miss_rate"] * 1.3:
+            recommendation = (
+                f"{best_regime[0]} regime shows highest catalyst success rate "
+                f"({best_regime[1]['miss_rate']*100:.1f}%). "
+                f"Consider prioritizing catalysts during this market condition."
+            )
+        else:
+            recommendation = (
+                "Market regime shows minimal impact on catalyst success. "
+                "Focus on other factors (keywords, sector, timing)."
+            )
+
+    log.info(f"analyzed_regime_performance regimes={len(results)}")
+
+    return {
+        "regime_categories": results,
+        "recommendation": recommendation,
+    }
+
+
+def analyze_sector_timing_correlation(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze correlation between sector strength and catalyst success.
+
+    Determines if hot sectors (outperforming SPY) lead to better catalyst outcomes.
+
+    Args:
+        outcomes: List of outcomes with sector context
+
+    Returns:
+        Dict with hot vs cold sector comparison
+    """
+    hot_sector_outcomes = []
+    cold_sector_outcomes = []
+
+    for outcome in outcomes:
+        sector_context = outcome.get("sector_context", {})
+        sector_vs_spy = sector_context.get("sector_vs_spy")
+
+        if sector_vs_spy is None:
+            continue
+
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_missed = outcome.get("is_missed_opportunity", False)
+
+        outcome_data = {
+            "max_return": max_return,
+            "is_missed": is_missed,
+            "sector": sector_context.get("sector"),
+            "sector_vs_spy": sector_vs_spy,
+        }
+
+        if sector_vs_spy > 0:
+            hot_sector_outcomes.append(outcome_data)
+        else:
+            cold_sector_outcomes.append(outcome_data)
+
+    # Calculate statistics
+    def calc_stats(outcomes_list):
+        if not outcomes_list:
+            return {
+                "count": 0,
+                "missed_count": 0,
+                "miss_rate": 0.0,
+                "avg_return": 0.0,
+            }
+
+        missed_count = sum(1 for o in outcomes_list if o["is_missed"])
+        total_return = sum(o["max_return"] for o in outcomes_list)
+
+        return {
+            "count": len(outcomes_list),
+            "missed_count": missed_count,
+            "miss_rate": round(missed_count / len(outcomes_list), 3),
+            "avg_return": round(total_return / len(outcomes_list), 2),
+        }
+
+    results = {
+        "hot_sectors": calc_stats(hot_sector_outcomes),
+        "cold_sectors": calc_stats(cold_sector_outcomes),
+        "recommendation": "",
+    }
+
+    # Generate recommendation
+    hot_miss_rate = results["hot_sectors"]["miss_rate"]
+    cold_miss_rate = results["cold_sectors"]["miss_rate"]
+
+    if hot_miss_rate > cold_miss_rate * 1.2:
+        results["recommendation"] = (
+            "Hot sectors show significantly higher catalyst success rates. "
+            "Consider prioritizing catalysts in sectors outperforming SPY."
+        )
+    elif cold_miss_rate > hot_miss_rate * 1.2:
+        results["recommendation"] = (
+            "Cold sectors show higher catalyst success rates (contrarian signal). "
+            "Sector weakness may create oversold bounce opportunities."
+        )
+    else:
+        results["recommendation"] = (
+            "Sector momentum shows minimal impact on catalyst success. "
+            "Focus on other factors (keywords, timing, etc.)."
+        )
+
+    log.info(
+        f"analyzed_sector_timing hot={results['hot_sectors']['count']} "
+        f"cold={results['cold_sectors']['count']}"
+    )
+
+    return results
+
+
 def calculate_weight_recommendations(
     keyword_stats: Dict[str, Dict[str, Any]],
     intraday_keyword_stats: Dict[str, Dict[str, Any]] = None,
@@ -714,12 +1100,24 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
         # 8. Analyze intraday keyword correlations
         intraday_keyword_stats = analyze_intraday_keyword_correlation(merged_data)
 
-        # 9. Generate weight recommendations (with intraday data)
+        # 9. Agent 3: Analyze sector performance
+        sector_analysis = analyze_sector_performance(merged_data)
+
+        # 10. Agent 3: Analyze sector timing correlation (hot vs cold sectors)
+        sector_timing = analyze_sector_timing_correlation(merged_data)
+
+        # 11. Agent 1: Analyze RVOL correlation with catalyst success
+        rvol_analysis = analyze_rvol_correlation(merged_data)
+
+        # 12. Analyze market regime performance
+        regime_analysis = analyze_regime_performance(merged_data)
+
+        # 13. Generate weight recommendations (with intraday data)
         recommendations = calculate_weight_recommendations(
             keyword_stats, intraday_keyword_stats
         )
 
-        # 10. Build comprehensive report
+        # 12. Build comprehensive report
         report = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "summary": {
@@ -739,6 +1137,12 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             "rejection_analysis": rejection_analysis,
             "keyword_stats": keyword_stats,
             "recommendations": recommendations,
+            "rvol_analysis": rvol_analysis,
+            "regime_analysis": regime_analysis,
+            "sector_analysis": {
+                "sector_performance": sector_analysis,
+                "sector_timing_correlation": sector_timing,
+            },
             "intraday_analysis": {
                 "timing_patterns": intraday_timing,
                 "flash_catalysts": {
@@ -783,7 +1187,8 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             f"missed={len(missed_opps)} "
             f"keywords={len(keyword_stats)} "
             f"recommendations={len(recommendations)} "
-            f"flash_catalysts={len(flash_catalysts)}"
+            f"flash_catalysts={len(flash_catalysts)} "
+            f"sectors_analyzed={len(sector_analysis)}"
         )
 
         return {
@@ -792,6 +1197,12 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             "summary": report["summary"],
             "rejection_analysis": rejection_analysis,
             "recommendations_count": len(recommendations),
+            "rvol_summary": rvol_analysis,
+            "regime_summary": regime_analysis,
+            "sector_summary": {
+                "sectors_analyzed": len(sector_analysis),
+                "hot_vs_cold": sector_timing,
+            },
             "intraday_summary": {
                 "flash_catalysts_count": len(flash_catalysts),
                 "optimal_window": intraday_timing.get(
@@ -835,6 +1246,57 @@ def main():
                 f"avg return: {stats['avg_return_missed']:.1f}%)"
             )
 
+        print("\nRVOL Analysis:")
+        rvol = result.get("rvol_summary", {})
+        rvol_categories = rvol.get("rvol_categories", {})
+        if rvol_categories:
+            for category, stats in rvol_categories.items():
+                print(
+                    f"  {category} RVOL: {stats.get('total', 0)} catalysts "
+                    f"({stats.get('miss_rate', 0)*100:.1f}% miss rate, "
+                    f"avg return: {stats.get('avg_return_missed', 0):.1f}%)"
+                )
+            recommendation = rvol.get("recommendation", "")
+            if recommendation:
+                print(f"  Recommendation: {recommendation}")
+
+        print("\nMarket Regime Analysis:")
+        regime = result.get("regime_summary", {})
+        regime_categories = regime.get("regime_categories", {})
+        if regime_categories:
+            for regime_name, stats in regime_categories.items():
+                avg_vix = stats.get("avg_vix")
+                vix_str = f" (avg VIX: {avg_vix:.2f})" if avg_vix is not None else ""
+                print(
+                    f"  {regime_name}: {stats.get('total', 0)} catalysts "
+                    f"({stats.get('miss_rate', 0)*100:.1f}% miss rate, "
+                    f"avg return: {stats.get('avg_return_missed', 0):.1f}%){vix_str}"
+                )
+            recommendation = regime.get("recommendation", "")
+            if recommendation:
+                print(f"  Recommendation: {recommendation}")
+        else:
+            print("  No regime data available in outcomes")
+
+        print("\nSector Analysis:")
+        sector = result.get("sector_summary", {})
+        print(f"  Sectors analyzed: {sector.get('sectors_analyzed', 0)}")
+        hot_vs_cold = sector.get("hot_vs_cold", {})
+        if hot_vs_cold:
+            hot = hot_vs_cold.get("hot_sectors", {})
+            cold = hot_vs_cold.get("cold_sectors", {})
+            print(
+                f"  Hot sectors (outperforming SPY): {hot.get('count', 0)} "
+                f"({hot.get('miss_rate', 0)*100:.1f}% miss rate)"
+            )
+            print(
+                f"  Cold sectors (underperforming SPY): {cold.get('count', 0)} "
+                f"({cold.get('miss_rate', 0)*100:.1f}% miss rate)"
+            )
+            recommendation = hot_vs_cold.get("recommendation", "")
+            if recommendation:
+                print(f"  Recommendation: {recommendation}")
+
         print("\nIntraday Analysis (15m/30m):")
         intraday = result.get("intraday_summary", {})
         print(
@@ -849,6 +1311,17 @@ def main():
             f"\nRecommendations: {result['recommendations_count']} keyword weight adjustments"
         )
         print(f"\nFull report saved to: {result['report_path']}")
+
+        # Generate LLM usage report
+        print("\n" + "=" * 60)
+        print("LLM USAGE REPORT")
+        print("=" * 60)
+        try:
+            monitor = get_monitor()
+            summary = monitor.get_daily_stats()
+            monitor.print_summary(summary)
+        except Exception as e:
+            print(f"Failed to generate LLM usage report: {e}")
     else:
         print(f"Error: {result.get('message', 'Unknown error')}")
 

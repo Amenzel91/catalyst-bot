@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 
 from .llm_client import query_llm
 from .logging_utils import get_logger
+from .prompt_compression import compress_sec_filing, should_compress
 
 log = get_logger("sec_llm_analyzer")
 
@@ -387,45 +388,80 @@ async def extract_keywords_from_document(
 
     # For keyword extraction, use limited excerpt (5000 chars = ~1250 tokens)
     # For deep analysis, use more (up to 20000 chars = ~5000 tokens)
-    use_deep_analysis = os.getenv("FEATURE_SEC_DEEP_ANALYSIS", "1") in ("1", "true", "yes", "on")
+    use_deep_analysis = os.getenv("FEATURE_SEC_DEEP_ANALYSIS", "1") in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
-    if use_deep_analysis:
-        doc_excerpt = document_text[:20000] if len(document_text) > 20000 else document_text
+    # --- PROMPT COMPRESSION INTEGRATION ---
+    # Use intelligent compression instead of naive truncation
+    from .config import get_settings
+
+    settings = get_settings()
+    use_compression = getattr(settings, "feature_prompt_compression", True)
+
+    if use_compression and should_compress(document_text, threshold=2000):
+        # Determine target token limit based on analysis depth
+        max_tokens = 5000 if use_deep_analysis else 2000
+
+        # Apply intelligent compression
+        compression_result = compress_sec_filing(document_text, max_tokens=max_tokens)
+        doc_excerpt = compression_result["compressed_text"]
+
+        # Log compression metrics
+        if compression_result["compression_ratio"] > 0:
+            log.info(
+                "sec_filing_compressed filing=%s original_tokens=%d compressed_tokens=%d "
+                "ratio=%.1f%% sections=%s",
+                filing_type,
+                compression_result["original_tokens"],
+                compression_result["compressed_tokens"],
+                compression_result["compression_ratio"] * 100,
+                ",".join(compression_result["sections_included"]),
+            )
     else:
-        doc_excerpt = document_text[:5000] if len(document_text) > 5000 else document_text
+        # Fallback to existing truncation logic when compression is disabled
+        if use_deep_analysis:
+            doc_excerpt = (
+                document_text[:20000] if len(document_text) > 20000 else document_text
+            )
+        else:
+            doc_excerpt = (
+                document_text[:5000] if len(document_text) > 5000 else document_text
+            )
 
     # Select appropriate prompt based on filing content and type
     try:
-        prompt_template, analysis_type = select_prompt_for_filing(doc_excerpt, filing_type)
+        prompt_template, analysis_type = select_prompt_for_filing(
+            doc_excerpt, filing_type
+        )
 
         # For keyword extraction (basic mode), always use keyword extraction prompt
         if not use_deep_analysis:
             prompt = KEYWORD_EXTRACTION_PROMPT.format(
-                filing_type=filing_type,
-                title=title,
-                document_text=doc_excerpt
+                filing_type=filing_type, title=title, document_text=doc_excerpt
             )
         else:
             prompt = prompt_template.format(document_text=doc_excerpt)
 
-        log.debug(f"using_prompt_type={analysis_type} filing={filing_type} deep_analysis={use_deep_analysis}")
+        log.debug(
+            f"using_prompt_type={analysis_type} filing={filing_type} deep_analysis={use_deep_analysis}"  # noqa: E501
+        )
 
     except Exception as e:
         log.warning(f"prompt_selection_failed filing={filing_type} err={e}")
         # Fallback to basic keyword extraction
         prompt = KEYWORD_EXTRACTION_PROMPT.format(
-            filing_type=filing_type,
-            title=title,
-            document_text=doc_excerpt
+            filing_type=filing_type, title=title, document_text=doc_excerpt
         )
         analysis_type = "SECKeywordExtraction"
 
     try:
         # Query hybrid LLM (routes through Local → Gemini → Anthropic)
         response = await query_hybrid_llm(
-            prompt,
-            article_length=len(doc_excerpt),
-            priority="normal"
+            prompt, article_length=len(doc_excerpt), priority="normal"
         )
 
         if not response:
@@ -465,14 +501,21 @@ async def extract_keywords_from_document(
             "sentiment": safe_float(analysis.get("sentiment"), 0.0),
             "confidence": safe_float(analysis.get("confidence"), 0.5),
             "summary": str(analysis.get("summary", "")),
-            "material": bool(analysis.get("material", bool(analysis.get("keywords")) or bool(analysis.get("catalysts")))),
+            "material": bool(
+                analysis.get(
+                    "material",
+                    bool(analysis.get("keywords")) or bool(analysis.get("catalysts")),
+                )
+            ),
         }
 
         # Add additional fields if available
         if "risk_level" in analysis:
             result["risk_level"] = str(analysis["risk_level"])
         if "deal_size" in analysis or "deal_value_upfront" in analysis:
-            result["deal_size"] = analysis.get("deal_size") or analysis.get("deal_value_upfront")
+            result["deal_size"] = analysis.get("deal_size") or analysis.get(
+                "deal_value_upfront"
+            )
         if "dilution_pct" in analysis:
             result["dilution_pct"] = analysis.get("dilution_pct")
 
@@ -487,7 +530,9 @@ async def extract_keywords_from_document(
         return result
 
     except json.JSONDecodeError as e:
-        log.warning(f"llm_json_parse_failed filing={filing_type} err={e} response={response[:200]}")
+        log.warning(
+            f"llm_json_parse_failed filing={filing_type} err={e} response={response[:200]}"
+        )
         return {}
     except Exception as e:
         log.error(f"keyword_extraction_failed filing={filing_type} err={e}")

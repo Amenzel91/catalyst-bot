@@ -103,7 +103,9 @@ def test_weight_calculation():
         passed = abs(weight - expected_weight) < 0.01
         all_passed = all_passed and passed
         status = "[PASS]" if passed else "[FAIL]"
-        print(f"{status} {description:40s} -> {weight:.2f} (expected: {expected_weight:.2f})")
+        print(
+            f"{status} {description:40s} -> {weight:.2f} (expected: {expected_weight:.2f})"
+        )
 
     print(f"\nWeight Calculation: {'PASSED' if all_passed else 'FAILED'}\n")
     return all_passed

@@ -43,6 +43,9 @@ def test_price_ceiling_enrichment_and_intraday(monkeypatch, tmp_path):
     # Env flags
     monkeypatch.setenv("PRICE_CEILING", "5")
     monkeypatch.setenv("FEATURE_INTRADAY_SNAPSHOTS", "1")
+    # Disable screener boost to ensure only Finviz universe and price checks are used
+    monkeypatch.setenv("FEATURE_SCREENER_BOOST", "0")
+    monkeypatch.setenv("SCREENER_CSV", "")
 
     # Build two entries:
     #  - allowed via universe (CHEAP)

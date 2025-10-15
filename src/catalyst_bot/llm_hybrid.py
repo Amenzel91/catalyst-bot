@@ -200,7 +200,7 @@ class HybridLLMRouter:
 
     async def _call_gemini(self, prompt: str) -> Optional[str]:
         """
-        Call Gemini Flash API.
+        Call Gemini Flash API with usage monitoring.
 
         Args:
             prompt: User prompt
@@ -211,21 +211,72 @@ class HybridLLMRouter:
         if not self.gemini_client:
             return None
 
+        # Import usage monitor
+        try:
+            from .llm_usage_monitor import estimate_tokens, get_monitor
+
+            monitor = get_monitor()
+        except ImportError:
+            monitor = None
+
+        # Estimate input tokens
+        input_tokens = estimate_tokens(prompt) if monitor else 0
+
         try:
             # Gemini API is synchronous, run in thread pool
             response = await asyncio.to_thread(
                 self.gemini_client.generate_content, prompt
             )
+
             if response and hasattr(response, "text"):
-                return response.text.strip()
+                result_text = response.text.strip()
+
+                # Log usage if monitor available
+                if monitor:
+                    output_tokens = estimate_tokens(result_text)
+                    monitor.log_usage(
+                        provider="gemini",
+                        model="gemini-2.5-flash",
+                        operation="llm_query",
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        success=True,
+                        article_length=len(prompt),
+                    )
+
+                return result_text
+
+            # Empty response - log as failure
+            if monitor:
+                monitor.log_usage(
+                    provider="gemini",
+                    model="gemini-2.5-flash",
+                    operation="llm_query",
+                    input_tokens=input_tokens,
+                    output_tokens=0,
+                    success=False,
+                    error="empty_response",
+                )
             return None
+
         except Exception as e:
+            # Log failed request
+            if monitor:
+                monitor.log_usage(
+                    provider="gemini",
+                    model="gemini-2.5-flash",
+                    operation="llm_query",
+                    input_tokens=input_tokens,
+                    output_tokens=0,
+                    success=False,
+                    error=str(e),
+                )
             _logger.warning("gemini_api_error err=%s", str(e))
             return None
 
     async def _call_anthropic(self, prompt: str) -> Optional[str]:
         """
-        Call Anthropic Claude API.
+        Call Anthropic Claude API with usage monitoring.
 
         Args:
             prompt: User prompt
@@ -236,6 +287,14 @@ class HybridLLMRouter:
         if not self.anthropic_client:
             return None
 
+        # Import usage monitor
+        try:
+            from .llm_usage_monitor import get_monitor
+
+            monitor = get_monitor()
+        except ImportError:
+            monitor = None
+
         try:
             # Using Claude 3 Haiku for cost-effective keyword extraction
             # 91% cheaper than Sonnet ($0.44 vs $3.30/month for 5% fallback traffic)
@@ -244,10 +303,53 @@ class HybridLLMRouter:
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
+
             if message.content and len(message.content) > 0:
-                return message.content[0].text
+                result_text = message.content[0].text
+
+                # Log usage with actual token counts from API response
+                if monitor and hasattr(message, "usage"):
+                    monitor.log_usage(
+                        provider="anthropic",
+                        model="claude-3-haiku-20240307",
+                        operation="llm_query",
+                        input_tokens=message.usage.input_tokens,
+                        output_tokens=message.usage.output_tokens,
+                        success=True,
+                        article_length=len(prompt),
+                    )
+
+                return result_text
+
+            # Empty response - log as failure
+            if monitor:
+                from .llm_usage_monitor import estimate_tokens
+
+                monitor.log_usage(
+                    provider="anthropic",
+                    model="claude-3-haiku-20240307",
+                    operation="llm_query",
+                    input_tokens=estimate_tokens(prompt),
+                    output_tokens=0,
+                    success=False,
+                    error="empty_response",
+                )
             return None
+
         except Exception as e:
+            # Log failed request
+            if monitor:
+                from .llm_usage_monitor import estimate_tokens
+
+                monitor.log_usage(
+                    provider="anthropic",
+                    model="claude-3-haiku-20240307",
+                    operation="llm_query",
+                    input_tokens=estimate_tokens(prompt),
+                    output_tokens=0,
+                    success=False,
+                    error=str(e),
+                )
             _logger.warning("anthropic_api_error err=%s", str(e))
             return None
 

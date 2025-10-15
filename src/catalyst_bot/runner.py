@@ -29,6 +29,8 @@ else:
     else:
         load_dotenv()
 
+from catalyst_bot.accepted_items_logger import log_accepted_item
+from catalyst_bot.rejected_items_logger import log_rejected_item
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.title_ticker import ticker_from_title
 
@@ -56,7 +58,7 @@ except ImportError as e:
     )
     sys.exit(2)
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from . import alerts as _alerts  # used to post log digests as embeds
 from .admin_reporter import send_admin_report_if_scheduled  # Nightly admin reports
@@ -71,10 +73,14 @@ from .classify import classify, load_dynamic_keyword_weights
 from .config import get_settings
 from .config_extras import LOG_REPORT_CATEGORIES
 from .health_endpoint import start_health_server, update_health_status
+from .llm_usage_monitor import get_monitor
 from .log_reporter import deliver_report
 from .logging_utils import get_logger, setup_logging
 from .market import sample_alpaca_stream
 from .market_hours import get_market_info  # WAVE 0.0 Phase 2: Market hours detection
+from .moa_price_tracker import (
+    track_pending_outcomes as track_moa_outcomes,  # MOA Phase 2: Price tracking for rejected items
+)
 from .seen_store import should_filter  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
 
@@ -118,6 +124,9 @@ LAST_CYCLE_STATS: Dict[str, Any] = {}
 # heartbeats.  Keys mirror LAST_CYCLE_STATS; values start at zero and
 # are incremented at the end of each cycle.  See update in _cycle().
 TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts": 0}
+
+# MOA Nightly Scheduler: Track last run date to prevent duplicate runs
+_MOA_LAST_RUN_DATE: date | None = None
 
 
 class HeartbeatAccumulator:
@@ -722,55 +731,138 @@ def enrich_ticker(entry: dict, item: dict):
                         item["ticker"] = t
                         return
 
-        # PR: parse ticker from title or summary patterns
-        if item.get("source") == "globenewswire_public":
-            for field in ("title", "summary"):
-                t = ticker_from_title(item.get(field) or "")
-                if t:
-                    item["ticker"] = t
-                    return
+        # PR/News: parse ticker from title or summary patterns for ALL sources
+        # This ensures ticker extraction works for prnewswire, businesswire, etc.
+        for field in ("title", "summary"):
+            t = ticker_from_title(item.get(field) or "")
+            if t:
+                item["ticker"] = t
+                return
 
 
 # ---------------- Instrument-like detection (refined) ----------------
 def _is_instrument_like(t: str) -> bool:
     """
-    Heuristic to drop warrants/units/series/OTC tickers without nuking legit tickers like DNOW.
+    Heuristic to drop warrants/units/rights while preserving legitimate securities.
 
-    Rules:
-      - Hyphen '-' or caret '^' => drop (synthetic instruments)
-      - A dot '.' is OK **only** for class shares like BRK.A / BF.B
-        All other dotted symbols are dropped.
-      - Length >= 5 and endswith one of {'W', 'WW', 'WS', 'WT', 'U', 'PU', 'PD'}
-        => drop (warrants/units)
-      - New: 5‑letter symbols ending with 'F' or 'Y' => drop (common OTC/cross‑listed suffixes)
+    ALLOWED (return False):
+      - Preferred shares: CDRpB (lowercase p), ABC-B (hyphen), ABCDP (5-letter ending in P/Q/R)
+      - ADRs: 5-letter symbols ending with Y or F (e.g., BYDDY, NSRGY, TCEHY)
+      - International tickers: BRK.L (London), SONY.T (Tokyo), SAP.DE (Germany)
+      - Class shares: BRK.A, BF.B
 
-    These heuristics are conservative: they attempt to strip out ticker variants that are
-    unlikely to be tradable on major U.S. brokerages (e.g. Webull, Robinhood) while
-    preserving legitimate class-share tickers.
+    REJECTED (return True):
+      - Warrants: -WT, -W, .WS, ending with W
+      - Units: -U, .U
+      - Rights: -R (when not a class share like ABC-R preferred)
+      - Instruments with caret: ABC^D
+
+    These heuristics preserve tradable securities while filtering synthetic instruments
+    unlikely to be available on major U.S. brokerages.
     """
     if not t:
         return False
-    u = t.strip().upper().replace(" ", "")
-    # Hard drop on explicit instrument separators
-    if "-" in u or "^" in u:
+    # Preserve original for lowercase 'p' check, then uppercase for other checks
+    original = t.strip().replace(" ", "")
+    u = original.upper()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PREFERRED SHARES: Check these FIRST to allow before warrant filters
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Pattern 1: Lowercase 'p' notation (e.g., CDRpB, ABCpD)
+    # Check the original string before uppercasing to detect lowercase 'p'
+    if re.match(r"^[A-Za-z]{3,4}p[A-Za-z]$", original):
+        return False
+
+    # Pattern 2: Hyphen notation for class/preferred shares (e.g., ABC-B, XYZ-A)
+    # Must be 3-4 letters, hyphen, single letter
+    # BUT NOT: -W, -WT, -U (these are warrants/units, checked later)
+    if re.match(r"^[A-Z]{3,4}-[A-Z]$", u):
+        # Exclude warrant/unit suffixes
+        if u.endswith(("-W", "-WT", "-U")):
+            pass  # Let these fall through to warrant/unit checks below
+        else:
+            return False  # This is a preferred/class share
+
+    # Pattern 3: NASDAQ 5-letter preferred ending in P, Q, or R (e.g., ABCDP, XYZQQ, DEFGR)
+    if len(u) == 5 and u[-1] in ("P", "Q", "R"):
+        return False
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # WARRANTS: Reject warrant patterns (must check BEFORE international tickers)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Warrant suffixes with dots (e.g., .WS, .W)
+    # Check these as full suffixes, not substrings
+    if u.endswith(".WS") or u.endswith(".W"):
         return True
-    # Allow legit class-share patterns (e.g., BRK.A, BF.B).
-    # Other symbols containing '.' are likely instrument-ish variants.
+
+    # Warrant suffixes with hyphens (e.g., -WT, -W)
+    if u.endswith("-WT") or u.endswith("-W"):
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # UNITS: Reject unit patterns (must check BEFORE international tickers)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Unit suffixes - check as full suffixes
+    if u.endswith("-U") or u.endswith(".U"):
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # INTERNATIONAL TICKERS: Allow exchange-qualified symbols
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Pattern: 2-4 letters, dot, 1-2 letter exchange code (e.g., BRK.L, SONY.T, SAP.DE)
+    # Checked AFTER warrant/unit patterns to avoid false matches
     if "." in u:
-        if re.fullmatch(r"[A-Z]{1,4}\.[A-Z]$", u):
-            return False
+        if re.match(r"^[A-Z]{2,4}\.[A-Z]{1,2}$", u):
+            return False  # International ticker
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # SYNTHETIC INSTRUMENTS: Reject caret notation
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if "^" in u:
         return True
-    # Warrants/units by suffix or U/E etc
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # CLASS SHARES: Allow traditional class shares (e.g., BRK.A, BF.B)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # Single-letter class designations with dot
+    if "." in u and re.fullmatch(r"[A-Z]{1,4}\.[A-Z]$", u):
+        return False
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # REMAINING DOT PATTERNS: Reject anything else with dots (not caught above)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    if "." in u:
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # WARRANT SUFFIXES: Additional warrant patterns (length-based)
+    # ═══════════════════════════════════════════════════════════════════════
+
     if len(u) >= 5:
-        suffixes = ("WW", "WS", "WT", "PU", "PD", "U")
+        # Multi-character suffixes indicating warrants/units
+        suffixes = ("WW", "WS", "WT", "PU", "PD")
         if u.endswith(suffixes):
             return True
+        # Single 'W' at end (but not after we've already allowed P/Q/R preferred shares)
         if u.endswith("W"):
             return True
-        # OTC/cross‑listed tickers often end with F or Y (e.g. TDOMF, VODPF).
-        # Filter 5‑letter symbols ending with F or Y to avoid thinly‑traded OTC names.
-        if len(u) == 5 and u[-1] in {"F", "Y"}:
-            return True
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # ADRs: Allow 5-letter ADRs ending in F or Y (e.g., BYDDY, NSRGY, TCEHY)
+    # NOTE: This check is now PERMISSIVE (allows these) - old code blocked them
+    # ═══════════════════════════════════════════════════════════════════════
+
+    # ADRs ending in Y or F are ALLOWED - no rejection here
+    # (Removed the old blocking logic: "if len(u) == 5 and u[-1] in {'F', 'Y'}: return True")
+
     return False
 
 
@@ -1016,6 +1108,22 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Skip whole sources if configured
         if skip_sources and source in skip_sources:
             skipped_by_source += 1
+            # MOA Phase 1: Log rejected item for analysis (before classification)
+            try:
+                # Try to get price from cache (batch fetch happened earlier)
+                px = None
+                if ticker and ticker in price_cache:
+                    px, _ = price_cache[ticker]
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="BY_SOURCE",
+                    price=px,
+                    score=None,
+                    sentiment=None,
+                    keywords=None,
+                )
+            except Exception:
+                pass  # Don't crash on logging failures
             continue
 
         # Do not classify when there's no ticker
@@ -1031,6 +1139,22 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Drop warrants/units/etc (refined)
         if ignore_instr and _is_instrument_like(ticker):
             skipped_instr += 1
+            # MOA Phase 1: Log rejected item for analysis (before classification)
+            try:
+                # Try to get price from cache (batch fetch happened earlier)
+                px = None
+                if ticker in price_cache:
+                    px, _ = price_cache[ticker]
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="INSTRUMENT_LIKE",
+                    price=px,
+                    score=None,
+                    sentiment=None,
+                    keywords=None,
+                )
+            except Exception:
+                pass  # Don't crash on logging failures
             # Use debug level for instrument‑like tickers to reduce log spam.
             log.debug("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
             continue
@@ -1090,23 +1214,71 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         if price_ceiling is not None and last_px is not None:
             if float(last_px) > float(price_ceiling):
                 skipped_price_gate += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="HIGH_PRICE",
+                        price=last_px,
+                        score=_score_of(scored),
+                        sentiment=_sentiment_of(scored),
+                        keywords=_keywords_of(scored),
+                    )
+                except Exception:
+                    pass  # Don't crash on logging failures
                 continue
 
         # -------- Classifier gating (score / sentiment / category) ----------
         scr = _score_of(scored)
         if (min_score is not None) and (scr < min_score):
             skipped_low_score += 1
+            # MOA Phase 1: Log rejected item for analysis
+            try:
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="LOW_SCORE",
+                    price=last_px,
+                    score=scr,
+                    sentiment=_sentiment_of(scored),
+                    keywords=_keywords_of(scored),
+                )
+            except Exception:
+                pass  # Don't crash on logging failures
             continue
 
         snt = _sentiment_of(scored)
         if (min_sent_abs is not None) and (abs(snt) < min_sent_abs):
             skipped_sent_gate += 1
+            # MOA Phase 1: Log rejected item for analysis
+            try:
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="SENT_GATE",
+                    price=last_px,
+                    score=scr,
+                    sentiment=snt,
+                    keywords=_keywords_of(scored),
+                )
+            except Exception:
+                pass  # Don't crash on logging failures
             continue
 
         if cats_allow:
             kwords = {k.lower() for k in _keywords_of(scored)}
             if not (kwords & cats_allow):
                 skipped_cat_gate += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="CAT_GATE",
+                        price=last_px,
+                        score=scr,
+                        sentiment=snt,
+                        keywords=list(kwords),
+                    )
+                except Exception:
+                    pass  # Don't crash on logging failures
                 continue
 
         # Build a payload the new alerts API understands
@@ -1153,6 +1325,21 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
 
         if ok:
             alerted += 1
+
+            # FALSE POSITIVE ANALYSIS: Log accepted item for outcome tracking
+            # Store classification data, keywords, scores for later analysis
+            try:
+                log_accepted_item(
+                    item=it,
+                    price=last_px,
+                    score=scr,
+                    sentiment=snt,
+                    keywords=_keywords_of(scored),
+                    scored=scored,
+                )
+            except Exception:
+                pass  # Don't crash on logging failures
+
             # Optional: tiny jitter after success to avoid draining the bucket at once
             if jitter_ms > 0:
                 time.sleep(max(0.0, min(jitter_ms, 1000)) / 1000.0 * random.random())
@@ -1399,11 +1586,23 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         except Exception as e:
             log.warning("weekly_report_check_failed err=%s", str(e))
 
+        # Check if it's time to run MOA nightly analysis
+        try:
+            _run_moa_nightly_if_scheduled(log, get_settings())
+        except Exception as e:
+            log.warning("moa_nightly_check_failed err=%s", str(e))
+
         # Track pending alert outcomes (15m, 1h, 4h, 1d)
         try:
             track_pending_outcomes()
         except Exception as e:
             log.warning("outcome_tracking_failed err=%s", str(e))
+
+        # MOA Phase 2: Track price outcomes for rejected items (1h, 4h, 1d, 7d)
+        try:
+            track_moa_outcomes()
+        except Exception as e:
+            log.warning("moa_tracking_failed err=%s", str(e))
 
         # WAVE 1.2: Feedback loop periodic tasks
         if FEEDBACK_AVAILABLE:
@@ -1457,6 +1656,18 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Ignore auto analyzer errors to keep the main loop alive
         pass
 
+    # ---------------------------------------------------------------------
+    # CRITICAL BUG FIX: Clear ML batch scorer to prevent memory leaks
+    # The batch scorer accumulates items without proper cleanup, causing
+    # unbounded memory growth in long-running processes.
+    try:
+        from .classify import clear_ml_batch_scorer
+
+        clear_ml_batch_scorer()
+    except Exception:
+        # Silently ignore errors - don't break the main loop
+        pass
+
 
 def _set_process_priority(log, settings) -> None:
     """
@@ -1495,6 +1706,132 @@ def _set_process_priority(log, settings) -> None:
     except Exception as e:
         # Any other error, log but don't fail
         log.warning("process_priority_failed err=%s", e.__class__.__name__)
+
+
+def _run_moa_nightly_if_scheduled(log, settings) -> None:
+    """
+    Run MOA (Missed Opportunities Analyzer) and False Positive Analyzer nightly.
+
+    Checks if it's time to run the nightly MOA analysis at the configured hour
+    (default 2 AM UTC). Prevents duplicate runs by tracking last run date.
+    Runs asynchronously in a background thread to avoid blocking the main loop.
+
+    The MOA analyzer identifies rejected catalysts that became profitable and
+    generates keyword weight recommendations. The false positive analyzer
+    identifies patterns in accepted alerts that failed and generates penalty
+    recommendations.
+
+    Parameters
+    ----------
+    log : Logger
+        Logger instance for recording execution status
+    settings : Settings
+        Bot settings (checks moa_nightly_enabled, moa_nightly_hour)
+    """
+    global _MOA_LAST_RUN_DATE
+
+    # Feature flag check: MOA_NIGHTLY_ENABLED (default True)
+    moa_enabled = os.getenv("MOA_NIGHTLY_ENABLED", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if not moa_enabled:
+        return
+
+    # Get configured hour (default 2 AM UTC)
+    try:
+        moa_hour = int(os.getenv("MOA_NIGHTLY_HOUR", "2").strip() or "2")
+    except Exception:
+        moa_hour = 2
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    # Check if it's the right hour and we haven't already run today
+    if now.hour != moa_hour:
+        return
+
+    if _MOA_LAST_RUN_DATE == today:
+        return
+
+    # Mark as run for today (do this before starting thread to avoid duplicate triggers)
+    _MOA_LAST_RUN_DATE = today
+
+    log.info("moa_nightly_scheduled hour=%d date=%s", moa_hour, today.isoformat())
+
+    def _run_moa_analysis():
+        """Background thread function to run MOA and FP analyzers."""
+        try:
+            log.info("moa_nightly_start")
+
+            # 1. Run MOA Historical Analyzer
+            try:
+                from .moa_historical_analyzer import run_historical_moa_analysis
+
+                moa_result = run_historical_moa_analysis()
+                if moa_result.get("status") == "success":
+                    log.info(
+                        "moa_analysis_complete "
+                        f"outcomes={moa_result['summary'].get('total_outcomes', 0)} "
+                        f"missed={moa_result['summary'].get('missed_opportunities', 0)} "
+                        f"recommendations={moa_result.get('recommendations_count', 0)}"
+                    )
+                else:
+                    log.warning(
+                        "moa_analysis_failed status=%s msg=%s",
+                        moa_result.get("status"),
+                        moa_result.get("message", "unknown"),
+                    )
+            except Exception as e:
+                log.error(
+                    "moa_analysis_error err=%s", e.__class__.__name__, exc_info=True
+                )
+
+            # 2. Run False Positive Analyzer
+            try:
+                from .false_positive_analyzer import run_false_positive_analysis
+
+                fp_result = run_false_positive_analysis()
+                if fp_result.get("status") == "success":
+                    log.info(
+                        "false_positive_analysis_complete "
+                        f"accepts={fp_result['summary'].get('total_accepts', 0)} "
+                        f"failures={fp_result['summary'].get('failures', 0)} "
+                        f"penalties={fp_result.get('penalties_count', 0)}"
+                    )
+                else:
+                    log.warning(
+                        "false_positive_analysis_failed status=%s msg=%s",
+                        fp_result.get("status"),
+                        fp_result.get("message", "unknown"),
+                    )
+            except Exception as e:
+                log.error(
+                    "false_positive_analysis_error err=%s",
+                    e.__class__.__name__,
+                    exc_info=True,
+                )
+
+            log.info("moa_nightly_complete")
+
+        except Exception as e:
+            log.error(
+                "moa_nightly_thread_error err=%s", e.__class__.__name__, exc_info=True
+            )
+
+    # Run in background thread (daemon=True so it doesn't block shutdown)
+    import threading
+
+    moa_thread = threading.Thread(
+        target=_run_moa_analysis,
+        daemon=True,
+        name="MOA-Nightly",
+    )
+    moa_thread.start()
+    log.info("moa_nightly_thread_started")
 
 
 def runner_main(
@@ -1600,6 +1937,22 @@ def runner_main(
         except Exception as e:
             log.error("feedback_init_failed err=%s", str(e), exc_info=True)
             FEEDBACK_AVAILABLE = False
+
+    # Quick Win #2: Start SEC EDGAR real-time monitor
+    if getattr(settings, "feature_sec_monitor", False):
+        try:
+            from .sec_monitor import _build_watchlist, start_sec_monitor
+
+            watchlist = _build_watchlist()
+            start_sec_monitor(watchlist)
+
+            log.info(
+                "sec_monitor_started watchlist_size=%d interval=5min", len(watchlist)
+            )
+        except ImportError:
+            log.warning("sec_monitor_module_not_available")
+        except Exception as e:
+            log.error("sec_monitor_startup_failed err=%s", str(e))
 
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
@@ -1742,6 +2095,27 @@ def runner_main(
         _send_heartbeat(log, settings, reason="endday")
     except Exception:
         pass
+
+    # Stop SEC monitor gracefully
+    try:
+        from .sec_monitor import stop_sec_monitor
+
+        stop_sec_monitor()
+        log.info("sec_monitor_stopped")
+    except Exception:
+        pass
+
+    # Generate LLM usage report at end of day
+    log.info("=" * 70)
+    log.info("LLM USAGE REPORT")
+    log.info("=" * 70)
+    try:
+        monitor = get_monitor()
+        summary = monitor.get_daily_stats()
+        monitor.print_summary(summary)
+    except Exception as e:
+        log.warning("llm_usage_report_failed err=%s", str(e))
+
     return 0
 
 

@@ -1,0 +1,28 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting get-all-tickers
+  Downloading get_all_tickers-1.8.tar.gz (3.4 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: pandas in c:\users\menza\appdata\roaming\python\python313\site-packages (from get-all-tickers) (2.3.3)
+Requirement already satisfied: requests in c:\users\menza\appdata\roaming\python\python313\site-packages (from get-all-tickers) (2.32.5)
+Requirement already satisfied: numpy>=1.26.0 in c:\users\menza\appdata\roaming\python\python313\site-packages (from pandas->get-all-tickers) (2.3.3)
+Requirement already satisfied: python-dateutil>=2.8.2 in c:\users\menza\appdata\roaming\python\python313\site-packages (from pandas->get-all-tickers) (2.9.0.post0)
+Requirement already satisfied: pytz>=2020.1 in c:\users\menza\appdata\roaming\python\python313\site-packages (from pandas->get-all-tickers) (2025.2)
+Requirement already satisfied: tzdata>=2022.7 in c:\users\menza\appdata\roaming\python\python313\site-packages (from pandas->get-all-tickers) (2025.2)
+Requirement already satisfied: six>=1.5 in c:\users\menza\appdata\roaming\python\python313\site-packages (from python-dateutil>=2.8.2->pandas->get-all-tickers) (1.17.0)
+Requirement already satisfied: charset_normalizer<4,>=2 in c:\users\menza\appdata\roaming\python\python313\site-packages (from requests->get-all-tickers) (3.4.3)
+Requirement already satisfied: idna<4,>=2.5 in c:\users\menza\appdata\roaming\python\python313\site-packages (from requests->get-all-tickers) (3.10)
+Requirement already satisfied: urllib3<3,>=1.21.1 in c:\users\menza\appdata\roaming\python\python313\site-packages (from requests->get-all-tickers) (2.5.0)
+Requirement already satisfied: certifi>=2017.4.17 in c:\users\menza\appdata\roaming\python\python313\site-packages (from requests->get-all-tickers) (2025.8.3)
+Building wheels for collected packages: get-all-tickers
+  Building wheel for get-all-tickers (pyproject.toml): started
+  Building wheel for get-all-tickers (pyproject.toml): finished with status 'done'
+  Created wheel for get-all-tickers: filename=get_all_tickers-1.8-py3-none-any.whl size=4303 sha256=9e7b9360ab45d97521128118d7b92d64e081bdfcf716a3db0f1a80b3308e6ae3
+  Stored in directory: c:\users\menza\appdata\local\pip\cache\wheels\72\d0\8c\05176e9c71f440976b272ebcfca9f6adc6d2cc4a2a6303a7c9
+Successfully built get-all-tickers
+Installing collected packages: get-all-tickers
+Successfully installed get-all-tickers-1.8

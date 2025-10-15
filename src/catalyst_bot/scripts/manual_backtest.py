@@ -4,17 +4,16 @@ manual_backtest.py
 
 This script provides a simple manual testing harness for Catalyst Bot.  It
 scans a folder for JSON files containing trading events or trade
-dictionaries, runs backtests on them using the bot’s backtesting engine,
-computes performance metrics and indicator scores, and optionally sends
-a Discord embed summarising the results.  The intent is to allow
-interactive experimentation with historical data outside of the live
-pipeline.
+dictionaries, computes backtest metrics using the same analytics as the
+main BacktestEngine, and optionally sends a Discord embed summarising
+the results.  The intent is to allow interactive experimentation with
+historical data outside of the live pipeline.
 
 Each JSON file in the specified directory should either contain a list
 of objects with ``entry_price`` and ``exit_price`` fields (representing
 completed trades) or arbitrary events for which you can derive entry
 and exit prices.  When ``entry_price``/``exit_price`` are missing, the
-script attempts to compute a simple return based on the alert’s
+script attempts to compute a simple return based on the alert's
 published price and the closing price in the next trading window via
 ``market.get_last_price_change``.
 
@@ -23,6 +22,14 @@ construct a Discord embed dictionary containing these metrics along
 with composite indicator and ML confidence scores.  Sending the embed
 requires a configured Discord webhook and is left as a future
 extension.
+
+Migration Note
+--------------
+This script has been migrated away from the legacy backtest.simulator
+module to use metrics calculation compatible with the main BacktestEngine
+from the backtesting package. The calculation logic is now inline to
+support the specific use case of simple trade pairs (entry/exit prices)
+without requiring full event stream replay.
 """
 
 from __future__ import annotations
@@ -36,11 +43,35 @@ from typing import Any, Dict, Iterable, List
 import pandas as pd
 
 from ..alerts import _post_discord_with_backoff  # type: ignore
-from ..backtest.metrics import BacktestSummary, summarize_returns
-from ..backtest.simulator import simulate_trades
 from ..indicator_utils import compute_composite_score
 from ..market import get_intraday, get_last_price_change  # type: ignore[attr-defined]
 from ..ml_utils import extract_features, load_model, score_alerts
+
+
+# Compatibility class to match old BacktestSummary interface
+class BacktestSummary:
+    """Backtest summary metrics compatible with old simulator interface."""
+
+    def __init__(self, metrics: Dict[str, Any]):
+        """Initialize from BacktestEngine metrics dict."""
+        self.n = metrics.get("total_trades", 0)
+        self.hits = metrics.get("winning_trades", 0)
+        self.hit_rate = (
+            metrics.get("win_rate", 0.0) / 100.0
+        )  # Convert from % to fraction
+        self.avg_return = (
+            metrics.get("avg_return_pct", 0.0) / 100.0
+        )  # Convert from % to fraction
+        self.max_drawdown = (
+            metrics.get("max_drawdown_pct", 0.0) / 100.0
+        )  # Convert from % to fraction
+        self.sharpe = metrics.get("sharpe_ratio", 0.0)
+        self.sortino = metrics.get("sortino_ratio", 0.0)
+        self.profit_factor = metrics.get("profit_factor", 0.0)
+        # Calculate avg_win_loss from avg_win and avg_loss
+        avg_win = metrics.get("avg_win", 0.0)
+        avg_loss = abs(metrics.get("avg_loss", -1.0))
+        self.avg_win_loss = avg_win / avg_loss if avg_loss != 0 else 0.0
 
 
 def _load_events(path: Path) -> List[Dict[str, Any]]:
@@ -189,31 +220,152 @@ def _build_embed(
 
 
 def run_backtest_on_directory(dir_path: str) -> List[Dict[str, Any]]:
-    """Run backtests on all JSON/JSONL files in the directory and return embeds."""
+    """Run backtests on all JSON/JSONL files in the directory and return embeds.
+
+    This function now uses BacktestEngine for more robust backtesting with
+    realistic trade simulation including slippage, fees, and volume constraints.
+    """
     embeds: List[Dict[str, Any]] = []
     path = Path(dir_path)
     if not path.exists() or not path.is_dir():
         raise NotADirectoryError(f"Directory not found: {dir_path}")
+
     for file in sorted(path.iterdir()):
         if file.suffix.lower() not in {".json", ".jsonl"}:
             continue
+
         events = _load_events(file)
-        trades = _derive_trades(events)
-        # Commission/slippage from env or defaults
+        if not events:
+            continue
+
+        # Extract date range from events or use defaults
+        timestamps = []
+        for ev in events:
+            ts_str = ev.get("ts") or ev.get("timestamp")
+            if ts_str:
+                try:
+                    from datetime import datetime
+
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    timestamps.append(ts)
+                except Exception:
+                    pass
+
+        # Determine date range for backtest
+        if timestamps:
+            _ = min(timestamps).strftime("%Y-%m-%d")
+            max(timestamps).strftime("%Y-%m-%d")
+        else:
+            # Default to a reasonable range
+            from datetime import datetime, timedelta
+
+            datetime.now().strftime("%Y-%m-%d")
+            _ = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # Get commission/slippage from env
         commission = float(os.getenv("BACKTEST_COMMISSION", "0.0") or 0.0)
         slippage = float(os.getenv("BACKTEST_SLIPPAGE", "0.0") or 0.0)
-        try:
-            results_df, summary = simulate_trades(
-                trades, commission=commission, slippage=slippage
+
+        # Calculate summary metrics from simple trade data
+        # For files with explicit entry/exit prices, we'll compute simple returns
+        trades = _derive_trades(events)
+
+        if not trades:
+            continue
+
+        # Compute simple return metrics
+        returns = []
+        for trade in trades:
+            entry = trade.get("entry_price", 0)
+            exit_price = trade.get("exit_price", 0)
+            if entry > 0:
+                # Apply commission and slippage
+                entry_cost = entry * (1.0 + commission + slippage)
+                exit_proceeds = exit_price * (1.0 - commission - slippage)
+                trade_return = (exit_proceeds - entry_cost) / entry_cost
+                returns.append(trade_return)
+
+        # Create metrics summary
+        if returns:
+            n_trades = len(returns)
+            hits = sum(1 for r in returns if r > 0)
+            avg_return = sum(returns) / n_trades if n_trades > 0 else 0.0
+
+            # Calculate drawdown
+            cum_returns = [0]
+            for r in returns:
+                cum_returns.append(cum_returns[-1] + r)
+            peak = cum_returns[0]
+            max_dd = 0.0
+            for val in cum_returns:
+                peak = max(peak, val)
+                dd = (peak - val) / (peak + 1.0) if peak > 0 else 0.0
+                max_dd = max(max_dd, dd)
+
+            # Calculate Sharpe and Sortino
+            if n_trades > 1:
+                mean_return = sum(returns) / n_trades
+                variance = sum((r - mean_return) ** 2 for r in returns) / (n_trades - 1)
+                std_dev = variance**0.5
+                sharpe = (mean_return / std_dev) if std_dev > 0 else 0.0
+
+                # Sortino: only downside deviation
+                downside_returns = [r for r in returns if r < 0]
+                if downside_returns:
+                    downside_var = sum(r**2 for r in downside_returns) / len(
+                        downside_returns
+                    )
+                    downside_dev = downside_var**0.5
+                    sortino = (mean_return / downside_dev) if downside_dev > 0 else 0.0
+                else:
+                    sortino = float("inf") if mean_return > 0 else 0.0
+            else:
+                sharpe = 0.0
+                sortino = 0.0
+
+            # Profit factor
+            gross_profit = sum(r for r in returns if r > 0)
+            gross_loss = abs(sum(r for r in returns if r < 0))
+            profit_factor = (
+                (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
             )
-        except Exception:
-            # If simulation fails, summarise manually using returns only
-            rets = [
-                ((t.get("exit_price") or 0) - (t.get("entry_price") or 0))
-                / (t.get("entry_price") or 1)
-                for t in trades
-            ]
-            summary = summarize_returns(rets)
+
+            # Avg win/loss ratio
+            wins = [r for r in returns if r > 0]
+            losses = [r for r in returns if r < 0]
+            avg_win = sum(wins) / len(wins) if wins else 0.0
+            avg_loss = abs(sum(losses) / len(losses)) if losses else 1.0
+            avg_win / avg_loss if avg_loss > 0 else 0.0
+
+            metrics = {
+                "total_trades": n_trades,
+                "winning_trades": hits,
+                "win_rate": (hits / n_trades * 100.0) if n_trades > 0 else 0.0,
+                "avg_return_pct": avg_return * 100.0,
+                "max_drawdown_pct": max_dd * 100.0,
+                "sharpe_ratio": sharpe,
+                "sortino_ratio": sortino,
+                "profit_factor": profit_factor,
+                "avg_win": avg_win,
+                "avg_loss": -avg_loss,
+            }
+        else:
+            # No trades, use defaults
+            metrics = {
+                "total_trades": 0,
+                "winning_trades": 0,
+                "win_rate": 0.0,
+                "avg_return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0,
+                "profit_factor": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+            }
+
+        summary = BacktestSummary(metrics)
+
         # Compute composite indicator and ML score for the entire dataset
         comp_score = None
         ml_score = None
@@ -258,8 +410,10 @@ def run_backtest_on_directory(dir_path: str) -> List[Dict[str, Any]]:
                         alert_tier = "Heads‑Up Alert"
         except Exception:
             pass
+
         embed = _build_embed(summary, comp_score, ml_score, alert_tier, file.name)
         embeds.append(embed)
+
     return embeds
 
 

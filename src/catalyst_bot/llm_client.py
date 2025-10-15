@@ -289,22 +289,33 @@ def query_llm(
 
 # GPU Warmup tracking
 _GPU_WARMED = False
+_WARMUP_ATTEMPTS = 0
+_MAX_WARMUP_ATTEMPTS = 3
 
 
-def prime_ollama_gpu() -> bool:
+def prime_ollama_gpu(force: bool = False) -> bool:
     """
     Prime Ollama GPU with small warmup query before batch processing.
 
     Prevents cold-start overhead on first LLM call (reduces first-call
     latency by ~500ms).
 
+    Args:
+        force: Force warmup even if already warmed
+
     Returns:
         True if warmup succeeded, False otherwise
     """
-    global _GPU_WARMED
+    global _GPU_WARMED, _WARMUP_ATTEMPTS
 
-    if _GPU_WARMED:
+    if _GPU_WARMED and not force:
         return True
+
+    # Limit warmup attempts to prevent infinite loops
+    _WARMUP_ATTEMPTS += 1
+    if _WARMUP_ATTEMPTS > _MAX_WARMUP_ATTEMPTS:
+        _logger.error("gpu_warmup_max_attempts_exceeded attempts=%d", _WARMUP_ATTEMPTS)
+        return False
 
     warmup_prompt = "Respond with 'OK'"
 
@@ -315,13 +326,66 @@ def prime_ollama_gpu() -> bool:
 
         if result:
             elapsed_ms = (time.time() - start) * 1000
-            _logger.info("gpu_warmup_success latency=%.0fms", elapsed_ms)
+            _logger.info(
+                "gpu_warmup_success latency=%.0fms attempt=%d",
+                elapsed_ms,
+                _WARMUP_ATTEMPTS,
+            )
             _GPU_WARMED = True
+            _WARMUP_ATTEMPTS = 0  # Reset on success
             return True
         else:
-            _logger.warning("gpu_warmup_failed result=None")
+            _logger.warning(
+                "gpu_warmup_failed result=None attempt=%d", _WARMUP_ATTEMPTS
+            )
             return False
 
     except Exception as e:
-        _logger.warning("gpu_warmup_error err=%s", str(e))
+        _logger.warning("gpu_warmup_error err=%s attempt=%d", str(e), _WARMUP_ATTEMPTS)
         return False
+
+
+def is_gpu_warmed() -> bool:
+    """
+    Check if GPU has been warmed up.
+
+    Returns:
+        True if GPU is warmed up, False otherwise
+    """
+    return _GPU_WARMED
+
+
+def reset_warmup_state() -> None:
+    """Reset GPU warmup state (for testing or after failures)."""
+    global _GPU_WARMED, _WARMUP_ATTEMPTS
+    _GPU_WARMED = False
+    _WARMUP_ATTEMPTS = 0
+    _logger.info("gpu_warmup_state_reset")
+
+
+def get_gpu_memory_stats() -> Optional[Dict[str, float]]:
+    """
+    Get current GPU memory statistics.
+
+    Returns:
+        Dict with allocated_gb, reserved_gb, free_gb or None if not available
+    """
+    if not TORCH_AVAILABLE or not torch.cuda.is_available():
+        return None
+
+    try:
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+        free = total - allocated
+
+        return {
+            "allocated_gb": round(allocated, 2),
+            "reserved_gb": round(reserved, 2),
+            "free_gb": round(free, 2),
+            "total_gb": round(total, 2),
+            "utilization_pct": round((allocated / total) * 100, 1),
+        }
+    except Exception as e:
+        _logger.warning("gpu_stats_failed err=%s", str(e))
+        return None

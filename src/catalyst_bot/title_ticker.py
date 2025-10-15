@@ -35,18 +35,80 @@ _DOLLAR_PATTERN = rf"(?:(?<!\w)\${_TICKER_CORE}\b)"
 
 
 def _build_regex(allow_otc: bool, require_exch_for_dollar: bool) -> Pattern[str]:
+    """Build combined regex pattern for ticker extraction.
+
+    Pattern priority (most specific to least specific):
+    1. Exchange-qualified: "Nasdaq: AAPL", "NYSE: BA"
+    2. Company + Ticker: "Apple (AAPL)", "Tesla Inc. (TSLA)"
+    3. Headline start: "TSLA: Deliveries Beat"
+    4. Dollar ticker: "$AAPL", "$NVDA"
+
+    The exchange pattern uses inline case-insensitive flag (?i:...) for exchange names,
+    but company and headline patterns remain case-sensitive to avoid false positives.
+    """
     exch_prefix = rf"(?:{_EXCH_PREFIX_CORE}{'|' + _OTC_PREFIX if allow_otc else ''})"
-    exch_pattern = rf"\b{exch_prefix}\s*[:\-]\s*\$?{_TICKER_CORE}\b"
-    combined = (
-        exch_pattern
-        if require_exch_for_dollar
-        else rf"{exch_pattern}|{_DOLLAR_PATTERN}"
-    )
-    return re.compile(combined, re.IGNORECASE)
+    # Use inline case-insensitive flag (?i:...) only for the exchange pattern
+    exch_pattern = rf"(?i:\b{exch_prefix}\s*[:\-]\s*)\$?{_TICKER_CORE}\b"
+
+    # Build combined pattern with priority ordering
+    # Company+ticker and headline patterns are case-sensitive for ticker validation
+    if require_exch_for_dollar:
+        # Only exchange-qualified patterns (no loose dollar tickers)
+        combined = rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|{_HEADLINE_START_TICKER}"
+    else:
+        # Include all patterns
+        combined = (
+            rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|"
+            rf"{_HEADLINE_START_TICKER}|{_DOLLAR_PATTERN}"
+        )
+
+    # No global IGNORECASE flag - use inline flags where needed
+    return re.compile(combined)
 
 
 # Small cache so we don't recompile every call
 _RE_CACHE: Dict[Tuple[bool, bool], Pattern[str]] = {}
+
+# -----------------------
+# Enhanced patterns for improved coverage
+# -----------------------
+
+# Company name followed by ticker in parentheses
+# Matches: "Apple (AAPL)", "Tesla Inc. (TSLA)", "Amazon.com Inc. (AMZN)"
+# Pattern breakdown:
+#   - [A-Z][A-Za-z0-9&\.\-]* : Company name starting with uppercase
+#   - (?:\s+(?:Inc\.?|Corp\.?|Co\.?|Ltd\.?|LLC|L\.P\.))? : Optional suffix
+#   - \s*\( : Opening parenthesis (with optional whitespace)
+#   - ([A-Z]{2,5}(?:\.[A-Z])?) : Ticker (2-5 uppercase, optional dot)
+#   - \) : Closing parenthesis
+_COMPANY_TICKER_PATTERN = (
+    r"[A-Z][A-Za-z0-9&\.\-]*"
+    r"(?:\s+(?:Inc\.?|Corp\.?|Co\.?|Ltd\.?|LLC|L\.P\.))?"
+    r"\s*\(([A-Z]{2,5}(?:\.[A-Z])?)\)"
+)
+
+# Headline start ticker pattern
+# Matches: "TSLA: Deliveries Beat", "AAPL: Reports Strong Q3"
+# Pattern: ^([A-Z]{2,5}):\s+
+#   - ^ : Start of string
+#   - ([A-Z]{2,5}) : Ticker (2-5 uppercase letters)
+#   - :\s+ : Colon followed by whitespace
+_HEADLINE_START_TICKER = r"^([A-Z]{2,5}):\s+"
+
+# Exclusion list for false positives in headline start patterns
+# These are common words that appear at the start of headlines with colons
+# but are NOT stock tickers (e.g., "PRICE: Stock rises", "UPDATE: Company announces")
+_HEADLINE_EXCLUSIONS = {
+    "PRICE",
+    "UPDATE",
+    "ALERT",
+    "NEWS",
+    "WATCH",
+    "FLASH",
+    "BRIEF",
+    "BREAKING",
+    "LIVE",
+}
 
 
 def _get_regex(
@@ -92,6 +154,9 @@ def ticker_from_title(
     """Return the first matched ticker from a title, or None.
 
     Args override env toggles when provided.
+
+    Validates headline start patterns against exclusion list to avoid
+    false positives like "PRICE: Stock rises" or "UPDATE: Company announces".
     """
     if not title:
         return None
@@ -101,7 +166,21 @@ def ticker_from_title(
         return None
     # Take first non-empty group so this works for both shapes (with/without $-branch)
     raw = next((g for g in m.groups() if g), None)
-    return _norm(raw) if raw else None
+    if not raw:
+        return None
+
+    # Normalize ticker
+    t = _norm(raw)
+
+    # Check if this is a headline start pattern match
+    # The headline pattern is ^([A-Z]{2,5}):\s+ so it matches at start with a colon
+    # We can check if the match is at the beginning and the matched text contains ':'
+    if m.start() == 0 and ":" in m.group(0):
+        # This is a headline start pattern, check against exclusions
+        if t in _HEADLINE_EXCLUSIONS:
+            return None
+
+    return t
 
 
 def extract_tickers_from_title(
@@ -113,6 +192,9 @@ def extract_tickers_from_title(
     """Return all unique tickers in reading order from a title.
 
     Args override env toggles when provided.
+
+    Validates headline start patterns against exclusion list to avoid
+    false positives like "PRICE: Stock rises" or "UPDATE: Company announces".
     """
     if not title:
         return []
@@ -124,6 +206,14 @@ def extract_tickers_from_title(
         if not raw:
             continue
         t = _norm(raw)
+
+        # Check if this is a headline start pattern match
+        # The headline pattern is ^([A-Z]{2,5}):\s+ so it matches at start with a colon
+        if m.start() == 0 and ":" in m.group(0):
+            # This is a headline start pattern, check against exclusions
+            if t in _HEADLINE_EXCLUSIONS:
+                continue
+
         if t not in seen:
             seen.add(t)
             out.append(t)

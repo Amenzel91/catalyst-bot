@@ -1,0 +1,233 @@
+"""
+Rejected Items Logger - MOA Phase 1: Data Capture
+
+Logs items that were rejected by filters so they can be analyzed later
+by the Missed Opportunities Analyzer to discover new keywords and optimize filters.
+
+Only logs items within price range ($0.10-$10) to avoid massive files.
+
+Author: Claude Code (MOA Phase 1)
+Date: 2025-10-10
+"""
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+# Price range filter: only log items within this range
+PRICE_FLOOR = 0.10
+PRICE_CEILING = 10.00
+
+
+def should_log_rejected_item(price: Optional[float]) -> bool:
+    """
+    Determine if a rejected item should be logged based on price range.
+
+    Only items priced between $0.10 and $10.00 are logged to the rejected items file.
+    Items outside this range are not useful for the MOA system.
+
+    Args:
+        price: Current price of the ticker (None if unknown)
+
+    Returns:
+        bool: True if item should be logged, False otherwise
+    """
+    if price is None:
+        return False
+
+    return PRICE_FLOOR <= price <= PRICE_CEILING
+
+
+def log_rejected_item(
+    item: Dict[str, Any],
+    rejection_reason: str,
+    price: Optional[float] = None,
+    score: Optional[float] = None,
+    sentiment: Optional[float] = None,
+    keywords: Optional[list] = None,
+    scored: Optional[Any] = None,
+) -> None:
+    """
+    Log a rejected item to data/rejected_items.jsonl.
+
+    Args:
+        item: Original news item dict
+        rejection_reason: Reason for rejection (LOW_SCORE, HIGH_PRICE, etc.)
+        price: Current price (required for MOA)
+        score: Classification score
+        sentiment: Sentiment score
+        keywords: List of keywords found
+        scored: Full scored object/dict from classifier (optional, for sentiment breakdown)
+    """
+    # Only log items within price range
+    if not should_log_rejected_item(price):
+        return
+
+    # Extract core fields
+    ticker = item.get("ticker", "").strip()
+    if not ticker:
+        return  # Skip items without tickers
+
+    # Extract sentiment breakdown from item's raw dict
+    # The breakdown is stored in item.raw by classify.py (line 341-342)
+    sentiment_breakdown = None
+    sentiment_confidence = None
+    sentiment_sources_used = None
+
+    try:
+        # Check if item has 'raw' field with sentiment data
+        raw_data = item.get("raw")
+        if raw_data and isinstance(raw_data, dict):
+            sentiment_breakdown = raw_data.get("sentiment_breakdown")
+            sentiment_confidence = raw_data.get("sentiment_confidence")
+
+            # If we got a breakdown, calculate which sources were used
+            if sentiment_breakdown and isinstance(sentiment_breakdown, dict):
+                sentiment_sources_used = [
+                    source
+                    for source in ["vader", "ml", "llm", "earnings"]
+                    if sentiment_breakdown.get(source) is not None
+                ]
+    except Exception:
+        # Silently ignore extraction errors
+        pass
+
+    # Build cls section with enhanced sentiment data
+    cls_data = {
+        "score": score or 0.0,
+        "sentiment": sentiment or 0.0,
+        "keywords": keywords or [],
+    }
+
+    # Add sentiment breakdown if available
+    if sentiment_breakdown:
+        cls_data["sentiment_breakdown"] = sentiment_breakdown
+    if sentiment_confidence is not None:
+        cls_data["sentiment_confidence"] = sentiment_confidence
+    if sentiment_sources_used:
+        cls_data["sentiment_sources_used"] = sentiment_sources_used
+
+    # Build rejected item record
+    rejected_item = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "ticker": ticker,
+        "title": item.get("title", ""),
+        "source": item.get("source", ""),
+        "price": price,
+        "cls": cls_data,
+        "rejected": True,
+        "rejection_reason": rejection_reason,
+    }
+
+    # Add market regime data if available from scored object
+    if scored:
+        try:
+            # Extract regime fields from scored object
+            if hasattr(scored, "market_regime"):
+                rejected_item["market_regime"] = getattr(scored, "market_regime", None)
+                rejected_item["market_vix"] = getattr(scored, "market_vix", None)
+                rejected_item["market_spy_trend"] = getattr(scored, "market_spy_trend", None)
+                rejected_item["market_regime_multiplier"] = getattr(
+                    scored, "market_regime_multiplier", None
+                )
+            elif isinstance(scored, dict):
+                rejected_item["market_regime"] = scored.get("market_regime")
+                rejected_item["market_vix"] = scored.get("market_vix")
+                rejected_item["market_spy_trend"] = scored.get("market_spy_trend")
+                rejected_item["market_regime_multiplier"] = scored.get("market_regime_multiplier")
+        except Exception:
+            # Silently ignore regime extraction errors
+            pass
+
+    # Write to JSONL file
+    log_path = Path("data/rejected_items.jsonl")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rejected_item, ensure_ascii=False) + "\n")
+    except Exception:
+        # Silently fail - don't crash the bot if logging fails
+        pass
+
+
+def get_rejection_stats() -> Dict[str, int]:
+    """
+    Get statistics about rejected items logged today.
+
+    Returns:
+        Dict with counts by rejection reason
+    """
+    log_path = Path("data/rejected_items.jsonl")
+
+    if not log_path.exists():
+        return {}
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    stats: Dict[str, int] = {}
+
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    item = json.loads(line.strip())
+                    ts = item.get("ts", "")
+
+                    # Only count today's items
+                    if ts.startswith(today):
+                        reason = item.get("rejection_reason", "UNKNOWN")
+                        stats[reason] = stats.get(reason, 0) + 1
+                except Exception:
+                    continue
+    except Exception:
+        return {}
+
+    return stats
+
+
+def clear_old_rejected_items(days_to_keep: int = 30) -> int:
+    """
+    Remove rejected items older than specified days.
+
+    Args:
+        days_to_keep: Number of days to retain (default 30)
+
+    Returns:
+        Number of items removed
+    """
+    log_path = Path("data/rejected_items.jsonl")
+
+    if not log_path.exists():
+        return 0
+
+    cutoff = datetime.now(timezone.utc).timestamp() - (days_to_keep * 86400)
+    kept_items = []
+    removed_count = 0
+
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    item = json.loads(line.strip())
+                    ts_str = item.get("ts", "")
+
+                    # Parse timestamp
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+
+                    if ts.timestamp() >= cutoff:
+                        kept_items.append(line)
+                    else:
+                        removed_count += 1
+                except Exception:
+                    # Keep items we can't parse
+                    kept_items.append(line)
+
+        # Rewrite file with kept items
+        if removed_count > 0:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.writelines(kept_items)
+    except Exception:
+        return 0
+
+    return removed_count

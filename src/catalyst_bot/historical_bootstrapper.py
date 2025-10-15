@@ -47,7 +47,10 @@ from .classify import classify  # noqa: E402
 from .config import get_settings  # noqa: E402
 from .discord_transport import post_discord_with_backoff  # noqa: E402
 from .feeds import _normalize_entry, extract_ticker  # noqa: E402
+from .llm_usage_monitor import get_monitor  # noqa: E402
 from .logging_utils import get_logger  # noqa: E402
+from .rvol import calculate_rvol  # noqa: E402
+from .sector_context import get_sector_manager  # noqa: E402
 from .ticker_resolver import TickerResolver  # noqa: E402
 
 log = get_logger("historical_bootstrapper")
@@ -121,6 +124,9 @@ FEED_URLS = {
         "https://www.globenewswire.com/RssFeed/orgclass/1/feedTitle/"
         "GlobeNewswire%20-%20News%20about%20Public%20Companies"
     ),
+    "prnewswire": "https://www.prnewswire.com/rss/all-news.rss",
+    "businesswire": "https://www.businesswire.com/portal/site/home/news/?rss=1",
+    "accesswire": "https://www.accesswire.com/rss/latest",
 }
 
 # SEC feed URL templates (for backwards compatibility)
@@ -1199,65 +1205,67 @@ class HistoricalBootstrapper:
         # Determine appropriate interval based on timeframes
         needs_intraday = any(tf in ["15m", "30m", "1h", "4h"] for tf in timeframes)
         interval = "15m" if needs_intraday else "1d"
+        log.info(
+            f"TIMEFRAMES_SELECTED ticker={ticker} timeframes={timeframes} needs_intraday={needs_intraday}"  # noqa: E501
+        )
 
         outcomes = {}
         hist = None
 
         try:
             # Try Tiingo first if enabled and we need intraday data
-            feature_tiingo_enabled = False
-            tiingo_api_key = ""
-
-            try:
-                tiingo_api_key = getattr(self.settings, "tiingo_api_key", "")
-                feature_tiingo_enabled = bool(
-                    getattr(self.settings, "feature_tiingo", False)
-                )
-            except Exception:
-                # Fallback to environment variables
-                import os
-
-                tiingo_api_key = os.getenv("TIINGO_API_KEY", "").strip()
-                feature_tiingo_str = os.getenv("FEATURE_TIINGO", "0").strip().lower()
-                feature_tiingo_enabled = feature_tiingo_str in {
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
-                }
+            # Note: Always read directly from environment since Settings object
+            # is created before .env is loaded (module import order issue)
+            tiingo_api_key = os.getenv("TIINGO_API_KEY", "").strip()
+            feature_tiingo_str = os.getenv("FEATURE_TIINGO", "0").strip().lower()
+            feature_tiingo_enabled = feature_tiingo_str in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
             # Use Tiingo for intraday data if available
-            if needs_intraday and feature_tiingo_enabled and tiingo_api_key:
-                try:
-                    # Import market module to use get_intraday with Tiingo
-                    from .market import get_intraday
+            # DEBUG: Print all three conditions with immediate flush
+            import sys
 
-                    # Tiingo can provide historical intraday data
-                    # Get more data than needed to ensure coverage
-                    # Note: Using full output_size to get all available historical data
-                    # Fetch with 15min interval (covers 15m and 30m needs)
-                    hist = get_intraday(
-                        ticker, interval="15min", output_size="full", prepost=True
+            sys.stderr.write(
+                f"DEBUG: needs_intraday={needs_intraday}, feature_enabled={feature_tiingo_enabled}, has_key={bool(tiingo_api_key)}\n"  # noqa: E501
+            )
+            sys.stderr.flush()
+
+            if needs_intraday and feature_tiingo_enabled and tiingo_api_key:
+                log.info(
+                    f"TIINGO_ATTEMPTING ticker={ticker} enabled={feature_tiingo_enabled} has_key={bool(tiingo_api_key)}"  # noqa: E501
+                )
+                try:
+                    # Import Tiingo direct API function to use explicit date ranges
+                    from .market import _tiingo_intraday_series
+
+                    # Tiingo can provide historical intraday data with explicit dates
+                    # Call _tiingo_intraday_series directly with rejection_date range
+                    # This properly fetches Nov 2024 data instead of recent data
+                    hist = _tiingo_intraday_series(
+                        ticker,
+                        tiingo_api_key,
+                        start_date=rejection_date.strftime("%Y-%m-%d"),
+                        end_date=(target_date + timedelta(days=1)).strftime("%Y-%m-%d"),
+                        resample_freq="15min",
+                        after_hours=True,
+                        timeout=30,  # 30-second timeout for historical data fetches
                     )
 
-                    # Filter to date range if we got data
                     if hist is not None and not hist.empty:
-                        # Filter by date range
-                        hist = hist[
-                            (hist.index >= rejection_date)
-                            & (hist.index <= target_date + timedelta(days=1))
-                        ]
-
-                        if not hist.empty:
-                            log.debug(
-                                f"tiingo_intraday_success ticker={ticker} "
-                                f"interval=15min rows={len(hist)}"
-                            )
-                        else:
-                            hist = None  # Empty after filter
+                        log.info(
+                            f"TIINGO_SUCCESS ticker={ticker} "
+                            f"interval=15min rows={len(hist)} "
+                            f"date_range={rejection_date.date()} to {target_date.date()}"
+                        )
+                    else:
+                        hist = None  # Empty result
                 except Exception as e:
-                    log.debug(
-                        f"tiingo_intraday_failed ticker={ticker} err={e} "
+                    log.info(
+                        f"TIINGO_FAILED ticker={ticker} err={e} "
                         "falling_back_to_yfinance"
                     )
                     hist = None
@@ -1444,23 +1452,11 @@ class HistoricalBootstrapper:
             List of applicable timeframe strings
         """
         # Check if Tiingo is enabled via environment variable
-        # This matches the pattern used in market.py for consistency
-        feature_tiingo_enabled = False
-        tiingo_api_key = ""
-
-        try:
-            # Try to get settings first (preferred method)
-            tiingo_api_key = getattr(self.settings, "tiingo_api_key", "")
-            feature_tiingo_enabled = bool(
-                getattr(self.settings, "feature_tiingo", False)
-            )
-        except Exception:
-            # Fallback to direct environment variable check
-            import os
-
-            tiingo_api_key = os.getenv("TIINGO_API_KEY", "").strip()
-            feature_tiingo_str = os.getenv("FEATURE_TIINGO", "0").strip().lower()
-            feature_tiingo_enabled = feature_tiingo_str in {"1", "true", "yes", "on"}
+        # Note: Always read directly from environment since Settings object
+        # is created before .env is loaded (module import order issue)
+        tiingo_api_key = os.getenv("TIINGO_API_KEY", "").strip()
+        feature_tiingo_str = os.getenv("FEATURE_TIINGO", "0").strip().lower()
+        feature_tiingo_enabled = feature_tiingo_str in {"1", "true", "yes", "on"}
 
         # If Tiingo is enabled with valid API key, return all timeframes
         if feature_tiingo_enabled and tiingo_api_key:
@@ -1509,6 +1505,7 @@ class HistoricalBootstrapper:
         Fetch outcomes for all applicable timeframes and write to outcomes.jsonl.
 
         Phase 2: Uses batch fetching to reduce API calls from 6 to 1 per ticker.
+        Phase 3 (Agent 3): Added sector context tracking.
 
         Args:
             ticker: Stock ticker
@@ -1521,6 +1518,31 @@ class HistoricalBootstrapper:
         pre_event_context = self._fetch_pre_event_context(ticker, rejection_date)
         market_context = self._fetch_market_context(rejection_date, rejection_price)
 
+        # Fetch sector context (Agent 3: sector/industry tracking)
+        sector_context = self._fetch_sector_context(ticker, rejection_date)
+
+        # Calculate RVOL at rejection time (Agent 1: Relative Volume)
+        rvol_data = calculate_rvol(ticker, rejection_date, use_cache=True)
+
+        # Fetch market regime at rejection time
+        # Note: For historical data, we fetch current regime as a placeholder.
+        # Ideally, we would fetch VIX/SPY at the historical date, but that requires
+        # additional API calls. Current regime is logged with a note for future enhancement.
+        regime_data = {}
+        try:
+            from .market_regime import get_current_regime
+
+            regime_data = get_current_regime()
+            log.debug(
+                f"regime_fetched_for_historical ticker={ticker} "
+                f"regime={regime_data.get('regime')} vix={regime_data.get('vix')} "
+                f"note='Current regime used as placeholder for historical date'"
+            )
+        except ImportError:
+            log.debug("market_regime_module_not_available")
+        except Exception as e:
+            log.debug(f"regime_fetch_failed ticker={ticker} err={e}")
+
         # Build outcome record
         outcome_record = {
             "ticker": ticker,
@@ -1529,6 +1551,17 @@ class HistoricalBootstrapper:
             "rejection_reason": rejection_reason,
             "pre_event_context": pre_event_context,
             "market_context": market_context,
+            "sector_context": sector_context,
+            "rvol": rvol_data.get("rvol") if rvol_data else None,
+            "rvol_20d_avg_volume": (
+                rvol_data.get("avg_volume_20d") if rvol_data else None
+            ),
+            "current_volume": rvol_data.get("current_volume") if rvol_data else None,
+            "rvol_category": rvol_data.get("rvol_category") if rvol_data else None,
+            "market_regime": regime_data.get("regime"),
+            "market_vix": regime_data.get("vix"),
+            "market_spy_trend": regime_data.get("spy_trend"),
+            "market_regime_multiplier": regime_data.get("multiplier"),
             "outcomes": {},
             "is_missed_opportunity": False,
             "max_return_pct": 0.0,
@@ -1710,6 +1743,71 @@ class HistoricalBootstrapper:
 
         return context
 
+    def _fetch_sector_context(
+        self, ticker: str, rejection_date: datetime
+    ) -> Dict[str, Any]:
+        """
+        Fetch sector and industry context for ticker.
+
+        Returns dict with:
+        - sector: str or None
+        - industry: str or None
+        - sector_1d_return: float (percent) or None
+        - sector_5d_return: float (percent) or None
+        - sector_vs_spy: float (sector outperformance vs SPY) or None
+        - sector_rvol: float (relative volume) or None
+
+        Args:
+            ticker: Stock ticker
+            rejection_date: Date of rejection/catalyst event
+
+        Returns:
+            Dictionary with sector context
+        """
+        context = {
+            "sector": None,
+            "industry": None,
+            "sector_1d_return": None,
+            "sector_5d_return": None,
+            "sector_vs_spy": None,
+            "sector_rvol": None,
+        }
+
+        try:
+            # Get sector manager
+            sector_mgr = get_sector_manager()
+
+            # Get sector and industry
+            sector_info = sector_mgr.get_ticker_sector_info(ticker)
+            sector = sector_info.get("sector")
+            industry = sector_info.get("industry")
+
+            context["sector"] = sector
+            context["industry"] = industry
+
+            # Get sector performance (if sector is known)
+            if sector:
+                perf = sector_mgr.get_sector_performance(sector, rejection_date)
+
+                context["sector_1d_return"] = perf.get("sector_1d_return")
+                context["sector_5d_return"] = perf.get("sector_5d_return")
+                context["sector_vs_spy"] = perf.get("sector_vs_spy")
+                context["sector_rvol"] = perf.get("sector_rvol")
+
+                log.debug(
+                    f"sector_context_fetched ticker={ticker} "
+                    f"sector={sector} "
+                    f"sector_1d_return={context['sector_1d_return']} "
+                    f"sector_vs_spy={context['sector_vs_spy']}"
+                )
+            else:
+                log.debug(f"sector_unknown ticker={ticker}")
+
+        except Exception as e:
+            log.warning(f"sector_context_failed ticker={ticker} err={e}")
+
+        return context
+
     def _fetch_outcome_for_timeframe(
         self,
         ticker: str,
@@ -1832,6 +1930,7 @@ class HistoricalBootstrapper:
         score = 0.0
         sentiment = 0.0
         keywords = []
+        fundamental_data = {}
 
         if scored is not None:
             try:
@@ -1860,6 +1959,35 @@ class HistoricalBootstrapper:
                         or []
                     )
 
+                # Extract fundamental data if available
+                if hasattr(scored, "fundamental_score"):
+                    fundamental_data = {
+                        "score": getattr(scored, "fundamental_score", None),
+                        "float_shares": getattr(
+                            scored, "fundamental_float_shares", None
+                        ),
+                        "short_interest": getattr(
+                            scored, "fundamental_short_interest", None
+                        ),
+                        "float_score": getattr(scored, "fundamental_float_score", None),
+                        "si_score": getattr(scored, "fundamental_si_score", None),
+                        "float_reason": getattr(
+                            scored, "fundamental_float_reason", None
+                        ),
+                        "si_reason": getattr(scored, "fundamental_si_reason", None),
+                    }
+                elif isinstance(scored, dict):
+                    if "fundamental_score" in scored:
+                        fundamental_data = {
+                            "score": scored.get("fundamental_score"),
+                            "float_shares": scored.get("fundamental_float_shares"),
+                            "short_interest": scored.get("fundamental_short_interest"),
+                            "float_score": scored.get("fundamental_float_score"),
+                            "si_score": scored.get("fundamental_si_score"),
+                            "float_reason": scored.get("fundamental_float_reason"),
+                            "si_reason": scored.get("fundamental_si_reason"),
+                        }
+
             except Exception as e:
                 log.debug(f"keyword_extract_failed ticker={ticker} err={e}")
 
@@ -1879,6 +2007,10 @@ class HistoricalBootstrapper:
             "rejected": True,
             "rejection_reason": rejection_reason,
         }
+
+        # Add fundamental data if available
+        if fundamental_data:
+            rejected_item["fundamental"] = fundamental_data
 
         try:
             with open(self.rejected_path, "a", encoding="utf-8") as f:
@@ -2279,6 +2411,17 @@ Examples:
         print(f"  Cache hits (disk): {stats['disk_cache_hits']}")
         print(f"  Cache misses: {stats['cache_misses']}")
         print(f"  Bulk fetches: {stats['bulk_fetches']}")
+
+        # Generate LLM usage report
+        print("\n" + "=" * 70)
+        print("LLM USAGE REPORT")
+        print("=" * 70)
+        try:
+            monitor = get_monitor()
+            summary = monitor.get_daily_stats()
+            monitor.print_summary(summary)
+        except Exception as e:
+            print(f"Failed to generate LLM usage report: {e}")
 
         return 0
 

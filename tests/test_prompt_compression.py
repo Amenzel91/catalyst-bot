@@ -15,7 +15,6 @@ from catalyst_bot.prompt_compression import (
     should_compress,
 )
 
-
 # Sample SEC 8-K filing text (realistic example)
 SAMPLE_8K_FILING = """
 UNITED STATES SECURITIES AND EXCHANGE COMMISSION
@@ -31,7 +30,7 @@ ABC Biopharmaceuticals Inc.
 
 ITEM 1.01 Entry into a Material Definitive Agreement
 
-On December 15, 2023, ABC Biopharmaceuticals Inc. (the "Company") entered into a definitive Asset Purchase Agreement with XYZ Therapeutics LLC ("XYZ") to acquire certain intellectual property assets related to novel oncology therapeutics for an aggregate purchase price of $50 million, consisting of $30 million in cash and $20 million in Company common stock.
+On December 15, 2023, ABC Biopharmaceuticals Inc. (the "Company") entered into a definitive Asset Purchase Agreement with XYZ Therapeutics LLC ("XYZ") to acquire certain intellectual property assets related to novel oncology therapeutics for an aggregate purchase price of $50 million, consisting of $30 million in cash and $20 million in Company common stock.  # noqa: E501
 
 The acquired assets include:
 - Three issued patents covering small molecule inhibitors
@@ -45,13 +44,13 @@ Key Terms of the Transaction:
 - Milestone payments: Up to $25M upon achievement of clinical endpoints
 - Royalty structure: 5% of net sales for 10 years
 
-The Company believes this acquisition strengthens its pipeline in targeted oncology and provides immediate access to differentiated assets with near-term commercialization potential. Management expects the transaction to be accretive to earnings within 24 months of closing.
+The Company believes this acquisition strengthens its pipeline in targeted oncology and provides immediate access to differentiated assets with near-term commercialization potential. Management expects the transaction to be accretive to earnings within 24 months of closing.  # noqa: E501
 
-The transaction has been approved by the Board of Directors and does not require shareholder approval. Closing is subject to customary conditions including regulatory clearance and third-party consents.
+The transaction has been approved by the Board of Directors and does not require shareholder approval. Closing is subject to customary conditions including regulatory clearance and third-party consents.  # noqa: E501
 
 SIGNATURES
 
-Pursuant to the requirements of the Securities Exchange Act of 1934, the registrant has duly caused this report to be signed on its behalf by the undersigned hereunto duly authorized.
+Pursuant to the requirements of the Securities Exchange Act of 1934, the registrant has duly caused this report to be signed on its behalf by the undersigned hereunto duly authorized.  # noqa: E501
 
 ABC Biopharmaceuticals Inc.
 
@@ -62,16 +61,17 @@ By: /s/ John Smith
 Date: December 15, 2023
 
 FORWARD-LOOKING STATEMENTS
-This report contains forward-looking statements within the meaning of the Private Securities Litigation Reform Act of 1995. These statements involve risks and uncertainties that could cause actual results to differ materially from those projected. Investors should not place undue reliance on these forward-looking statements.
+This report contains forward-looking statements within the meaning of the Private Securities Litigation Reform Act of 1995. These statements involve risks and uncertainties that could cause actual results to differ materially from those projected. Investors should not place undue reliance on these forward-looking statements.  # noqa: E501
 
-The Company undertakes no obligation to update or revise any forward-looking statements, whether as a result of new information, future events, or otherwise, except as required by law.
+The Company undertakes no obligation to update or revise any forward-looking statements, whether as a result of new information, future events, or otherwise, except as required by law.  # noqa: E501
 
 Page 1 of 1
 Copyright © 2023 ABC Biopharmaceuticals Inc. All rights reserved.
 """
 
 
-SAMPLE_LONG_FILING = """
+SAMPLE_LONG_FILING = (
+    """
 UNITED STATES SECURITIES AND EXCHANGE COMMISSION
 Washington, D.C. 20549
 
@@ -82,7 +82,7 @@ Company Name: MegaCorp Industries Inc.
 
 ITEM 2.02 Results of Operations and Financial Condition
 
-On November 30, 2023, MegaCorp Industries Inc. (the "Company") announced its financial results for the third quarter ended October 31, 2023.
+On November 30, 2023, MegaCorp Industries Inc. (the "Company") announced its financial results for the third quarter ended October 31, 2023.  # noqa: E501
 
 Third Quarter 2023 Financial Highlights:
 - Revenue: $250 million, up 15% year-over-year
@@ -93,33 +93,40 @@ Third Quarter 2023 Financial Highlights:
 - Cash and equivalents: $120 million
 
 Management Commentary:
-"We delivered another strong quarter of growth driven by robust demand across all product lines," said Jane Doe, CEO. "Our investments in R&D and manufacturing capacity are paying off, and we're well-positioned for continued growth in Q4 and beyond."
+"We delivered another strong quarter of growth driven by robust demand across all product lines," said Jane Doe, CEO. "Our investments in R&D and manufacturing capacity are paying off, and we're well-positioned for continued growth in Q4 and beyond."  # noqa: E501
 
 Business Segment Performance:
-""" + "\n".join(
-    [
-        f"Segment {i}: Revenue of ${10+i*5}M, up {5+i}% YoY"
-        for i in range(1, 20)
-    ]
-) + """
+"""
+    + "\n".join(
+        [f"Segment {i}: Revenue of ${10+i*5}M, up {5+i}% YoY" for i in range(1, 20)]
+    )
+    + """
 
 Detailed Financial Tables:
-""" + "\n".join(
-    [f"Line item {i}: ${i*1000} | {i*100} units | {i*10}% margin" for i in range(1, 50)]
-) + """
+"""
+    + "\n".join(
+        [
+            f"Line item {i}: ${i*1000} | {i*100} units | {i*10}% margin"
+            for i in range(1, 50)
+        ]
+    )
+    + """
 
 Forward-Looking Statements and Risk Factors:
-This report contains forward-looking statements. Actual results may differ materially. Risk factors include market competition, regulatory changes, supply chain disruptions, currency fluctuations, cybersecurity threats, intellectual property disputes, and macroeconomic conditions.
+This report contains forward-looking statements. Actual results may differ materially. Risk factors include market competition, regulatory changes, supply chain disruptions, currency fluctuations, cybersecurity threats, intellectual property disputes, and macroeconomic conditions.  # noqa: E501
 
 Legal Disclaimer:
-The information in this report is provided as-is without warranties. The Company disclaims all liability for damages arising from use of this information.
+The information in this report is provided as-is without warranties. The Company disclaims all liability for damages arising from use of this information.  # noqa: E501
 
 Additional Boilerplate:
-""" + "\n".join([f"Boilerplate paragraph {i}" for i in range(1, 30)]) + """
+"""
+    + "\n".join([f"Boilerplate paragraph {i}" for i in range(1, 30)])
+    + """
 
 Page 1 of 10
 Copyright © 2023 MegaCorp Industries Inc. All rights reserved.
 """
+)
 
 
 def test_estimate_tokens_basic():
@@ -128,7 +135,7 @@ def test_estimate_tokens_basic():
     assert estimate_tokens("") == 0
 
     # Short string (~100 chars = ~26 tokens with 5% margin)
-    short_text = "This is a short sentence with approximately one hundred characters in total for testing purposes."
+    short_text = "This is a short sentence with approximately one hundred characters in total for testing purposes."  # noqa: E501
     tokens = estimate_tokens(short_text)
     assert 20 < tokens < 35  # Allow some variance
 
@@ -235,8 +242,10 @@ Closing paragraph.
     sections = extract_key_sections(text_with_bullets)
 
     # Should extract bullets
-    assert "First bullet" in sections["bullets"] or \
-           "bullet point" in sections["bullets"].lower()
+    assert (
+        "First bullet" in sections["bullets"]
+        or "bullet point" in sections["bullets"].lower()
+    )
     assert "Numbered item" in sections["bullets"]
 
 
@@ -410,8 +419,12 @@ def test_compress_sec_filing_preserves_critical_info():
     compressed = result["compressed_text"]
 
     # Should preserve title/form type
-    assert ("8-K" in compressed or "FORM" in compressed or
-            "ABC" in compressed or "Agreement" in compressed)
+    assert (
+        "8-K" in compressed
+        or "FORM" in compressed
+        or "ABC" in compressed
+        or "Agreement" in compressed
+    )
 
     # Should include some key financial terms
     # At minimum, company name or transaction type should be preserved
@@ -419,7 +432,10 @@ def test_compress_sec_filing_preserves_critical_info():
 
 def test_compress_sec_filing_removes_boilerplate():
     """Test that compression removes boilerplate effectively."""
-    filing_with_boilerplate = SAMPLE_8K_FILING + "\n" + """
+    filing_with_boilerplate = (
+        SAMPLE_8K_FILING
+        + "\n"
+        + """
 ADDITIONAL BOILERPLATE:
 Forward-looking statements disclaimer...
 Safe harbor provisions...
@@ -428,6 +444,7 @@ Signature page follows...
 Copyright 2023 All Rights Reserved
 Page 1 of 5
 """
+    )
 
     result = compress_sec_filing(filing_with_boilerplate, max_tokens=300)
 
@@ -440,7 +457,9 @@ Page 1 of 5
     # Check that boilerplate is less prominent
     boilerplate_keywords = ["forward-looking", "safe harbor", "copyright"]
     boilerplate_count_original = sum(
-        1 for kw in boilerplate_keywords if kw.lower() in filing_with_boilerplate.lower()
+        1
+        for kw in boilerplate_keywords
+        if kw.lower() in filing_with_boilerplate.lower()
     )
     boilerplate_count_compressed = sum(
         1 for kw in boilerplate_keywords if kw.lower() in compressed.lower()

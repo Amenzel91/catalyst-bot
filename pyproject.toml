@@ -13,3 +13,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["catalyst_bot*"]
+
+[tool.pytest.ini_options]
+# Suppress trio backend failures for anyio
+filterwarnings = [
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]
+markers = [
+    "anyio: mark test to run with anyio",
+]
