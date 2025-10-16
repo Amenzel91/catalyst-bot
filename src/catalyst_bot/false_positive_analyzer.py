@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from datetime import datetime, time as dt_time, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -119,7 +119,9 @@ def calculate_precision_recall(outcomes: List[Dict[str, Any]]) -> Dict[str, floa
     }
 
 
-def analyze_keyword_patterns(outcomes: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def analyze_keyword_patterns(
+    outcomes: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
     """
     Analyze which keywords correlate with false positives.
 
@@ -195,7 +197,9 @@ def analyze_keyword_patterns(outcomes: List[Dict[str, Any]]) -> Dict[str, Dict[s
     return results
 
 
-def analyze_source_patterns(outcomes: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def analyze_source_patterns(
+    outcomes: List[Dict[str, Any]]
+) -> Dict[str, Dict[str, Any]]:
     """
     Analyze which sources have high false positive rates.
 

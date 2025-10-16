@@ -1,16 +1,18 @@
 """Tests for accepted_items_logger.py - MOA negative keyword tracking."""
 
 import json
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
+
 from catalyst_bot.accepted_items_logger import (
+    PRICE_CEILING,
+    PRICE_FLOOR,
+    clear_old_accepted_items,
+    get_accepted_stats,
     log_accepted_item,
     should_log_accepted_item,
-    get_accepted_stats,
-    clear_old_accepted_items,
-    PRICE_FLOOR,
-    PRICE_CEILING,
 )
 
 
@@ -424,7 +426,7 @@ class TestClearOldAcceptedItems:
             f.write('{"ts": "invalid-timestamp", "ticker": "INVALID"}\n')
             f.write(f'{{"ts": "{now.isoformat()}", "ticker": "VALID"}}\n')
 
-        removed = clear_old_accepted_items(days_to_keep=30)
+        _ = clear_old_accepted_items(days_to_keep=30)
 
         # Should keep both (can't parse invalid timestamp, so keep it)
         with open(log_path, "r", encoding="utf-8") as f:

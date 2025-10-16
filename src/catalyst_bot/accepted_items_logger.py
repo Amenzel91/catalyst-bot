@@ -135,7 +135,9 @@ def log_accepted_item(
             if hasattr(scored, "market_regime"):
                 accepted_item["market_regime"] = getattr(scored, "market_regime", None)
                 accepted_item["market_vix"] = getattr(scored, "market_vix", None)
-                accepted_item["market_spy_trend"] = getattr(scored, "market_spy_trend", None)
+                accepted_item["market_spy_trend"] = getattr(
+                    scored, "market_spy_trend", None
+                )
                 accepted_item["market_regime_multiplier"] = getattr(
                     scored, "market_regime_multiplier", None
                 )
@@ -143,7 +145,9 @@ def log_accepted_item(
                 accepted_item["market_regime"] = scored.get("market_regime")
                 accepted_item["market_vix"] = scored.get("market_vix")
                 accepted_item["market_spy_trend"] = scored.get("market_spy_trend")
-                accepted_item["market_regime_multiplier"] = scored.get("market_regime_multiplier")
+                accepted_item["market_regime_multiplier"] = scored.get(
+                    "market_regime_multiplier"
+                )
         except Exception:
             # Silently ignore regime extraction errors
             pass

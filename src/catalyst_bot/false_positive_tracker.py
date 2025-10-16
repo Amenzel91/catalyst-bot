@@ -15,7 +15,6 @@ Date: 2025-10-12
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,9 +28,9 @@ log = get_logger("false_positive_tracker")
 
 # Success thresholds for outcome classification
 SUCCESS_THRESHOLDS = {
-    "1h": 2.0,   # 1h return > 2% = SUCCESS
-    "4h": 3.0,   # 4h return > 3% = SUCCESS
-    "1d": 5.0,   # 1d return > 5% = SUCCESS
+    "1h": 2.0,  # 1h return > 2% = SUCCESS
+    "4h": 3.0,  # 4h return > 3% = SUCCESS
+    "1d": 5.0,  # 1d return > 5% = SUCCESS
 }
 
 # Timeframes to track
@@ -152,8 +151,7 @@ def fetch_price_outcome(
             # For intraday, find closest bar to target time
             hist_index = hist.index
             time_diffs = [
-                (idx, abs((idx - target_date).total_seconds()))
-                for idx in hist_index
+                (idx, abs((idx - target_date).total_seconds())) for idx in hist_index
             ]
             if time_diffs:
                 closest_idx, _ = min(time_diffs, key=lambda x: x[1])
@@ -176,9 +174,7 @@ def fetch_price_outcome(
         }
 
     except Exception as e:
-        log.debug(
-            f"fetch_outcome_failed ticker={ticker} timeframe={timeframe} err={e}"
-        )
+        log.debug(f"fetch_outcome_failed ticker={ticker} timeframe={timeframe} err={e}")
         return None
 
 
@@ -320,7 +316,9 @@ def track_accepted_outcomes(
             acceptance_date = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
 
             # Check if enough time has passed for all timeframes
-            min_elapsed = (datetime.now(timezone.utc) - acceptance_date).total_seconds() / 3600
+            min_elapsed = (
+                datetime.now(timezone.utc) - acceptance_date
+            ).total_seconds() / 3600
             max_timeframe_hours = max(TIMEFRAMES.values())
 
             if min_elapsed < max_timeframe_hours:
@@ -432,7 +430,7 @@ def main():
 
     if result["status"] == "success":
         stats = result["stats"]
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  Processed: {stats['processed']}")
         print(f"  Successes: {stats['successes']}")
         print(f"  Failures: {stats['failures']}")
@@ -441,11 +439,11 @@ def main():
         print(f"  Already tracked: {stats['skipped_existing']}")
         print(f"\nElapsed: {result['elapsed_seconds']:.1f}s")
 
-        if stats['processed'] > 0:
-            false_positive_rate = stats['failures'] / stats['processed'] * 100
+        if stats["processed"] > 0:
+            false_positive_rate = stats["failures"] / stats["processed"] * 100
             print(f"\nFalse Positive Rate: {false_positive_rate:.1f}%")
 
-        print(f"\nOutcomes saved to: data/false_positives/outcomes.jsonl")
+        print("\nOutcomes saved to: data/false_positives/outcomes.jsonl")
         return 0
     else:
         print(f"\nError: {result.get('message', 'Unknown error')}")

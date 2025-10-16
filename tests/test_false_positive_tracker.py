@@ -12,10 +12,7 @@ Date: 2025-10-12
 """
 
 import json
-import tempfile
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,9 +39,10 @@ class TestAcceptedItemsLogger:
         }
 
         # Log the item (will write to data/accepted_items.jsonl)
+        # Note: Price must be between $0.10-$10.00 to pass price filter
         log_accepted_item(
             item=item,
-            price=150.0,
+            price=5.0,
             score=2.5,
             sentiment=0.8,
             keywords=["product", "announcement"],
@@ -61,7 +59,7 @@ class TestAcceptedItemsLogger:
             logged = json.loads(last_line)
 
         assert logged["ticker"] == "AAPL"
-        assert logged["price"] == 150.0
+        assert logged["price"] == 5.0
         assert logged["cls"]["score"] == 2.5
         assert logged["cls"]["sentiment"] == 0.8
         assert logged["cls"]["keywords"] == ["product", "announcement"]
@@ -81,8 +79,8 @@ class TestAcceptedItemsLogger:
             with open(log_path, "r") as f:
                 lines_before = len(f.readlines())
 
-        # Try to log item without ticker
-        log_accepted_item(item=item, price=100.0)
+        # Try to log item without ticker (price must be $0.10-$10.00)
+        log_accepted_item(item=item, price=5.0)
 
         # Verify no new line was added
         lines_after = 0
@@ -310,9 +308,10 @@ class TestIntegration:
                 "title": f"Test item {i}",
                 "source": "test_source",
             }
+            # Note: Price must be between $0.10-$10.00 to pass price filter
             log_accepted_item(
                 item=item,
-                price=100.0,
+                price=5.0,
                 score=2.0,
                 sentiment=0.5,
                 keywords=["test", "keyword"],

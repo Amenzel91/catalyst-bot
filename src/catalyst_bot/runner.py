@@ -1223,6 +1223,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         score=_score_of(scored),
                         sentiment=_sentiment_of(scored),
                         keywords=_keywords_of(scored),
+                        scored=scored,
                     )
                 except Exception:
                     pass  # Don't crash on logging failures
@@ -1241,6 +1242,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     score=scr,
                     sentiment=_sentiment_of(scored),
                     keywords=_keywords_of(scored),
+                    scored=scored,
                 )
             except Exception:
                 pass  # Don't crash on logging failures
@@ -1258,6 +1260,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     score=scr,
                     sentiment=snt,
                     keywords=_keywords_of(scored),
+                    scored=scored,
                 )
             except Exception:
                 pass  # Don't crash on logging failures
@@ -1276,6 +1279,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         score=scr,
                         sentiment=snt,
                         keywords=list(kwords),
+                        scored=scored,
                     )
                 except Exception:
                     pass  # Don't crash on logging failures

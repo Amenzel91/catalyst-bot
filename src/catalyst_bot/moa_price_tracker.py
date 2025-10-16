@@ -744,3 +744,167 @@ def get_outcome_stats(lookback_days: int = 7) -> Dict[str, Any]:
         "missed_opportunities": missed_opps,
         **avg_returns,
     }
+
+
+# CLI entry point
+def main():
+    """Run MOA price tracking from command line."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Track price outcomes for rejected items (missed opportunity analysis)"
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+
+    # Track command
+    track_parser = subparsers.add_parser(
+        "track", help="Track pending outcomes for rejected items"
+    )
+    track_parser.add_argument(
+        "--timeframe",
+        type=str,
+        default=None,
+        choices=["15m", "30m", "1h", "4h", "1d", "7d"],
+        help="Filter to specific timeframe (default: all)",
+    )
+
+    # Stats command
+    stats_parser = subparsers.add_parser("stats", help="Show outcome statistics")
+    stats_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=7,
+        help="Days to look back (default: 7)",
+    )
+
+    # Missed command
+    missed_parser = subparsers.add_parser("missed", help="Show missed opportunities")
+    missed_parser.add_argument(
+        "--min-return",
+        type=float,
+        default=10.0,
+        help="Minimum return percentage (default: 10.0)",
+    )
+    missed_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=7,
+        help="Days to look back (default: 7)",
+    )
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    # Handle track command
+    if args.command == "track":
+        print("Tracking outcomes for rejected items...")
+        if args.timeframe:
+            print(f"  Timeframe: {args.timeframe}")
+            timeframes = [args.timeframe]
+        else:
+            print("  Timeframe: all")
+            timeframes = list(TRACKING_TIMEFRAMES.keys())
+        print()
+
+        total_recorded = 0
+        for tf in timeframes:
+            pending = get_pending_items(tf)
+            print(f"\n{tf} timeframe:")
+            print(f"  Pending items: {len(pending)}")
+
+            if pending:
+                recorded = 0
+                for item in pending:
+                    success = record_outcome(
+                        ticker=item["ticker"],
+                        timeframe=tf,
+                        rejection_ts=item["rejection_ts"],
+                        rejection_price=item["rejection_price"],
+                        rejection_reason=item["rejection_reason"],
+                    )
+                    if success:
+                        recorded += 1
+                    # Rate limiting
+                    time.sleep(0.1)
+
+                print(f"  Recorded: {recorded}")
+                total_recorded += recorded
+
+        print(f"\nTotal outcomes recorded: {total_recorded}")
+        print("\nOutcomes saved to: data/moa/outcomes.jsonl")
+        return 0
+
+    # Handle stats command
+    elif args.command == "stats":
+        print(f"Fetching outcome statistics (last {args.lookback_days} days)...")
+        print()
+
+        stats = get_outcome_stats(lookback_days=args.lookback_days)
+
+        print("\nResults:")
+        print(f"  Total tracked: {stats['total_tracked']}")
+        print(f"  Missed opportunities: {stats['missed_opportunities']}")
+        print()
+        print("  Average returns by timeframe:")
+        print(f"    15m: {stats['avg_return_15m']:+.2f}%")
+        print(f"    30m: {stats['avg_return_30m']:+.2f}%")
+        print(f"    1h:  {stats['avg_return_1h']:+.2f}%")
+        print(f"    4h:  {stats['avg_return_4h']:+.2f}%")
+        print(f"    1d:  {stats['avg_return_1d']:+.2f}%")
+        print(f"    7d:  {stats['avg_return_7d']:+.2f}%")
+
+        if stats["total_tracked"] > 0:
+            miss_rate = (stats["missed_opportunities"] / stats["total_tracked"]) * 100
+            print(f"\nMissed Opportunity Rate: {miss_rate:.1f}%")
+
+        return 0
+
+    # Handle missed command
+    elif args.command == "missed":
+        print(f"Fetching missed opportunities (last {args.lookback_days} days)...")
+        print(f"  Min return: {args.min_return}%")
+        print()
+
+        missed = get_missed_opportunities(
+            lookback_days=args.lookback_days,
+            min_return_pct=args.min_return,
+        )
+
+        if not missed:
+            print("No missed opportunities found.")
+            return 0
+
+        print(f"Found {len(missed)} missed opportunities:\n")
+
+        for i, opp in enumerate(missed, 1):
+            print(f"{i}. {opp['ticker']} - Max return: {opp['max_return_pct']:+.2f}%")
+            print(f"   Rejected: {opp['rejection_ts']}")
+            print(f"   Reason: {opp['rejection_reason']}")
+            print(f"   Price at rejection: ${opp['rejection_price']:.2f}")
+
+            # Show best timeframe
+            best_tf = None
+            best_ret = 0.0
+            for tf, data in opp.get("outcomes", {}).items():
+                if data and isinstance(data, dict):
+                    ret = data.get("return_pct", 0.0)
+                    if ret > best_ret:
+                        best_ret = ret
+                        best_tf = tf
+
+            if best_tf:
+                print(f"   Best timeframe: {best_tf} ({best_ret:+.2f}%)")
+            print()
+
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
