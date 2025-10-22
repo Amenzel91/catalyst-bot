@@ -275,7 +275,179 @@ def aggregate_sentiment_sources(
             except (ValueError, TypeError):
                 pass
 
-    # 5. AI Adapter Sentiment (if available)
+    # 5. Google Trends Sentiment (retail search volume indicator)
+    # Get search volume trends for the ticker
+    ticker = getattr(item, "ticker", None)
+    if ticker and os.getenv("FEATURE_GOOGLE_TRENDS", "0") == "1":
+        try:
+            from .google_trends_sentiment import get_google_trends_sentiment
+
+            trends_result = get_google_trends_sentiment(ticker)
+            if trends_result:
+                trends_score, trends_label, trends_metadata = trends_result
+                sentiment_sources["google_trends"] = float(trends_score)
+
+                log.debug(
+                    "google_trends_sentiment_aggregated ticker=%s score=%.3f spike_ratio=%.2fx direction=%s",
+                    ticker,
+                    trends_score,
+                    trends_metadata.get("spike_ratio", 0.0),
+                    trends_metadata.get("trend_direction", "UNKNOWN")
+                )
+        except Exception as e:
+            log.debug("google_trends_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 6. Short Interest Sentiment (squeeze potential amplifier)
+    # Amplifies bullish sentiment when short interest is high
+    if ticker and os.getenv("FEATURE_SHORT_INTEREST_BOOST", "1") == "1":
+        try:
+            from .short_interest_sentiment import calculate_si_sentiment
+
+            # Calculate temporary base sentiment from sources collected so far
+            temp_sentiment = 0.0
+            if sentiment_sources:
+                temp_sum = sum(sentiment_sources.values())
+                temp_sentiment = temp_sum / len(sentiment_sources) if temp_sum else 0.0
+
+            si_result = calculate_si_sentiment(ticker, sentiment=temp_sentiment)
+            if si_result and si_result.get("sentiment_boost", 0.0) != 0.0:
+                sentiment_sources["short_interest"] = float(si_result["sentiment_boost"])
+
+                log.debug(
+                    "short_interest_sentiment ticker=%s si_pct=%.1f%% multiplier=%.2fx boost=%.3f",
+                    ticker,
+                    si_result.get("short_interest_pct", 0.0),
+                    si_result.get("squeeze_multiplier", 1.0),
+                    si_result["sentiment_boost"]
+                )
+        except Exception as e:
+            log.debug("short_interest_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 7. Pre-Market Action Sentiment (leading price indicator)
+    # Only active during pre-market hours (4am-10am ET)
+    if ticker and os.getenv("FEATURE_PREMARKET_SENTIMENT", "1") == "1":
+        try:
+            from .premarket_sentiment import get_premarket_sentiment
+
+            pm_result = get_premarket_sentiment(ticker)
+            if pm_result:
+                pm_score, pm_metadata = pm_result
+                sentiment_sources["premarket"] = float(pm_score)
+
+                log.debug(
+                    "premarket_sentiment ticker=%s change_pct=%.2f%% score=%.3f",
+                    ticker,
+                    pm_metadata.get("premarket_change_pct", 0.0),
+                    pm_score
+                )
+        except Exception as e:
+            log.debug("premarket_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 8. After-Market Action Sentiment (earnings and news signal)
+    # Only active during after-market hours (4pm-8pm ET)
+    if ticker and os.getenv("FEATURE_AFTERMARKET_SENTIMENT", "1") == "1":
+        try:
+            from .aftermarket_sentiment import get_aftermarket_sentiment
+
+            am_result = get_aftermarket_sentiment(ticker)
+            if am_result:
+                am_score, am_metadata = am_result
+                sentiment_sources["aftermarket"] = float(am_score)
+
+                log.debug(
+                    "aftermarket_sentiment ticker=%s change_pct=%.2f%% score=%.3f",
+                    ticker,
+                    am_metadata.get("aftermarket_change_pct", 0.0),
+                    am_score
+                )
+        except Exception as e:
+            log.debug("aftermarket_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 9. News Velocity Sentiment (article momentum indicator)
+    # Detects article spikes that indicate breaking news or viral catalysts
+    if ticker and os.getenv("FEATURE_NEWS_VELOCITY", "1") == "1":
+        try:
+            from .news_velocity import get_velocity_tracker
+
+            velocity_tracker = get_velocity_tracker()
+            velocity_result = velocity_tracker.get_velocity_sentiment(ticker)
+
+            if velocity_result and velocity_result.get("sentiment", 0.0) != 0.0:
+                sentiment_sources["news_velocity"] = float(velocity_result["sentiment"])
+
+                log.debug(
+                    "news_velocity_sentiment ticker=%s articles_1h=%d velocity_score=%.3f is_spike=%s",
+                    ticker,
+                    velocity_result.get("articles_1h", 0),
+                    velocity_result["sentiment"],
+                    velocity_result.get("is_spike", False)
+                )
+        except Exception as e:
+            log.debug("news_velocity_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 10. Insider Trading Sentiment (SEC Form 4 analysis)
+    # Analyzes insider buying/selling as a leading indicator
+    if ticker and os.getenv("FEATURE_INSIDER_SENTIMENT", "1") == "1":
+        try:
+            from .insider_trading_sentiment import get_insider_sentiment
+
+            insider_result = get_insider_sentiment(ticker, lookback_days=30)
+
+            if insider_result:
+                insider_score, insider_metadata = insider_result
+                if insider_score != 0.0:
+                    sentiment_sources["insider"] = float(insider_score)
+
+                    log.debug(
+                        "insider_sentiment ticker=%s score=%.3f signal=%s net_value=$%.0f key_insiders=%s",
+                        ticker,
+                        insider_score,
+                        insider_metadata.get("signal_strength", "NEUTRAL"),
+                        insider_metadata.get("net_value_usd", 0.0),
+                        insider_metadata.get("key_insiders", [])
+                    )
+        except Exception as e:
+            log.debug("insider_sentiment_failed ticker=%s err=%s", ticker, str(e))
+
+    # 11. Volume-Price Divergence (technical signal - weak rally / strong selloff detection)
+    if ticker and os.getenv("FEATURE_VOLUME_PRICE_DIVERGENCE", "1") == "1":
+        try:
+            from .volume_price_divergence import detect_divergence, calculate_price_change, calculate_volume_change_from_rvol
+            from .rvol import calculate_rvol_intraday
+
+            # Get RVol data (already calculated earlier in classify())
+            rvol_data = calculate_rvol_intraday(ticker)
+            if rvol_data:
+                # Calculate price change
+                price_change = calculate_price_change(ticker)
+
+                # Calculate volume change from RVol
+                volume_change = calculate_volume_change_from_rvol(rvol_data)
+
+                if price_change is not None and volume_change is not None:
+                    divergence_result = detect_divergence(
+                        ticker,
+                        price_change,
+                        volume_change
+                    )
+
+                    if divergence_result and divergence_result.get("sentiment_adjustment") != 0.0:
+                        # Add divergence sentiment adjustment
+                        sentiment_sources["divergence"] = float(divergence_result["sentiment_adjustment"])
+
+                        log.debug(
+                            "divergence_detected ticker=%s type=%s strength=%s adjustment=%.3f price_change=%.2f%% volume_change=%.2f%%",
+                            ticker,
+                            divergence_result.get("divergence_type", "UNKNOWN"),
+                            divergence_result.get("signal_strength", "UNKNOWN"),
+                            divergence_result["sentiment_adjustment"],
+                            price_change * 100,
+                            volume_change * 100
+                        )
+        except Exception as e:
+            log.debug("divergence_detection_failed ticker=%s error=%s", ticker, str(e))
+
+    # 12. AI Adapter Sentiment (if available)
     # Note: This is handled separately in enrichment step
 
     # Define weights (configurable via environment)
@@ -284,6 +456,14 @@ def aggregate_sentiment_sources(
         "ml": float(os.getenv("SENTIMENT_WEIGHT_ML", "0.25")),
         "vader": float(os.getenv("SENTIMENT_WEIGHT_VADER", "0.25")),
         "llm": float(os.getenv("SENTIMENT_WEIGHT_LLM", "0.15")),
+        # Additional sentiment sources
+        "google_trends": float(os.getenv("SENTIMENT_WEIGHT_GOOGLE_TRENDS", "0.08")),
+        "short_interest": float(os.getenv("SENTIMENT_WEIGHT_SHORT_INTEREST", "0.08")),
+        "premarket": float(os.getenv("SENTIMENT_WEIGHT_PREMARKET", "0.15")),
+        "aftermarket": float(os.getenv("SENTIMENT_WEIGHT_AFTERMARKET", "0.15")),
+        "news_velocity": float(os.getenv("SENTIMENT_WEIGHT_NEWS_VELOCITY", "0.05")),
+        "insider": float(os.getenv("SENTIMENT_WEIGHT_INSIDER", "0.12")),
+        "divergence": float(os.getenv("SENTIMENT_WEIGHT_DIVERGENCE", "0.08")),
     }
 
     # Define confidence multipliers for each source
@@ -292,6 +472,14 @@ def aggregate_sentiment_sources(
         "ml": 0.85,  # High - trained financial model
         "llm": 0.70,  # Medium - general LLM
         "vader": 0.60,  # Lower - rule-based
+        # Additional sources
+        "google_trends": 0.65,  # Indirect proxy for retail interest
+        "short_interest": 0.80,  # Quantitative squeeze data
+        "premarket": 0.80,  # Price action - leading indicator
+        "aftermarket": 0.80,  # Price action - leading indicator (same as premarket)
+        "news_velocity": 0.70,  # Attention indicator
+        "insider": 0.85,  # SEC filings - high confidence, insider actions are highly predictive
+        "divergence": 0.75,  # Technical signal - moderate confidence
     }
 
     # Calculate weighted average with confidence
@@ -321,6 +509,41 @@ def aggregate_sentiment_sources(
         if expected_total_weight > 0
         else 0.0
     )
+
+    # --- VIX CONFIDENCE SCALING (Bonus) ---
+    # Apply volatility penalty to confidence during high VIX periods
+    # High VIX = uncertain market = lower confidence in sentiment signals
+    volatility_penalty = 1.0
+    try:
+        # Check if market regime data is available (contains VIX)
+        from .market_regime import get_current_regime
+
+        regime_data = get_current_regime()
+        if regime_data:
+            vix = regime_data.get("vix", 0.0)
+            if vix > 20:  # VIX above 20 = elevated volatility
+                # Scale confidence down: VIX 20 = 1.0x, VIX 30 = 0.8x, VIX 40 = 0.6x, etc.
+                # Formula: 1.0 - ((vix - 20) * 0.02) with floor of 0.5
+                volatility_penalty = max(0.5, 1.0 - ((vix - 20) * 0.02))
+
+                # Apply penalty to confidence
+                pre_vix_confidence = confidence
+                confidence = confidence * volatility_penalty
+
+                log.info(
+                    "vix_confidence_scaling ticker=%s vix=%.2f penalty=%.2f "
+                    "pre_confidence=%.3f post_confidence=%.3f",
+                    ticker or "N/A",
+                    vix,
+                    volatility_penalty,
+                    pre_vix_confidence,
+                    confidence,
+                )
+    except ImportError:
+        # market_regime module not available yet
+        pass
+    except Exception as e:
+        log.debug("vix_confidence_scaling_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # Log sentiment breakdown for debugging
     if sentiment_sources:
@@ -629,6 +852,38 @@ def classify(
                 # Count at most one hit per category
                 break
 
+    # --- NEGATIVE KEYWORD DETECTION ---
+    # Identify negative catalyst keywords (offerings, dilution, warrants, distress)
+    # and flag the alert as NEGATIVE with score penalty
+    negative_keywords = []
+    negative_keyword_categories = {
+        "offering_negative",
+        "warrant_negative",
+        "dilution_negative",
+        "distress_negative",
+    }
+
+    for category in hits:
+        if category in negative_keyword_categories:
+            negative_keywords.append(category)
+
+    # Apply negative alert logic if feature is enabled
+    alert_type = "N/A"
+    if negative_keywords and getattr(settings, "feature_negative_alerts", False):
+        alert_type = "NEGATIVE"
+        # Apply score penalty: invert score or make it significantly negative
+        # This ensures negative catalysts are deprioritized or flagged for exit
+        total_keyword_score = total_keyword_score * -2.0  # Double negative penalty
+
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.info(
+            "negative_alert_detected ticker=%s negative_keywords=%s score_penalty_applied=True",
+            getattr(item, "ticker", "N/A"),
+            negative_keywords,
+        )
+
     # Source weight (wrapped to satisfy flake8 line length)
     src_host = (item.source_host or "").lower()
     source_weight = settings.rss_sources.get(src_host, 1.0)
@@ -901,6 +1156,72 @@ def classify(
         log = logging.getLogger(__name__)
         log.warning("float_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
+    # --- VOLUME-PRICE DIVERGENCE DETECTION ---
+    # Detect divergence between price movement and volume to identify:
+    # - Weak rallies (price up, volume down) = bearish
+    # - Strong selloff reversals (price down, volume down) = bullish
+    # - Confirmed moves (price and volume aligned) = confirmation
+    divergence_data = None
+    divergence_adjustment = 0.0
+
+    if ticker and ticker.strip() and rvol_data:
+        try:
+            from .volume_price_divergence import (
+                calculate_price_change,
+                calculate_volume_change_from_rvol,
+                detect_divergence,
+            )
+
+            # Calculate price change (today vs yesterday)
+            price_change_pct = calculate_price_change(ticker)
+
+            # Calculate volume change from RVol data
+            volume_change_pct = calculate_volume_change_from_rvol(rvol_data)
+
+            if price_change_pct is not None and volume_change_pct is not None:
+                # Detect divergence pattern
+                divergence_data = detect_divergence(
+                    ticker=ticker,
+                    price_change_pct=price_change_pct,
+                    volume_change_pct=volume_change_pct,
+                )
+
+                if divergence_data:
+                    divergence_adjustment = divergence_data.get("sentiment_adjustment", 0.0)
+
+                    # Apply sentiment adjustment to total_score
+                    pre_divergence_score = total_score
+                    total_score = total_score + divergence_adjustment
+
+                    import logging
+
+                    log = logging.getLogger(__name__)
+                    log.info(
+                        "divergence_adjustment ticker=%s type=%s strength=%s "
+                        "price_change=%.2f%% volume_change=%.2f%% adjustment=%.3f "
+                        "pre_score=%.3f post_score=%.3f",
+                        ticker,
+                        divergence_data.get("divergence_type", "NONE"),
+                        divergence_data.get("signal_strength", "NONE"),
+                        divergence_data.get("price_change", 0.0) * 100,
+                        divergence_data.get("volume_change", 0.0) * 100,
+                        divergence_adjustment,
+                        pre_divergence_score,
+                        total_score,
+                    )
+        except ImportError:
+            # volume_price_divergence module not available (shouldn't happen)
+            pass
+        except Exception as e:
+            import logging
+
+            log = logging.getLogger(__name__)
+            log.debug(
+                "divergence_detection_failed ticker=%s err=%s",
+                ticker or "N/A",
+                str(e.__class__.__name__),
+            )
+
     # --- VWAP (VOLUME WEIGHTED AVERAGE PRICE) ANALYSIS ---
     # Calculate VWAP and determine if price is above/below (exit signal)
     # VWAP breaks (price below VWAP) are strong sell signals - 91% accuracy
@@ -969,6 +1290,25 @@ def classify(
                 "keywords": hits,
                 "score": total_score,
             }
+
+    # --- NEGATIVE ALERT METADATA: Attach negative alert data to scored item ---
+    # Add alert_type and negative_keywords to the scored item
+    try:
+        # Helper to set attributes on both dict and object types
+        def _set_neg_attr(obj, key, value):
+            if isinstance(obj, dict):
+                obj[key] = value
+            else:
+                try:
+                    setattr(obj, key, value)
+                except Exception:
+                    pass
+
+        _set_neg_attr(scored, "alert_type", alert_type)
+        _set_neg_attr(scored, "negative_keywords", negative_keywords)
+    except Exception:
+        # Don't let metadata attachment break the pipeline
+        pass
 
     # --- ENHANCEMENT #1: Attach multi-dimensional sentiment metadata ---
     # Add multi-dimensional sentiment fields to scored item for downstream use
@@ -1199,6 +1539,38 @@ def classify(
             _set_rvol_attr(scored, "rvol_multiplier", rvol_data.get("multiplier"))
             _set_rvol_attr(scored, "current_volume", rvol_data.get("current_volume"))
             _set_rvol_attr(scored, "avg_volume_20d", rvol_data.get("avg_volume_20d"))
+        except Exception:
+            # Don't let metadata attachment break the pipeline
+            pass
+
+    # --- DIVERGENCE DATA: Attach volume-price divergence metadata to scored item ---
+    # Add divergence detection data to the scored item for downstream processing
+    if divergence_data:
+        try:
+            # Helper to set attributes on both dict and object types
+            def _set_div_attr(obj, key, value):
+                if isinstance(obj, dict):
+                    obj[key] = value
+                else:
+                    try:
+                        setattr(obj, key, value)
+                    except Exception:
+                        pass
+
+            _set_div_attr(scored, "divergence_type", divergence_data.get("divergence_type"))
+            _set_div_attr(
+                scored, "divergence_signal_strength", divergence_data.get("signal_strength")
+            )
+            _set_div_attr(
+                scored, "divergence_sentiment_adjustment", divergence_adjustment
+            )
+            _set_div_attr(scored, "price_change_pct", divergence_data.get("price_change"))
+            _set_div_attr(
+                scored, "volume_change_pct", divergence_data.get("volume_change")
+            )
+            _set_div_attr(
+                scored, "divergence_interpretation", divergence_data.get("interpretation")
+            )
         except Exception:
             # Don't let metadata attachment break the pipeline
             pass

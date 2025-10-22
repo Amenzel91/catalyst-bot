@@ -32,7 +32,7 @@ else:
 from catalyst_bot.accepted_items_logger import log_accepted_item
 from catalyst_bot.rejected_items_logger import log_rejected_item
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
-from catalyst_bot.title_ticker import ticker_from_title
+from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title
 
 # Be nice to operators: give a clear error when a runtime dep is missing,
 # instead of a scary "<frozen runpy>" stacktrace.
@@ -914,6 +914,13 @@ def _keywords_of(scored: Any) -> List[str]:
     return []
 
 
+# ---------------- SEC LLM Integration Helpers ----------------
+def _is_sec_source(source: str) -> bool:
+    """Check if source is a SEC filing that should use LLM analysis."""
+    SEC_SOURCES = {"sec_8k", "sec_424b5", "sec_fwp", "sec_13d", "sec_13g"}
+    return (source or "").lower() in SEC_SOURCES
+
+
 def _cycle(log, settings, market_info: dict | None = None) -> None:
     """One ingest→dedupe→enrich→classify→alert pass with clean skip behavior.
 
@@ -1002,6 +1009,30 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     for it in deduped:
         enrich_ticker(it, it)
 
+    # Track article velocity for news momentum detection
+    # This records each article to build a time-series of article counts per ticker
+    try:
+        if os.getenv("FEATURE_NEWS_VELOCITY", "1") == "1":
+            from catalyst_bot.news_velocity import get_tracker
+
+            velocity_tracker = get_tracker()
+
+            for it in deduped:
+                ticker = (it.get("ticker") or "").strip()
+                title = it.get("title") or ""
+                url = it.get("link") or it.get("canonical_url") or ""
+                source = it.get("source") or "unknown"
+
+                if ticker and title:
+                    velocity_tracker.record_article(
+                        ticker=ticker,
+                        title=title,
+                        url=url,
+                        source=source,
+                    )
+    except Exception as e:
+        log.debug("news_velocity_tracking_failed err=%s", e.__class__.__name__)
+
     # Dynamic keyword weights (with on-disk fallback)
     dyn_weights, dyn_loaded, dyn_path_str, dyn_path_exists = (
         _load_dynamic_weights_with_fallback(log)
@@ -1084,6 +1115,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     skipped_low_score = 0
     skipped_sent_gate = 0
     skipped_cat_gate = 0
+    skipped_multi_ticker = 0
+    skipped_data_presentation = 0
     # Track events skipped because they were already seen in a previous cycle.
     skipped_seen = 0
     alerted = 0
@@ -1104,6 +1137,99 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         except Exception:
             # If the seen store fails, fall through and process normally.
             pass
+
+        # Filter multi-ticker news stories (sector commentary, not company-specific catalysts)
+        # These generate duplicate alerts and are typically fluff rather than actionable events
+        try:
+            title = it.get("title") or ""
+            if title:
+                all_tickers = extract_tickers_from_title(title)
+                if len(all_tickers) > 1:
+                    skipped_multi_ticker += 1
+                    # MOA Phase 1: Log rejected item for analysis
+                    try:
+                        px = None
+                        if ticker and ticker in price_cache:
+                            px, _ = price_cache[ticker]
+                        log_rejected_item(
+                            item=it,
+                            rejection_reason="MULTI_TICKER",
+                            price=px,
+                            score=None,
+                            sentiment=None,
+                            keywords=None,
+                        )
+                    except Exception:
+                        pass
+                    log.debug("skip_multi_ticker source=%s title=%s tickers=%s",
+                             source, title[:50], ",".join(all_tickers))
+                    continue
+        except Exception:
+            pass  # Don't crash on multi-ticker detection errors
+
+        # Filter data presentation announcements (rarely lead to sustained movement)
+        # These are conference presentations, interim data releases, etc. that lack novel catalysts
+        # Exception: Keep truly breakthrough data (FDA breakthrough, pivotal results, etc.)
+        try:
+            title_lower = (it.get("title") or "").lower()
+            summary_lower = (it.get("summary") or "").lower()
+            combined_text = f"{title_lower} {summary_lower}"
+
+            # Keywords indicating data presentation
+            presentation_keywords = [
+                "announces presentation",
+                "announcement of presentation",
+                "presentation of",
+                "presents data",
+                "presenting at",
+                "to present",
+                "will present",
+                "interim data",
+                "updated data",
+                "preliminary data",
+                "data presentation",
+            ]
+
+            # Breakthrough keywords that override the filter
+            breakthrough_keywords = [
+                "breakthrough",
+                "pivotal",
+                "phase 3",
+                "phase iii",
+                "fda approval",
+                "accelerated approval",
+                "positive topline",
+                "met primary endpoint",
+                "exceeded expectations",
+                "novel",
+                "first-in-class",
+                "statistically significant",
+            ]
+
+            is_presentation = any(kw in combined_text for kw in presentation_keywords)
+            is_breakthrough = any(kw in combined_text for kw in breakthrough_keywords)
+
+            if is_presentation and not is_breakthrough:
+                skipped_data_presentation += 1
+                # MOA logging
+                try:
+                    px = None
+                    if ticker and ticker in price_cache:
+                        px, _ = price_cache[ticker]
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="DATA_PRESENTATION",
+                        price=px,
+                        score=None,
+                        sentiment=None,
+                        keywords=None,
+                    )
+                except Exception:
+                    pass
+                log.debug("skip_data_presentation source=%s title=%s", source, title[:50])
+                continue
+        except Exception:
+            pass  # Don't crash on presentation detection errors
 
         # Skip whole sources if configured
         if skip_sources and source in skip_sources:
@@ -1165,11 +1291,13 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
                 keyword_weights=dyn_weights,
             )
-        except Exception as err:
+        except (AttributeError, KeyError, TypeError, ValueError) as err:
+            # CRITICAL FIX: Handle specific exceptions for better debugging
             log.warning(
-                "classify_error source=%s ticker=%s err=%s item=%s",
+                "classify_error source=%s ticker=%s err=%s err_type=%s item=%s",
                 source,
                 ticker,
+                str(err),
                 err.__class__.__name__,
                 json.dumps(
                     {
@@ -1189,9 +1317,87 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     ),
                     dynamic_weights=dyn_weights,
                 )
-            except Exception:
+            except (AttributeError, KeyError, TypeError, ValueError) as fallback_err:
+                # CRITICAL FIX: Log specific fallback errors
+                log.error(
+                    "fallback_classify_failed source=%s ticker=%s err=%s err_type=%s",
+                    source,
+                    ticker,
+                    str(fallback_err),
+                    fallback_err.__class__.__name__,
+                    exc_info=True,
+                )
                 # If even fallback breaks, skip this one
                 continue
+
+        # SEC LLM Integration: Extract keywords from SEC filings using Gemini/Claude
+        # This enhances classification for SEC documents with LLM-extracted keywords
+        if _is_sec_source(source):
+            try:
+                from .sec_llm_analyzer import extract_keywords_from_document_sync
+
+                # Get document text (prefer summary, fallback to title)
+                doc_text = it.get("summary") or it.get("title") or ""
+                filing_type = source.replace("sec_", "").upper()
+
+                if doc_text and len(doc_text) > 50:  # Only process substantial text
+                    # Extract keywords using hybrid LLM (Local → Gemini → Claude)
+                    llm_result = extract_keywords_from_document_sync(
+                        document_text=doc_text,
+                        title=it.get("title", ""),
+                        filing_type=filing_type,
+                    )
+
+                    if llm_result and llm_result.get("keywords"):
+                        # Merge LLM keywords into scored object
+                        llm_keywords = llm_result.get("keywords", [])
+                        existing_keywords = _keywords_of(scored)
+
+                        # Combine and deduplicate keywords
+                        merged_keywords = list(set(existing_keywords + llm_keywords))
+
+                        # Update scored object with merged keywords
+                        if isinstance(scored, dict):
+                            scored["keywords"] = merged_keywords
+                        elif hasattr(scored, "_asdict"):
+                            # namedtuple - convert to dict, update, keep as dict
+                            scored = scored._asdict()
+                            scored["keywords"] = merged_keywords
+                        elif hasattr(scored, "keywords"):
+                            scored.keywords = merged_keywords
+
+                        log.info(
+                            "sec_llm_keywords_merged source=%s ticker=%s "
+                            "original=%d llm=%d merged=%d",
+                            source,
+                            ticker,
+                            len(existing_keywords),
+                            len(llm_keywords),
+                            len(merged_keywords),
+                        )
+            except ImportError:
+                # SEC LLM module not available, skip gracefully
+                log.debug("sec_llm_analyzer not available, skipping keyword extraction")
+            except (AttributeError, KeyError, TypeError, ValueError) as e:
+                # CRITICAL FIX: Handle data-related errors from LLM extraction
+                log.warning(
+                    "sec_llm_extraction_data_error source=%s ticker=%s err=%s err_type=%s",
+                    source,
+                    ticker,
+                    str(e),
+                    e.__class__.__name__,
+                    exc_info=False,
+                )
+            except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as e:
+                # CRITICAL FIX: Handle network errors from LLM API calls
+                log.warning(
+                    "sec_llm_extraction_network_error source=%s ticker=%s err=%s err_type=%s",
+                    source,
+                    ticker,
+                    str(e),
+                    e.__class__.__name__,
+                    exc_info=False,
+                )
 
         # Optional price gating
         last_px = None
@@ -1307,22 +1513,59 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         try:
             # Prefer the new signature: send_alert_safe(payload)
             ok = send_alert_safe(alert_payload)
-        except TypeError:
+        except TypeError as type_err:
             # Fall back to the legacy keyword-args signature
-            ok = send_alert_safe(
-                item_dict=it,
-                scored=scored,
-                last_price=last_px,
-                last_change_pct=last_chg,
-                record_only=settings.feature_record_only,
-                webhook_url=_resolve_main_webhook(settings),
-            )
-        except Exception as err:
-            log.warning(
-                "alert_error source=%s ticker=%s err=%s",
+            log.debug("alert_signature_fallback err=%s", str(type_err))
+            try:
+                ok = send_alert_safe(
+                    item_dict=it,
+                    scored=scored,
+                    last_price=last_px,
+                    last_change_pct=last_chg,
+                    record_only=settings.feature_record_only,
+                    webhook_url=_resolve_main_webhook(settings),
+                )
+            except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as req_err:
+                # CRITICAL FIX: Handle network-specific errors
+                log.error(
+                    "alert_network_error source=%s ticker=%s err=%s err_type=%s",
+                    source,
+                    ticker,
+                    str(req_err),
+                    req_err.__class__.__name__,
+                    exc_info=True,
+                )
+                ok = False
+            except (AttributeError, KeyError, ValueError) as data_err:
+                # CRITICAL FIX: Handle data-related errors
+                log.error(
+                    "alert_data_error source=%s ticker=%s err=%s err_type=%s",
+                    source,
+                    ticker,
+                    str(data_err),
+                    data_err.__class__.__name__,
+                    exc_info=True,
+                )
+                ok = False
+        except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as req_err:
+            # CRITICAL FIX: Handle network-specific errors
+            log.error(
+                "alert_network_error source=%s ticker=%s err=%s err_type=%s",
                 source,
                 ticker,
-                err.__class__.__name__,
+                str(req_err),
+                req_err.__class__.__name__,
+                exc_info=True,
+            )
+            ok = False
+        except (AttributeError, KeyError, ValueError) as data_err:
+            # CRITICAL FIX: Handle data-related errors
+            log.error(
+                "alert_data_error source=%s ticker=%s err=%s err_type=%s",
+                source,
+                ticker,
+                str(data_err),
+                data_err.__class__.__name__,
                 exc_info=True,
             )
             ok = False
@@ -1424,7 +1667,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' price_ceiling=%s "
         "skipped_no_ticker=%s skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
-        "skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s alerted=%s",
+        "skipped_multi_ticker=%s skipped_data_presentation=%s skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s alerted=%s",
         len(items),
         len(deduped),
         tickers_present,
@@ -1437,6 +1680,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         skipped_price_gate,
         skipped_instr,
         skipped_by_source,
+        skipped_multi_ticker,
+        skipped_data_presentation,
         skipped_low_score,
         skipped_sent_gate,
         skipped_cat_gate,
@@ -1450,6 +1695,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             + skipped_price_gate
             + skipped_instr
             + skipped_by_source
+            + skipped_multi_ticker
+            + skipped_data_presentation
             + skipped_low_score
             + skipped_sent_gate
             + skipped_cat_gate
@@ -1500,6 +1747,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             "skipped_price_gate": skipped_price_gate,
             "skipped_instr": skipped_instr,
             "skipped_by_source": skipped_by_source,
+            "skipped_multi_ticker": skipped_multi_ticker,
+            "skipped_data_presentation": skipped_data_presentation,
             "skipped_low_score": skipped_low_score,
             "skipped_sent_gate": skipped_sent_gate,
             "skipped_cat_gate": skipped_cat_gate,
@@ -1745,11 +1994,11 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
     if not moa_enabled:
         return
 
-    # Get configured hour (default 2 AM UTC)
+    # Get configured hour (default 13 = 1 PM UTC = 8 AM Central)
     try:
-        moa_hour = int(os.getenv("MOA_NIGHTLY_HOUR", "2").strip() or "2")
+        moa_hour = int(os.getenv("MOA_NIGHTLY_HOUR", "13").strip() or "13")
     except Exception:
-        moa_hour = 2
+        moa_hour = 13
 
     now = datetime.now(timezone.utc)
     today = now.date()
@@ -1783,6 +2032,43 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                         f"missed={moa_result['summary'].get('missed_opportunities', 0)} "
                         f"recommendations={moa_result.get('recommendations_count', 0)}"
                     )
+
+                    # AUTO-APPLY KEYWORD WEIGHT UPDATES
+                    # Read recommendations from the analysis report and apply them to keyword_stats.json
+                    # This creates a closed-loop system where nightly analysis automatically updates weights
+                    try:
+                        from pathlib import Path
+                        import json
+                        from .moa_historical_analyzer import update_keyword_stats_file
+
+                        # Load recommendations from the analysis report
+                        report_path = Path("data/moa/analysis_report.json")
+                        if report_path.exists():
+                            with open(report_path, 'r', encoding='utf-8') as f:
+                                report = json.load(f)
+                                recommendations = report.get("recommendations", [])
+
+                                if recommendations:
+                                    # Apply recommendations with min confidence threshold (0.6)
+                                    stats_path = update_keyword_stats_file(
+                                        recommendations, min_confidence=0.6
+                                    )
+                                    log.info(
+                                        "moa_keyword_weights_applied path=%s count=%d",
+                                        stats_path,
+                                        len(recommendations)
+                                    )
+                                else:
+                                    log.info("moa_no_recommendations_to_apply")
+                        else:
+                            log.warning("moa_report_not_found path=%s", report_path)
+                    except Exception as e:
+                        # Don't fail the nightly run if weight update fails
+                        log.warning(
+                            "moa_keyword_weight_update_failed err=%s",
+                            e.__class__.__name__,
+                            exc_info=True
+                        )
                 else:
                     log.warning(
                         "moa_analysis_failed status=%s msg=%s",
@@ -2049,6 +2335,51 @@ def runner_main(
         reset_cycle_downgrade()
         if STOP:
             break
+
+        # Skip scanning during no-scan periods (configurable)
+        if market_hours_enabled and current_market_info:
+            market_status = current_market_info["status"]
+            skip_scan = False
+            skip_reason = ""
+
+            # Check if we should skip based on status
+            if market_status == "closed":
+                # Check if weekends should be skipped
+                skip_on_weekends = os.getenv("SKIP_SCAN_WEEKENDS", "1") == "1"
+                if skip_on_weekends and current_market_info["is_weekend"]:
+                    skip_scan = True
+                    skip_reason = "weekend"
+
+                # Check if closed hours should be skipped (non-weekend/holiday)
+                skip_on_closed = os.getenv("SKIP_SCAN_CLOSED", "0") == "1"
+                if skip_on_closed and not current_market_info["is_weekend"] and not current_market_info["is_holiday"]:
+                    skip_scan = True
+                    skip_reason = "market_closed"
+
+                # Always log holidays
+                if current_market_info["is_holiday"]:
+                    skip_on_holidays = os.getenv("SKIP_SCAN_HOLIDAYS", "1") == "1"
+                    if skip_on_holidays:
+                        skip_scan = True
+                        skip_reason = "holiday"
+
+            # Skip after-hours if configured
+            if market_status == "after_hours":
+                skip_after_hours = os.getenv("SKIP_SCAN_AFTER_HOURS", "0") == "1"
+                if skip_after_hours:
+                    skip_scan = True
+                    skip_reason = "after_hours"
+
+            if skip_scan:
+                log.info(
+                    "scan_skipped reason=%s status=%s next_scan_in=%ds",
+                    skip_reason,
+                    market_status,
+                    int(sleep_interval)
+                )
+                time.sleep(sleep_interval)
+                continue
+
         t0 = time.time()
         _cycle(log, settings, market_info=current_market_info)
         cycle_time = time.time() - t0

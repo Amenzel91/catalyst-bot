@@ -277,6 +277,37 @@ class Settings:
     feature_marketaux_sentiment: bool = _b("FEATURE_MARKETAUX_SENTIMENT", False)
     feature_stocknews_sentiment: bool = _b("FEATURE_STOCKNEWS_SENTIMENT", False)
     feature_finnhub_sentiment: bool = _b("FEATURE_FINNHUB_SENTIMENT", False)
+    # Analyst sentiment provider (institutional signal via Finnhub)
+    feature_analyst_sentiment: bool = _b("FEATURE_ANALYST_SENTIMENT", False)
+    # Social sentiment providers (HIGH ROI Quick Win)
+    feature_stocktwits_sentiment: bool = _b("FEATURE_STOCKTWITS_SENTIMENT", False)
+    feature_reddit_sentiment: bool = _b("FEATURE_REDDIT_SENTIMENT", False)
+    # Pre-market price action sentiment (leading indicator)
+    # When enabled, the bot will calculate sentiment based on pre-market price
+    # movements during pre-market hours (4:00-9:30 AM ET) and the first 30
+    # minutes of regular trading (9:30-10:00 AM ET). Pre-market moves show
+    # institutional reaction before retail can trade, serving as a leading
+    # indicator for intraday momentum. Large pre-market moves (>5%) receive
+    # stronger sentiment scores. Outside the pre-market window, this source
+    # returns None to avoid stale data. Defaults to True (enabled).
+    feature_premarket_sentiment: bool = _b("FEATURE_PREMARKET_SENTIMENT", True)
+    # After-market price action sentiment (earnings & news signal)
+    # When enabled, the bot will calculate sentiment based on after-market price
+    # movements during after-market hours (4:00-8:00 PM ET) and early pre-market
+    # (4:00-4:30 AM ET next day). After-market moves capture earnings releases
+    # and material news that drops after market close. Large after-market moves
+    # often predict next-day momentum. Outside the after-market window, this
+    # source returns None to avoid stale data. Defaults to True (enabled).
+    feature_aftermarket_sentiment: bool = _b("FEATURE_AFTERMARKET_SENTIMENT", True)
+    # Insider trading sentiment (SEC Form 4 analysis)
+    # When enabled, the bot will analyze SEC Form 4 filings (insider
+    # transactions) to generate sentiment signals. Insider buying by
+    # executives (especially CEO/CFO) is one of the strongest bullish
+    # indicators. Uses FREE SEC EDGAR API and LLM parsing for transaction
+    # details. Large insider buying (>$500k) receives high sentiment scores.
+    # Routine 10b5-1 selling plans are filtered out (not a signal).
+    # Defaults to True (enabled).
+    feature_insider_sentiment: bool = _b("FEATURE_INSIDER_SENTIMENT", True)
 
     # API keys for optional sentiment providers.  The Alpha Vantage key
     # (ALPHAVANTAGE_API_KEY) defined above is reused for the news sentiment
@@ -284,6 +315,9 @@ class Settings:
     marketaux_api_key: str = os.getenv("MARKETAUX_API_KEY", "")
     stocknews_api_key: str = os.getenv("STOCKNEWS_API_KEY", "")
     finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
+    # Social sentiment API keys
+    stocktwits_api_key: str = os.getenv("STOCKTWITS_API_KEY", "")
+    reddit_api_key: str = os.getenv("REDDIT_API_KEY", "")
 
     # Weights used when combining sentiment scores from multiple providers.
     # Values should sum to 1.0, but no assumptions are made; the aggregator
@@ -302,6 +336,43 @@ class Settings:
     )
     sentiment_weight_finnhub: float = float(
         os.getenv("SENTIMENT_WEIGHT_FINNHUB", "0").strip() or "0"
+    )
+    # Analyst sentiment weight (institutional sentiment indicator)
+    sentiment_weight_analyst: float = float(
+        os.getenv("SENTIMENT_WEIGHT_ANALYST", "0.10").strip() or "0.10"
+    )
+    # Social sentiment weights (complement news with retail/social signals)
+    sentiment_weight_stocktwits: float = float(
+        os.getenv("SENTIMENT_WEIGHT_STOCKTWITS", "0.10").strip() or "0.10"
+    )
+    sentiment_weight_reddit: float = float(
+        os.getenv("SENTIMENT_WEIGHT_REDDIT", "0.10").strip() or "0.10"
+    )
+    # Pre-market and after-market sentiment weights (price action indicators)
+    sentiment_weight_premarket: float = float(
+        os.getenv("SENTIMENT_WEIGHT_PREMARKET", "0.15").strip() or "0.15"
+    )
+    sentiment_weight_aftermarket: float = float(
+        os.getenv("SENTIMENT_WEIGHT_AFTERMARKET", "0.15").strip() or "0.15"
+    )
+    # Insider trading sentiment weight (SEC Form 4 analysis)
+    # Weight of insider trading sentiment in the combined sentiment gauge.
+    # Insider buying (especially by CEO/CFO) is a highly reliable signal.
+    # Default: 0.12 (12% weight) with 0.85 confidence = high influence.
+    sentiment_weight_insider: float = float(
+        os.getenv("SENTIMENT_WEIGHT_INSIDER", "0.12").strip() or "0.12"
+    )
+
+    # Volume-Price Divergence Detection
+    # Detects divergence patterns between price movement and volume to identify
+    # weak rallies (price up, volume down) and strong selloff reversals (price down, volume down)
+    feature_volume_price_divergence: bool = _b("FEATURE_VOLUME_PRICE_DIVERGENCE", True)
+
+    # Volume-price divergence weight (technical signal)
+    # This is a confirmation signal - detects when price and volume diverge
+    # Default: 0.08 (8%)
+    sentiment_weight_divergence: float = float(
+        os.getenv("SENTIMENT_WEIGHT_DIVERGENCE", "0.08").strip() or "0.08"
     )
 
     # Minimum total article count required across all providers before a
@@ -545,10 +616,10 @@ class Settings:
     # Weight of earnings sentiment in the combined sentiment gauge.  When
     # non‑zero and earnings alerts are enabled, the sentiment aggregator will
     # include the earnings score using this weight.  A modest default of
-    # 0.1 gives earnings surprises some influence without overwhelming other
-    # signals.
+    # 0.35 gives earnings surprises significant influence as the highest
+    # confidence sentiment source (hard financial data).
     sentiment_weight_earnings: float = float(
-        os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.1") or "0.1"
+        os.getenv("SENTIMENT_WEIGHT_EARNINGS", "0.35") or "0.35"
     )
 
     # --- Wave‑4: Options scanner support ---
@@ -846,9 +917,9 @@ class Settings:
     # Set MOA_NIGHTLY_ENABLED=0 to disable. Defaults to enabled.
     moa_nightly_enabled: bool = _b("MOA_NIGHTLY_ENABLED", True)
 
-    # Hour (UTC) to run nightly MOA analysis. Defaults to 2 AM UTC.
-    # Use MOA_NIGHTLY_HOUR=3 to run at 3 AM UTC instead.
-    moa_nightly_hour: int = int(os.getenv("MOA_NIGHTLY_HOUR", "2") or "2")
+    # Hour (UTC) to run nightly MOA analysis. Defaults to 13 (1 PM UTC = 8 AM Central).
+    # Runs once per day during this hour. Example: MOA_NIGHTLY_HOUR=14 for 2 PM UTC.
+    moa_nightly_hour: int = int(os.getenv("MOA_NIGHTLY_HOUR", "13") or "13")
 
     # --- Market Regime Classification (VIX/SPY Analysis) ---
     # Enable market regime classification based on VIX and SPY trends.
@@ -906,6 +977,16 @@ class Settings:
     # continued decline. Set FEATURE_VWAP=1 to enable.
     feature_vwap: bool = _b("FEATURE_VWAP", False)
 
+    # --- Negative News Alert System ---
+    # Enable negative catalyst detection and alerting for exit signals.
+    # When enabled, the bot will detect and alert on negative events like
+    # offerings, dilution, warrants, delistings, and bankruptcy that signal
+    # potential exits for traders already in positions. These alerts use
+    # different formatting (red/orange colors, warning emojis) and bypass
+    # the price ceiling filter since bad news is important regardless of price.
+    # Set FEATURE_NEGATIVE_ALERTS=1 to enable.
+    feature_negative_alerts: bool = _b("FEATURE_NEGATIVE_ALERTS", False)
+
     # Cache TTL in minutes for VWAP data. Defaults to 5 minutes.
     # VWAP changes throughout the trading day as new volume comes in.
     vwap_cache_ttl_minutes: int = int(os.getenv("VWAP_CACHE_TTL_MINUTES", "5") or "5")
@@ -913,6 +994,44 @@ class Settings:
     # Number of days for VWAP period. Defaults to 1 (intraday VWAP only).
     # VWAP is typically calculated for the current trading day using 1-minute bars.
     vwap_period_days: int = int(os.getenv("VWAP_PERIOD_DAYS", "1") or "1")
+
+    # --- MOA-Driven Sector Multipliers ---
+    # Sector-based score multipliers derived from historical missed opportunity analysis.
+    # When a ticker belongs to a high-performing sector, its catalyst score is boosted
+    # to reduce false negatives. Multipliers are applied after base scoring but before
+    # regime and float adjustments. Based on 12-month MOA data (Oct 2024-Oct 2025):
+    # - Energy: 20.4% miss rate, 274.6% avg return -> 1.5x multiplier
+    # - Technology: 25.6% miss rate, 54.9% avg return -> 1.3x multiplier
+    # - Healthcare: 18.5% miss rate, 27.7% avg return -> 1.2x multiplier
+    # Set SECTOR_MULTIPLIER_{SECTOR}=1.0 to disable a specific multiplier.
+    sector_multiplier_energy: float = float(
+        os.getenv("SECTOR_MULTIPLIER_ENERGY", "1.5") or "1.5"
+    )
+    sector_multiplier_technology: float = float(
+        os.getenv("SECTOR_MULTIPLIER_TECHNOLOGY", "1.3") or "1.3"
+    )
+    sector_multiplier_healthcare: float = float(
+        os.getenv("SECTOR_MULTIPLIER_HEALTHCARE", "1.2") or "1.2"
+    )
+
+    # Enable sector-based scoring adjustments. When enabled, the bot will fetch
+    # sector information (via yfinance or alternative provider) and apply the
+    # multipliers defined above. Defaults to True.
+    feature_sector_multipliers: bool = _b("FEATURE_SECTOR_MULTIPLIERS", True)
+
+    # --- Sub-$5 Price Floor Relaxation ---
+    # Enable high-conviction override for sub-$5 stocks with strong keyword scores.
+    # MOA data shows 25.5% miss rate for sub-$5 stocks (3.4x higher than $50+ stocks).
+    # When enabled, catalysts with scores >= override_threshold bypass the $5 floor.
+    # This allows strong catalysts on low-priced stocks to pass through while
+    # maintaining quality standards. Set FEATURE_SUB5_OVERRIDE=1 to enable.
+    feature_sub5_override: bool = _b("FEATURE_SUB5_OVERRIDE", False)
+
+    # Minimum keyword score required to bypass sub-$5 floor. Defaults to 1.5.
+    # A score of 1.5 indicates strong multi-keyword catalyst with high relevance.
+    sub5_override_threshold: float = float(
+        os.getenv("SUB5_OVERRIDE_THRESHOLD", "1.5") or "1.5"
+    )
 
     # --- Semantic Keyword Extraction (KeyBERT) ---
     # Enable semantic keyword extraction using KeyBERT for context-aware keyphrases.
@@ -958,6 +1077,22 @@ class Settings:
                 "fda clearance",
                 "510(k)",
                 "de novo",
+                "fast track designation",
+                "fast track status",
+                "orphan drug designation",
+                "orphan drug status",
+                "accelerated approval",
+                "priority review",
+                "biologics license application",
+                "bla approval",
+                "new drug application",
+                "nda approval",
+                "investigational new drug",
+                "ind application",
+                "expanded access",
+                "compassionate use",
+                "pma approval",
+                "de novo clearance",
             ],
             "clinical": [
                 "phase 3",
@@ -967,6 +1102,65 @@ class Settings:
                 "breakthrough",
                 "fast track",
                 "orphan drug",
+                "primary endpoint met",
+                "primary endpoint achieved",
+                "statistically significant",
+                "statistical significance",
+                "pivotal trial",
+                "pivotal study",
+                "data readout",
+                "topline data",
+                "top-line results",
+                "clinical hold lifted",
+            ],
+            "energy_discovery": [
+                "oil discovery",
+                "gas discovery",
+                "drilling results",
+                "drilling program",
+                "well completion",
+                "well test",
+                "well results",
+                "proved reserves",
+                "probable reserves",
+                "reserves expansion",
+                "reserves upgrade",
+                "reserves increase",
+                "production increase",
+                "production milestone",
+                "field development",
+                "horizontal drilling",
+                "unconventional resources",
+            ],
+            "advanced_therapies": [
+                "gene therapy",
+                "cell therapy",
+                "car-t",
+                "car t",
+                "crispr",
+                "gene editing",
+                "biomarker",
+                "companion diagnostic",
+                "monoclonal antibody",
+                "small molecule",
+                "biologic",
+                "immunotherapy",
+                "immuno-oncology",
+                "checkpoint inhibitor",
+            ],
+            "tech_contracts": [
+                "government contract",
+                "federal contract",
+                "defense contract",
+                "enterprise agreement",
+                "cloud contract",
+                "cloud migration",
+                "saas agreement",
+                "platform agreement",
+                "licensing agreement",
+                "patent granted",
+                "patent issued",
+                "patent approval",
             ],
             "partnership": [
                 "contract award",
@@ -987,6 +1181,148 @@ class Settings:
             ],
             "going_concern": [
                 "going concern",
+            ],
+            "crypto_blockchain": [
+                "bitcoin etf",
+                "spot bitcoin etf",
+                "crypto etf",
+                "blockchain contract",
+                "blockchain partnership",
+                "institutional adoption",
+                "digital assets",
+                "crypto wallet",
+                "digital wallet",
+                "layer 2",
+                "scaling solution",
+                "web3",
+                "tokenization",
+                "bitcoin mining",
+                "crypto mining",
+                "cbdc",
+                "central bank digital currency",
+            ],
+            "mining_resources": [
+                "mineral discovery",
+                "resource estimate",
+                "feasibility study",
+                "pre-feasibility study",
+                "pea",
+                "preliminary economic assessment",
+                "mining permit",
+                "environmental approval",
+                "offtake agreement",
+                "critical minerals",
+                "rare earth",
+                "measured and indicated",
+                "inferred resources",
+                "lithium",
+                "cobalt",
+                "graphite",
+            ],
+            "activist_institutional": [
+                "activist investor",
+                "activist stake",
+                "proxy fight",
+                "shareholder proposal",
+                "board seat",
+                "strategic review",
+                "spin-off",
+                "asset sale",
+                "share buyback",
+                "stock repurchase",
+                "insider buying",
+                "director purchase",
+                "special committee",
+            ],
+            "ai_quantum": [
+                "ai contract",
+                "artificial intelligence",
+                "nvidia partnership",
+                "gpu partnership",
+                "quantum computing",
+                "quantum algorithm",
+                "machine learning",
+                "deep learning",
+                "semiconductor design",
+                "chip design",
+                "data center contract",
+                "edge computing",
+                "autonomous",
+            ],
+            "compliance": [
+                "regains compliance",
+                "regained compliance",
+                "regain compliance",
+                "nasdaq compliance",
+                "nyse compliance",
+                "listing compliance",
+                "listing requirements",
+                "minimum bid requirement",
+                "bid price compliance",
+                "compliance notice",
+                "cure period",
+                "deficiency notice cured",
+                "listing requirements met",
+                "compliance restored",
+                "exchange compliance",
+            ],
+            "acquisition": [
+                "acquisition",
+                "acquires",
+                "acquired",
+                "asset acquisition",
+                "asset purchase",
+                "technology acquisition",
+                "licensing agreement",
+                "exclusive license",
+                "licensing deal",
+                "option agreement",
+                "rights acquisition",
+                "acquisition agreement",
+                "purchase agreement",
+                "merger agreement",
+                "strategic acquisition",
+                "business combination",
+                "acquires rights",
+                "therapeutic program acquisition",
+            ],
+            # NEGATIVE CATALYST KEYWORDS (for exit signals)
+            "offering_negative": [
+                "public offering",
+                "direct offering",
+                "registered direct offering",
+                "underwritten offering",
+                "follow-on offering",
+                "secondary offering",
+                "shelf offering",
+                "shelf registration",
+            ],
+            "warrant_negative": [
+                "warrant",
+                "pre-funded warrant",
+                "common stock warrant",
+                "warrant exercise",
+                "warrant pricing",
+            ],
+            "dilution_negative": [
+                "share issuance",
+                "dilutive offering",
+                "equity financing",
+                "stock issuance",
+            ],
+            "distress_negative": [
+                "delisting",
+                "delisting risk",
+                "nasdaq delisting",
+                "nyse delisting",
+                "bankruptcy",
+                "chapter 11",
+                "chapter 7",
+                "going concern warning",
+                "restatement",
+                "financial restatement",
+                "sec investigation",
+                "fraud investigation",
             ],
         }
     )
