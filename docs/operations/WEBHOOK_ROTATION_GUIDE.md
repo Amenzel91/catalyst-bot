@@ -5,14 +5,14 @@
 These webhook URLs were exposed in your public GitHub history and must be deleted:
 
 ### Main Webhook
-- **ID**: `1397052240212262952`
-- **Partial Token**: `H98Z1ZyiqNJw3Z46-ATdgLk...`
-- **Full URL**: `https://discord.com/api/webhooks/1397052240212262952/H98Z1ZyiqNJw3Z46-ATdgLkEgcM4LTPUUEYlNTyItzSxGlls7mmBcFMmt2vZXL4ukHj5`
+- **ID**: `EXAMPLE_WEBHOOK_ID_12345`
+- **Partial Token**: `ExAmPlEtOkEn...`
+- **Full URL**: `https://discord.com/api/webhooks/EXAMPLE_ID/EXAMPLE_TOKEN_REPLACE_WITH_ACTUAL`
 
 ### Admin Webhook
-- **ID**: `1406830521631248515`
-- **Partial Token**: `MTM5ODUyMTQ0Nzcyj...`
-- **Full URL**: `https://discord.com/api/webhooks/1406830521631248515/MTM5ODUyMTQ0NzcyNjU4MzgwOA.GkBKvN.gzXfy7rSyCIltmi02w4RKFJAvHhcpz2rtXTqCE`
+- **ID**: `EXAMPLE_ADMIN_WEBHOOK_ID_67890`
+- **Partial Token**: `ExAmPlEaDmIn...`
+- **Full URL**: `https://discord.com/api/webhooks/EXAMPLE_ADMIN_ID/EXAMPLE_ADMIN_TOKEN_REPLACE_WITH_ACTUAL`
 
 ---
 

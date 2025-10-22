@@ -294,10 +294,10 @@ LLM_MAX_RETRIES=3
 # Gemini API Key (free tier: 1500 requests/day, 10 RPM)
 # Get from: https://aistudio.google.com/app/apikey
 # Used for SEC document keyword extraction via hybrid LLM router
-GEMINI_API_KEY=AIzaSyD5oGsEDvyGZuYDKY6FAHFcrwTCk9Acmi8
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY_HERE
 
 # Claude API Key (for fallback when Gemini rate limited)
-ANTHROPIC_API_KEY=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
+ANTHROPIC_API_KEY=sk-ant-api03-YOUR_ANTHROPIC_API_KEY_HERE
 
 # Prompt Compression (30-50% token savings on SEC documents)
 FEATURE_PROMPT_COMPRESSION=1
