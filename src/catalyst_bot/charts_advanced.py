@@ -50,9 +50,9 @@ TIMEFRAME_CONFIG = {
     "1D": {
         "days": 1,
         "interval": "5min",
-        "bars": 78,
-    },  # 1 day of 5-min bars (6.5 hours / 5 min)
-    "5D": {"days": 5, "interval": "5min", "bars": 390},  # 5 days of 5-min bars
+        "bars": 192,
+    },  # 1 day with premarket+regular+afterhours (4am-8pm = 16h = 192 bars)
+    "5D": {"days": 5, "interval": "5min", "bars": 960},  # 5 days with extended hours
     "1M": {
         "days": 90,
         "interval": "1d",
@@ -146,10 +146,10 @@ def _fetch_data_for_timeframe(ticker: str, timeframe: str) -> Optional[Any]:
         # Map timeframe to interval
         if timeframe == "1D":
             interval = "5min"  # Use 5-minute bars for better data density
-            output_size = "compact"
+            output_size = "full"  # Get full day's data (78 bars for 6.5hr trading day)
         elif timeframe == "5D":
             interval = "5min"  # 5-minute bars for 5-day view
-            output_size = "compact"
+            output_size = "full"  # Get full 5 days of data
         elif timeframe == "1M":
             interval = "1d"  # Daily bars for 1-month view
             output_size = "full"
@@ -306,6 +306,8 @@ def generate_multi_panel_chart(
     *,
     out_dir: str | Path = "out/charts",
     style: str = "dark",
+    catalyst_event: Optional[Dict[str, Any]] = None,
+    trade_plan: Optional[Dict[str, Any]] = None,
 ) -> Optional[Path]:
     """Generate a multi-panel financial chart with price, volume, RSI, and MACD.
 
@@ -319,6 +321,17 @@ def generate_multi_panel_chart(
         Directory to save the chart image
     style : str
         Chart style: 'dark' or 'light' (default: 'dark')
+    catalyst_event : Optional[Dict[str, Any]]
+        Optional catalyst event metadata for annotation. Should contain:
+        - 'timestamp': datetime or ISO string of the event
+        - 'label': str label for the annotation (e.g., "FDA Approval")
+        - 'type': 'positive' or 'negative' (determines color)
+    trade_plan : Optional[Dict[str, Any]]
+        Optional trade plan data for drawing entry/stop/target levels. Should contain:
+        - 'entry': float entry price
+        - 'stop': float stop-loss price
+        - 'target_1': float target price
+        - 'rr_ratio': float risk/reward ratio
 
     Returns
     -------
@@ -690,28 +703,35 @@ def generate_multi_panel_chart(
             panel_ratios=(3, 1, 1),  # Price, RSI, MACD
             ylabel="",  # Remove default ylabel, we'll customize it
             warn_too_much_data=1000,
+            tight_layout=True,  # Use mplfinance's tight_layout to minimize margins
+            scale_padding={"left": 0.02, "right": 2.15, "top": 0.02, "bottom": 0.25},  # Full padding for complete price decimals
         )
 
         # Get price panel (first axis)
         price_ax = axes[0]
 
-        # Add title INSIDE the chart area (top-left of price panel)
+        # Get current price from the latest data point
+        current_price = df["Close"].iloc[-1]
+
+        # Add title INSIDE the chart area (top-left of price panel) - LARGE & HIGH CONTRAST
+        # Include ticker, timeframe, and current price
         price_ax.text(
-            0.005,
-            0.98,  # Top-left corner in axes coordinates
-            f"{ticker}  {timeframe}  ({interval_display})",
+            0.008,
+            0.97,  # Top-left corner in axes coordinates
+            f"{ticker}  {timeframe}  ({interval_display})  ${current_price:.2f}",
             transform=price_ax.transAxes,
-            fontsize=11,
+            fontsize=14,  # Increased from 11
             color="#FFFFFF",
             ha="left",
             va="top",
             fontweight="bold",
             bbox=dict(
-                facecolor="#121212",
-                edgecolor="none",
-                alpha=0.8,
-                pad=3,
-                boxstyle="round,pad=0.3",
+                facecolor="#000000",  # Pure black background for maximum contrast
+                edgecolor="#FFFFFF",  # White border
+                linewidth=2,
+                alpha=0.95,  # More opaque
+                pad=6,  # More padding
+                boxstyle="round,pad=0.4",
             ),
             zorder=1000,
             clip_on=False,
@@ -799,22 +819,126 @@ def generate_multi_panel_chart(
                     alpha=0.5,
                 )
 
-                # Add price label on right side
+                # Add price label on right side - LARGER & HIGH CONTRAST
                 price_ax.text(
                     1.01,
                     current_price,
                     f"${current_price:.2f}",
                     transform=price_ax.get_yaxis_transform(),
-                    fontsize=10,
+                    fontsize=12,  # Increased from 10
                     color="#FFFFFF",
+                    fontweight="bold",
                     bbox=dict(
-                        boxstyle="round,pad=0.3", facecolor="#333333", edgecolor="none"
+                        boxstyle="round,pad=0.5",
+                        facecolor="#000000",  # Pure black
+                        edgecolor="#FFFFFF",  # White border
+                        linewidth=2,
+                        alpha=0.95,
                     ),
                     va="center",
                     ha="left",
                 )
         except Exception as e:
             log.debug("current_price_overlay_failed err=%s", str(e))
+
+        # Add trade plan annotations (Entry/Stop/Target levels)
+        if trade_plan:
+            try:
+                entry = trade_plan.get("entry")
+                stop = trade_plan.get("stop")
+                target = trade_plan.get("target_1")
+
+                if entry and stop and target:
+                    # Entry level (white dashed)
+                    price_ax.axhline(
+                        y=entry,
+                        color="#FFFFFF",
+                        linestyle=":",
+                        linewidth=1.5,
+                        alpha=0.7,
+                    )
+                    price_ax.text(
+                        1.01,
+                        entry,
+                        f"Entry ${entry:.2f}",
+                        transform=price_ax.get_yaxis_transform(),
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
+                        bbox=dict(
+                            boxstyle="round,pad=0.4",
+                            facecolor="#4A90E2",  # Blue
+                            edgecolor="#FFFFFF",
+                            linewidth=1.5,
+                            alpha=0.9,
+                        ),
+                        va="center",
+                        ha="left",
+                    )
+
+                    # Stop-loss level (red)
+                    price_ax.axhline(
+                        y=stop,
+                        color="#E74C3C",
+                        linestyle="--",
+                        linewidth=1.5,
+                        alpha=0.7,
+                    )
+                    price_ax.text(
+                        1.01,
+                        stop,
+                        f"Stop ${stop:.2f}",
+                        transform=price_ax.get_yaxis_transform(),
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
+                        bbox=dict(
+                            boxstyle="round,pad=0.4",
+                            facecolor="#E74C3C",  # Red
+                            edgecolor="#FFFFFF",
+                            linewidth=1.5,
+                            alpha=0.9,
+                        ),
+                        va="center",
+                        ha="left",
+                    )
+
+                    # Target level (green)
+                    price_ax.axhline(
+                        y=target,
+                        color="#2ECC71",
+                        linestyle="--",
+                        linewidth=1.5,
+                        alpha=0.7,
+                    )
+                    price_ax.text(
+                        1.01,
+                        target,
+                        f"Target ${target:.2f}",
+                        transform=price_ax.get_yaxis_transform(),
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
+                        bbox=dict(
+                            boxstyle="round,pad=0.4",
+                            facecolor="#2ECC71",  # Green
+                            edgecolor="#FFFFFF",
+                            linewidth=1.5,
+                            alpha=0.9,
+                        ),
+                        va="center",
+                        ha="left",
+                    )
+
+                    log.debug(
+                        "trade_plan_annotations_added ticker=%s entry=%.2f stop=%.2f target=%.2f",
+                        ticker,
+                        entry,
+                        stop,
+                        target,
+                    )
+            except Exception as e:
+                log.debug("trade_plan_annotations_failed ticker=%s err=%s", ticker, str(e))
 
         # Add VWAP value overlay on right axis
         if vwap is not None:
@@ -827,19 +951,101 @@ def generate_multi_panel_chart(
                         vwap_current,
                         f"VWAP ${vwap_current:.2f}",
                         transform=price_ax.get_yaxis_transform(),
-                        fontsize=9,
-                        color="#FF9800",
+                        fontsize=11,  # Increased from 9
+                        color="#FFFFFF",  # White text for better contrast
+                        fontweight="bold",
                         bbox=dict(
-                            boxstyle="round,pad=0.3",
-                            facecolor="#1E1E1E",
-                            edgecolor="#FF9800",
-                            linewidth=1,
+                            boxstyle="round,pad=0.5",
+                            facecolor="#FF9800",  # Bright orange background
+                            edgecolor="#FFFFFF",  # White border
+                            linewidth=2,
+                            alpha=0.95,
                         ),
                         va="center",
                         ha="left",
                     )
             except Exception as e:
                 log.debug("vwap_overlay_failed err=%s", str(e))
+
+        # Add catalyst event annotation if provided
+        if catalyst_event:
+            try:
+                from dateutil import parser as date_parser
+
+                # Extract event details
+                event_ts = catalyst_event.get("timestamp")
+                event_label = catalyst_event.get("label", "Catalyst Event")
+                event_type = catalyst_event.get("type", "positive")
+
+                # Parse timestamp (supports datetime objects and ISO strings)
+                if isinstance(event_ts, str):
+                    event_dt = date_parser.isoparse(event_ts)
+                elif hasattr(event_ts, "tzinfo"):
+                    event_dt = event_ts
+                else:
+                    event_dt = None
+
+                if event_dt and not df.empty:
+                    # Find the closest data point to the event timestamp
+                    # Convert event time to UTC for comparison (df index is in UTC)
+                    if event_dt.tzinfo is not None:
+                        event_dt_utc = event_dt.astimezone(pytz.UTC)
+                    else:
+                        event_dt_utc = pytz.UTC.localize(event_dt)
+
+                    # Find the nearest timestamp in the data
+                    time_diffs = abs(df.index - event_dt_utc)
+                    closest_idx = time_diffs.argmin()
+                    closest_time = df.index[closest_idx]
+                    closest_price = df["Close"].iloc[closest_idx]
+
+                    # Choose color based on event type
+                    if event_type == "negative":
+                        arrow_color = "#FF4444"  # Red for negative events
+                        label_bg = "#FF4444"
+                    else:
+                        arrow_color = "#4CAF50"  # Green for positive events
+                        label_bg = "#4CAF50"
+
+                    # Add annotation with arrow pointing to the event
+                    # Place annotation above the price for positive, below for negative
+                    y_offset = 40 if event_type == "positive" else -40
+
+                    price_ax.annotate(
+                        event_label,
+                        xy=(closest_time, closest_price),
+                        xytext=(0, y_offset),
+                        textcoords="offset points",
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
+                        bbox=dict(
+                            boxstyle="round,pad=0.6",
+                            facecolor=label_bg,
+                            edgecolor="#FFFFFF",
+                            linewidth=2.5,
+                            alpha=0.95,
+                        ),
+                        arrowprops=dict(
+                            arrowstyle="->",
+                            color=arrow_color,
+                            linewidth=3,
+                            shrinkA=0,
+                            shrinkB=5,
+                        ),
+                        zorder=1000,
+                        ha="center",
+                        va="bottom" if event_type == "positive" else "top",
+                    )
+
+                    log.info(
+                        "catalyst_annotation_added ticker=%s event=%s time=%s",
+                        ticker,
+                        event_label[:20],
+                        closest_time,
+                    )
+            except Exception as e:
+                log.warning("catalyst_annotation_failed err=%s", str(e))
 
         # Improve time label contrast and formatting, hide left y-axis on indicator panels
         try:
@@ -852,18 +1058,24 @@ def generate_multi_panel_chart(
             # OR axes[1] = MACD panel (if only MACD was added)
 
             for i, ax in enumerate(axes):
-                # Make time labels brighter for better contrast
-                ax.tick_params(axis="x", colors="#CCCCCC", labelsize=9)
+                # Make time labels brighter and larger for better contrast
+                ax.tick_params(axis="x", colors="#FFFFFF", labelsize=10)
+                # Make tick labels bold
+                for label in ax.get_xticklabels():
+                    label.set_fontweight("bold")
 
                 # Panel 0 = Price (show y-axis labels)
                 # Panel 2 = RSI (hide y-axis labels, using custom text annotations)
                 # Panel 4 = MACD (hide y-axis labels, using custom text annotations)
                 if i == 0:
-                    # Price panel: Show y-axis on right
+                    # Price panel: Show y-axis on right - BRIGHTER & LARGER
                     ax.yaxis.set_label_position("right")
                     ax.yaxis.tick_right()
-                    ax.tick_params(axis="y", colors="#CCCCCC", labelsize=9)
+                    ax.tick_params(axis="y", colors="#FFFFFF", labelsize=10)
                     ax.yaxis.set_ticks_position("right")
+                    # Make tick labels bold
+                    for label in ax.get_yticklabels():
+                        label.set_fontweight("bold")
                 elif i in [2, 4]:
                     # RSI and MACD panels: Hide y-axis tick labels (using custom annotations)
                     ax.yaxis.set_label_position("right")
@@ -876,6 +1088,9 @@ def generate_multi_panel_chart(
                     ax.yaxis.tick_right()
                     ax.tick_params(axis="y", labelsize=0)
                     ax.yaxis.set_ticks_position("right")
+
+                # Remove top spine for cleaner, modern look (professional charts use minimal spines)
+                ax.spines['top'].set_visible(False)
 
                 # Improve x-axis label formatting based on timeframe
                 if timeframe == "1Y":
@@ -907,17 +1122,8 @@ def generate_multi_panel_chart(
         except Exception as e:
             log.debug("axis_formatting_failed err=%s", str(e))
 
-        # Expand chart to fill space - reduce all margins to absolute minimum
-        try:
-            fig.subplots_adjust(
-                left=0.0,  # No left margin (y-axis is on right)
-                right=0.88,  # More space for price/indicator labels on right
-                top=0.99,  # Almost no top margin
-                bottom=0.03,  # Minimal bottom margin for x-axis labels
-                hspace=0.10,  # Tight space between panels
-            )
-        except Exception as e:
-            log.debug("margin_adjustment_failed err=%s", str(e))
+        # Note: Final margin adjustment done after panel annotations below
+        # (This early adjustment is skipped to avoid double-adjustment)
 
         # For 1D/5D charts: Let matplotlib auto-scale to actual data range
         # (Setting xlim to full trading day compresses afternoon-only data too much)
@@ -990,14 +1196,15 @@ def generate_multi_panel_chart(
                         zorder=1000,
                     )
 
-                    # RSI tick labels (30 and 70)
+                    # RSI tick labels (30 and 70) - USE DATA COORDINATES for proper alignment
                     rsi_ax.text(
                         1.03,
-                        0.3,
+                        30,  # Actual RSI value of 30
                         "30",
-                        transform=rsi_ax.transAxes,
-                        fontsize=9,
-                        color="#00BCD4",
+                        transform=rsi_ax.get_yaxis_transform(),  # Use y-axis data coordinates
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
                         va="center",
                         ha="left",
                         clip_on=False,
@@ -1005,11 +1212,12 @@ def generate_multi_panel_chart(
                     )
                     rsi_ax.text(
                         1.03,
-                        0.7,
+                        70,  # Actual RSI value of 70
                         "70",
-                        transform=rsi_ax.transAxes,
-                        fontsize=9,
-                        color="#00BCD4",
+                        transform=rsi_ax.get_yaxis_transform(),  # Use y-axis data coordinates
+                        fontsize=10,
+                        color="#FFFFFF",
+                        fontweight="bold",
                         va="center",
                         ha="left",
                         clip_on=False,
@@ -1046,18 +1254,18 @@ def generate_multi_panel_chart(
                                 rsi_color = "#00BCD4"  # Cyan (neutral)
 
                             rsi_ax.text(
-                                0.01,
-                                0.92,
+                                0.015,
+                                0.95,
                                 f"RSI {rsi_current:.1f}",
                                 transform=rsi_ax.transAxes,
-                                fontsize=11,
+                                fontsize=13,  # Increased from 11
                                 color="#FFFFFF",
                                 bbox=dict(
-                                    boxstyle="round,pad=0.5",
+                                    boxstyle="round,pad=0.6",
                                     facecolor=rsi_color,
-                                    edgecolor=rsi_color,
-                                    linewidth=2,
-                                    alpha=0.9,
+                                    edgecolor="#FFFFFF",  # White border for extra pop
+                                    linewidth=2.5,
+                                    alpha=1.0,  # Fully opaque
                                 ),
                                 va="top",
                                 ha="left",
@@ -1086,24 +1294,32 @@ def generate_multi_panel_chart(
         except Exception as e:
             log.warning("panel_annotations_failed err=%s", str(e))
 
-        # Adjust subplot spacing for better layout
-        # Add small margins on right and bottom for unit contrast
-        fig.subplots_adjust(
-            left=0.06,  # Left margin for y-axis labels
-            right=0.97,  # Small right margin for contrast
-            bottom=0.06,  # Small bottom margin for contrast
-            top=0.98,  # Top margin (title is inside chart now)
-            hspace=0.02,  # Minimal space between panels
-        )
+        # DEFINITIVE SOLUTION - Minimize margins while preserving axis labels
+        # Research: "Label cutoff happens when tight_layout=True or very low scale_padding values
+        # clip y-axis labels or x-axis date labels. If you see partially visible numbers or dates,
+        # increase scale_padding values slightly or adjust specific sides"
+        try:
+            # Set subplot boundaries near extremes, but leave adequate room for labels
+            # Axis labels are on RIGHT (price) and BOTTOM (time), so those need more margin
+            # left=0.02: minimal left margin
+            # right=0.33: 67% margin on right for complete price box with full decimals
+            # top=0.98: 2% margin on top
+            # bottom=0.10: 10% margin on bottom for x-axis time labels (looks good now)
+            # hspace=0.03: minimal vertical space between panels
+            fig.subplots_adjust(left=0.02, right=0.33, top=0.98, bottom=0.10, hspace=0.03)
 
-        # Save the figure
+            log.debug("applied minimal-margin layout with label visibility")
+        except Exception as e:
+            log.warning("layout_adjustment_failed err=%s", str(e))
+
+        # Save with fixed figsize - no bbox cropping to maintain aspect ratio
+        # DPI 100: figsize (17.4, 10.41) * 100 = 1740x1041px (landscape, fits Discord)
         fig.savefig(
             save_path,
             facecolor="#121212",
             edgecolor="none",
-            bbox_inches=None,
-            dpi=150,
-            pad_inches=0.1,
+            dpi=100,
+            pad_inches=0,
         )
         plt.close(fig)
 

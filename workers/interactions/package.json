@@ -1,0 +1,27 @@
+{
+  "name": "catalyst-bot-interactions-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker for Discord interaction callbacks",
+  "main": "index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "tail": "wrangler tail",
+    "logs": "wrangler tail",
+    "test": "node test-worker.js"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "discord",
+    "interactions",
+    "catalyst-bot"
+  ],
+  "author": "Catalyst Bot Team",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

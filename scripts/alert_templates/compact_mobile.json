@@ -1,0 +1,34 @@
+{
+  "name": "Compact Mobile-Optimized",
+  "description": "Mobile-friendly compact layout that displays well on small screens",
+  "embed": {
+    "title": "[TICKER] Catalyst",
+    "url": "https://example.com",
+    "color": 65535,
+    "fields": [
+      {
+        "name": "📍 Price",
+        "value": "$2.50 (+25%)",
+        "inline": true
+      },
+      {
+        "name": "📍 Vol",
+        "value": "1.5M (5x)",
+        "inline": true
+      },
+      {
+        "name": "📍 Score",
+        "value": "8.5 ⭐",
+        "inline": true
+      },
+      {
+        "name": "Details",
+        "value": "Strong catalyst detected with high confidence. Review full analysis.",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "🤖 Bot"
+    }
+  }
+}

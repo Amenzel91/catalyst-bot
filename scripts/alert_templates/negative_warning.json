@@ -1,0 +1,54 @@
+{
+  "name": "Negative Catalyst Warning",
+  "description": "High-visibility layout for negative catalysts (offerings, dilution, distress)",
+  "embed": {
+    "title": "⚠️ NEGATIVE CATALYST - [TICKER] Exit Signal Detected",
+    "url": "https://example.com",
+    "color": 16711680,
+    "fields": [
+      {
+        "name": "⚠️ WARNING - NEGATIVE CATALYST",
+        "value": "🚨 Dilutive Offering | Share Dilution\n\n**ACTION REQUIRED:** Review position and consider exit strategy",
+        "inline": false
+      },
+      {
+        "name": "💔 Price Impact",
+        "value": "$1.20 (↓ -35.14%)\nPrev: $1.85\n\n**Strong Selling Pressure**",
+        "inline": true
+      },
+      {
+        "name": "📊 Volume Spike",
+        "value": "12.0M shares\nRVol: 6.0x\n\n**Panic Selling**",
+        "inline": true
+      },
+      {
+        "name": "📉 Danger Score",
+        "value": "-6.5/10\nSentiment: -0.75\n\n**High Risk**",
+        "inline": true
+      },
+      {
+        "name": "🔍 Catalyst Details",
+        "value": "Type: Registered Direct Offering\nDilution: High\nPricing: At-The-Market (Poor)\n\nIndicates financial distress and significant shareholder dilution imminent.",
+        "inline": false
+      },
+      {
+        "name": "📚 Historical Context",
+        "value": "60-80% of stocks continue declining 30 days post-offering when priced ATM. Consider protective stops.",
+        "inline": false
+      },
+      {
+        "name": "Source",
+        "value": "SEC Filing / PR Newswire",
+        "inline": true
+      },
+      {
+        "name": "Tickers",
+        "value": "TICKER",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "Catalyst-Bot • Exit Signal Alert System"
+    }
+  }
+}

@@ -27,6 +27,7 @@ try:
     from .charts_advanced import generate_multi_panel_chart
     from .discord_interactions import add_components_to_payload
     from .sentiment_gauge import generate_sentiment_gauge, log_sentiment_score
+    from .trade_plan import calculate_trade_plan, get_embed_color_from_rr
 
     HAS_ADVANCED_CHARTS = True
 except Exception:
@@ -40,6 +41,10 @@ _alert_downgraded = False
 # Cached ML model to avoid reloading on every alert (GPU optimization)
 _cached_ml_model = None
 _cached_ml_model_path = None
+
+# Webhook validation cache: stores validated webhooks to avoid repeated checks
+_validated_webhooks = set()
+_validation_lock = threading.Lock()
 
 
 def get_alert_downgraded() -> bool:
@@ -82,6 +87,120 @@ def _mask_webhook(url: str | None) -> str:
         return f"...{tail[-8:]}"
     except Exception:
         return "<masked>"
+
+
+def validate_webhook(url: str, force_revalidate: bool = False) -> bool:
+    """
+    Validate a Discord webhook URL before attempting to post.
+
+    Sends a HEAD request to the webhook URL to verify it's reachable and valid.
+    Results are cached to avoid repeated validation of the same webhook.
+
+    Parameters
+    ----------
+    url : str
+        The Discord webhook URL to validate
+    force_revalidate : bool, optional
+        If True, bypass cache and revalidate (default: False)
+
+    Returns
+    -------
+    bool
+        True if webhook is valid and reachable, False otherwise
+
+    Notes
+    -----
+    This function prevents silent failures by checking webhooks on startup or
+    when the webhook URL changes. Validation results are cached for performance.
+    """
+    if not url or not isinstance(url, str):
+        log.error("webhook_validation_failed reason=invalid_url url=%s", _mask_webhook(url))
+        return False
+
+    # Check cache first (unless forcing revalidation)
+    if not force_revalidate:
+        with _validation_lock:
+            if url in _validated_webhooks:
+                log.debug("webhook_validation_cached url=%s", _mask_webhook(url))
+                return True
+
+    # Validate webhook format (must be Discord webhook URL)
+    if "discord.com/api/webhooks/" not in url and "discordapp.com/api/webhooks/" not in url:
+        log.error(
+            "webhook_validation_failed reason=invalid_format url=%s",
+            _mask_webhook(url)
+        )
+        return False
+
+    try:
+        # Send HEAD request to check if webhook is reachable
+        # Use a short timeout to avoid blocking startup
+        log.info("webhook_validation_testing url=%s", _mask_webhook(url))
+
+        response = requests.head(url, timeout=5)
+
+        # Discord webhooks should return 200 OK for HEAD requests
+        if response.status_code == 200:
+            # Cache successful validation
+            with _validation_lock:
+                _validated_webhooks.add(url)
+            log.info("webhook_validation_success url=%s status=%d", _mask_webhook(url), response.status_code)
+            return True
+        elif response.status_code == 404:
+            log.error(
+                "webhook_validation_failed reason=not_found url=%s status=%d",
+                _mask_webhook(url),
+                response.status_code
+            )
+            return False
+        elif response.status_code == 401:
+            log.error(
+                "webhook_validation_failed reason=unauthorized url=%s status=%d",
+                _mask_webhook(url),
+                response.status_code
+            )
+            return False
+        else:
+            log.warning(
+                "webhook_validation_unexpected url=%s status=%d",
+                _mask_webhook(url),
+                response.status_code
+            )
+            # Accept other 2xx codes as valid
+            if 200 <= response.status_code < 300:
+                with _validation_lock:
+                    _validated_webhooks.add(url)
+                return True
+            return False
+
+    except requests.exceptions.Timeout:
+        log.error(
+            "webhook_validation_failed reason=timeout url=%s",
+            _mask_webhook(url)
+        )
+        return False
+    except requests.exceptions.ConnectionError as e:
+        log.error(
+            "webhook_validation_failed reason=connection_error url=%s err=%s",
+            _mask_webhook(url),
+            str(e)[:100]
+        )
+        return False
+    except requests.exceptions.RequestException as e:
+        log.error(
+            "webhook_validation_failed reason=request_error url=%s err=%s",
+            _mask_webhook(url),
+            str(e)[:100]
+        )
+        return False
+    except Exception as e:
+        log.error(
+            "webhook_validation_failed reason=unexpected_error url=%s err=%s",
+            _mask_webhook(url),
+            str(e)[:100],
+            exc_info=True
+        )
+        return False
 
 
 # --- Simple per-webhook rate limiter state ---
@@ -631,6 +750,10 @@ def send_alert_safe(*args, **kwargs) -> bool:
     if not (webhook_url or os.getenv("DISCORD_WEBHOOK_URL", "").strip()):
         return False
 
+    # Set webhook_url from env if not provided
+    if not webhook_url:
+        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+
     # --- Optional per-key (ticker/title/link) rate limiting (opt-in) ---
     # Enable with: ALERTS_KEY_RATE_LIMIT=1 (or legacy HOOK_ALERTS_RATE_LIMIT=1)
     _truthy = {"1", "true", "yes", "on"}
@@ -657,6 +780,29 @@ def send_alert_safe(*args, **kwargs) -> bool:
 
     content = _format_discord_content(item_dict, last_price, last_change_pct, scored)
     payload = {"content": content, "allowed_mentions": {"parse": []}}
+
+    # Calculate trade plan for alerts (entry/stop/target levels)
+    trade_plan_for_embed = None
+    try:
+        if HAS_ADVANCED_CHARTS and last_price and ticker:
+            # Get daily data for ATR and S/R calculations
+            trade_df = get_intraday(ticker, interval="1d", output_size="full")
+            if trade_df is not None and len(trade_df) >= 14:
+                trade_plan_for_embed = calculate_trade_plan(
+                    ticker=ticker,
+                    current_price=float(last_price),
+                    df=trade_df,
+                    atr_multiplier=2.0,
+                    min_rr_ratio=1.5,
+                )
+                log.debug(
+                    "trade_plan_for_embed ticker=%s success=%s",
+                    ticker,
+                    trade_plan_for_embed is not None,
+                )
+    except Exception as e:
+        log.debug("trade_plan_for_embed_failed ticker=%s err=%s", ticker, str(e))
+
     try:
         _use = str(os.getenv("FEATURE_RICH_ALERTS", "0")).strip().lower() in {
             "1",
@@ -671,10 +817,11 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     scored=scored,
                     last_price=last_price,
                     last_change_pct=last_change_pct,
+                    trade_plan=trade_plan_for_embed,
                 )
             ]
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("embed_build_failed ticker=%s err=%s", ticker, str(e))
     # Optional QuickChart Route-A: POST /chart -> attach PNG (fully local)
     try:
         use_post = os.getenv("FEATURE_QUICKCHART_POST", "0").strip().lower() in (
@@ -701,8 +848,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     if ok_file:
                         return True
                 # If multipart failed, fall through to legacy JSON poster
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("quickchart_post_failed ticker=%s err=%s", ticker, str(e))
 
     # Optional Sentiment Gauge Visual
     gauge_path = None
@@ -801,7 +948,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
 
             # Try cache first
             cache = get_cache()
-            chart_path = cache.get(ticker, default_tf)
+            chart_path = cache.get_cached_chart(ticker, default_tf)
             log.debug(
                 "cache_result ticker=%s tf=%s path=%s", ticker, default_tf, chart_path
             )
@@ -816,13 +963,73 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     ticker,
                     default_tf,
                 )
+
+                # Build catalyst event annotation data
+                catalyst_event = None
+                try:
+                    # Extract news title and timestamp for annotation
+                    event_title = item_dict.get("title", "")
+                    event_ts = item_dict.get("ts")  # ISO timestamp from feed
+
+                    # Determine event type (positive or negative)
+                    event_type = "positive"
+                    if scored:
+                        if isinstance(scored, dict):
+                            if scored.get("alert_type") == "NEGATIVE":
+                                event_type = "negative"
+                        else:
+                            if getattr(scored, "alert_type", None) == "NEGATIVE":
+                                event_type = "negative"
+
+                    # Truncate title to fit on chart
+                    if event_title and event_ts:
+                        label = event_title[:40]  # Keep it concise
+                        if len(event_title) > 40:
+                            label += "..."
+
+                        catalyst_event = {
+                            "timestamp": event_ts,
+                            "label": label,
+                            "type": event_type,
+                        }
+                except Exception as e:
+                    log.debug("catalyst_event_build_failed err=%s", str(e))
+
+                # Calculate trade plan for entry/stop/target annotations
+                trade_plan_data = None
+                try:
+                    # Fetch intraday data for trade plan calculations
+                    current_price = item_dict.get("price")
+                    if current_price:
+                        # Get 1-month daily data for ATR and S/R calculations
+                        trade_df = get_intraday(ticker, interval="1d", output_size="full")
+                        if trade_df is not None and len(trade_df) >= 14:
+                            trade_plan_data = calculate_trade_plan(
+                                ticker=ticker,
+                                current_price=float(current_price),
+                                df=trade_df,
+                                atr_multiplier=2.0,
+                                min_rr_ratio=1.5,
+                            )
+                            log.debug(
+                                "trade_plan_calculated ticker=%s plan=%s",
+                                ticker,
+                                trade_plan_data,
+                            )
+                except Exception as e:
+                    log.debug("trade_plan_calculation_failed ticker=%s err=%s", ticker, str(e))
+
                 chart_path = generate_multi_panel_chart(
-                    ticker, timeframe=default_tf, style="dark"
+                    ticker,
+                    timeframe=default_tf,
+                    style="dark",
+                    catalyst_event=catalyst_event,
+                    trade_plan=trade_plan_data,
                 )
                 log.debug("chart_generated ticker=%s path=%s", ticker, chart_path)
 
                 if chart_path:
-                    cache.put(ticker, default_tf, chart_path)
+                    cache.cache_chart(ticker, default_tf, chart_path)
 
             log.debug(
                 "chart_path_exists ticker=%s exists=%s",
@@ -830,9 +1037,13 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 chart_path and chart_path.exists(),
             )
             if chart_path and chart_path.exists():
-                # Update embed to reference the chart
+                # Update embed to reference the chart by filename
                 embed0 = payload["embeds"][0]
                 embed0["image"] = {"url": f"attachment://{chart_path.name}"}
+
+                log.info("EMBED_DEBUG chart_path=%s image_url=%s",
+                         chart_path.name, embed0.get("image", {}).get("url"))
+                log.info("EMBED_DEBUG embed_keys=%s", list(embed0.keys()))
 
                 # Add sentiment gauge as thumbnail if available
                 if gauge_path and gauge_path.exists():
@@ -905,14 +1116,27 @@ def send_alert_safe(*args, **kwargs) -> bool:
                             "removing_attachment_reference type=thumbnail url=%s", url
                         )
                         del embed["thumbnail"]
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("attachment_cleanup_failed ticker=%s err=%s", ticker, str(e))
 
     # Post via the shared primitive with polite retries (legacy behavior)
     ok = post_discord_json(payload, webhook_url=webhook_url, max_retries=2)
     if not ok:
         # Add source/ticker context on failure to aid triage
-        log.warning("alert_error source=%s ticker=%s", source, ticker)
+        # Enhanced logging for debugging RANI-style failures
+        webhook_status = "present" if webhook_url else "missing"
+        env_webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        env_status = "present" if env_webhook else "missing"
+        has_embeds = "yes" if (payload.get("embeds") and len(payload.get("embeds", [])) > 0) else "no"
+        log.warning(
+            "alert_error source=%s ticker=%s webhook=%s env_webhook=%s has_embeds=%s payload_keys=%s",
+            source,
+            ticker,
+            webhook_status,
+            env_status,
+            has_embeds,
+            list(payload.keys()),
+        )
 
     # WAVE 1.2: Record alert for feedback tracking
     if ok:
@@ -1199,7 +1423,7 @@ def _parse_llm_sentiment(llm_text: str) -> str:
 
 
 def _build_discord_embed(
-    *, item_dict: dict, scored: dict | None, last_price, last_change_pct
+    *, item_dict: dict, scored: dict | None, last_price, last_change_pct, trade_plan: dict | None = None
 ):
     """Build a compact, actionable Discord embed for an alert."""
     title = _deping((item_dict.get("title") or "").strip()[:240])
@@ -1355,16 +1579,39 @@ def _build_discord_embed(
             score_values.append(str(raw_score))
     score_str = " / ".join(score_values) if score_values else "n/a"
 
+    # --- NEGATIVE ALERT DETECTION ---
+    # Check if this is a negative catalyst alert (offerings, dilution, distress)
+    # Negative alerts use red/orange colors and warning emojis regardless of price movement
+    is_negative_alert = False
+    try:
+        if scored:
+            # Check alert_type on scored item (set by classify.py)
+            alert_type = None
+            if isinstance(scored, dict):
+                alert_type = scored.get("alert_type")
+            else:
+                alert_type = getattr(scored, "alert_type", None)
+
+            if alert_type == "NEGATIVE":
+                is_negative_alert = True
+    except Exception:
+        pass
+
     # Color: green for up, red for down; fallback to Discord blurple.  When
     # momentum indicators are available, override colour to reflect the
     # EMA/MACD crossover direction: bullish → green, bearish → red.
+    # NEGATIVE ALERTS: Always use red/orange regardless of price movement
     color = 0x5865F2
-    try:
-        v = str(chg_str).replace("%", "").replace("+", "").strip()
-        if v:
-            color = 0x2ECC71 if float(v) >= 0 else 0xE74C3C
-    except Exception:
-        pass
+    if is_negative_alert:
+        # Use bright red for negative catalysts (exit signals)
+        color = 0xFF0000
+    else:
+        try:
+            v = str(chg_str).replace("%", "").replace("+", "").strip()
+            if v:
+                color = 0x2ECC71 if float(v) >= 0 else 0xE74C3C
+        except Exception:
+            pass
 
     tval = ", ".join(tickers) if tickers else (primary or "-")
     tval = _deping(tval)
@@ -1555,6 +1802,14 @@ def _build_discord_embed(
                 color = 0xE69E00  # amber
             else:
                 color = 0x95A5A6  # grey
+    except Exception:
+        pass
+
+    # Override color based on trade plan R/R ratio (takes precedence when available)
+    try:
+        if trade_plan and HAS_ADVANCED_CHARTS:
+            rr_ratio = trade_plan.get("rr_ratio", 0)
+            color = get_embed_color_from_rr(rr_ratio)
     except Exception:
         pass
 
@@ -2045,7 +2300,7 @@ def _build_discord_embed(
 
             fields.append(
                 {
-                    "name": "📉 Float",
+                    "name": "Float",
                     "value": f"{emoji} {float_display} ({float_shares/1_000_000:.2f}M)",
                     "inline": True,
                 }
@@ -2095,10 +2350,114 @@ def _build_discord_embed(
                 value_parts.append(f"Vol: {curr_vol_m:.1f}M / Avg: {avg_vol_m:.1f}M")
 
             fields.append(
-                {"name": "📊 RVol", "value": "\n".join(value_parts), "inline": True}
+                {"name": "RVol", "value": "\n".join(value_parts), "inline": True}
             )
     except Exception:
         # Don't break the embed if RVol data is missing
+        pass
+
+    # Add Squeeze Metrics (combines Short Interest + Days to Cover)
+    try:
+        short_interest_pct = None
+        shares_outstanding = None
+        avg_volume = None
+
+        # Extract data from scored item
+        if hasattr(scored, "short_interest_pct"):
+            short_interest_pct = getattr(scored, "short_interest_pct", None)
+            shares_outstanding = getattr(scored, "shares_outstanding", None)
+            avg_volume = getattr(scored, "avg_volume_20d", None) or getattr(scored, "current_volume", None)
+        elif isinstance(scored, dict):
+            short_interest_pct = scored.get("short_interest_pct")
+            shares_outstanding = scored.get("shares_outstanding")
+            avg_volume = scored.get("avg_volume_20d") or scored.get("current_volume")
+
+        if short_interest_pct is not None and short_interest_pct > 0:
+            # Build squeeze metrics value
+            value_parts = []
+
+            # Short Interest classification
+            if short_interest_pct >= 20:
+                si_emoji = "🔥"
+                si_class = "Very High"
+            elif short_interest_pct >= 10:
+                si_emoji = "⚠️"
+                si_class = "High"
+            elif short_interest_pct >= 5:
+                si_emoji = "📊"
+                si_class = "Moderate"
+            else:
+                si_emoji = "📉"
+                si_class = "Low"
+
+            value_parts.append(f"SI: {si_emoji} {si_class} ({short_interest_pct:.2f}%)")
+
+            # Calculate Days to Cover if we have the data
+            if shares_outstanding and avg_volume and avg_volume > 0:
+                short_shares = (short_interest_pct / 100) * shares_outstanding
+                days_to_cover = short_shares / avg_volume
+
+                # DTC classification
+                if days_to_cover >= 10:
+                    dtc_emoji = "🚀"
+                    dtc_class = "Extreme"
+                elif days_to_cover >= 7:
+                    dtc_emoji = "🔥"
+                    dtc_class = "Very High"
+                elif days_to_cover >= 3:
+                    dtc_emoji = "⚠️"
+                    dtc_class = "High"
+                elif days_to_cover >= 1:
+                    dtc_emoji = "📊"
+                    dtc_class = "Moderate"
+                else:
+                    dtc_emoji = "📉"
+                    dtc_class = "Low"
+
+                value_parts.append(f"DTC: {dtc_emoji} {dtc_class} ({days_to_cover:.1f}d)")
+
+            fields.append(
+                {
+                    "name": "Squeeze Metrics",
+                    "value": "\n".join(value_parts),
+                    "inline": True,
+                }
+            )
+    except Exception:
+        # Don't break the embed if squeeze metrics fail
+        pass
+
+    # Add Trade Plan field (Entry/Stop/Target/R:R)
+    try:
+        if trade_plan:
+            value_parts = []
+
+            # Entry, Stop, Target on one line
+            entry = trade_plan.get("entry", 0)
+            stop = trade_plan.get("stop", 0)
+            target = trade_plan.get("target_1", 0)
+            value_parts.append(f"Entry: ${entry:.2f} | Stop: ${stop:.2f} | Target: ${target:.2f}")
+
+            # R:R ratio with quality indicator
+            rr_ratio = trade_plan.get("rr_ratio", 0)
+            quality_emoji = trade_plan.get("quality_emoji", "")
+            trade_quality = trade_plan.get("trade_quality", "")
+            value_parts.append(f"R:R: {rr_ratio:.2f}:1 {quality_emoji} ({trade_quality})")
+
+            # ATR for reference
+            atr = trade_plan.get("atr", 0)
+            risk_per_share = trade_plan.get("risk_per_share", 0)
+            value_parts.append(f"ATR: ${atr:.2f} | Risk/Share: ${risk_per_share:.2f}")
+
+            fields.append(
+                {
+                    "name": "📋 Trade Plan",
+                    "value": "\n".join(value_parts),
+                    "inline": False,  # Full width for better readability
+                }
+            )
+    except Exception:
+        # Don't break the embed if trade plan fails
         pass
 
     # Add VWAP (Volume Weighted Average Price) information field
@@ -2334,21 +2693,105 @@ def _build_discord_embed(
                 fields.append({"name": "SEC Filings", "value": value, "inline": False})
     except Exception:
         pass
-    # Always include source and tickers fields last
-    fields.append({"name": "Source", "value": src or "-", "inline": True})
-    fields.append({"name": "Tickers", "value": tval, "inline": False})
+    # Source and timestamp moved to footer (no longer as fields)
+
+    # --- NEGATIVE ALERT WARNING FIELD ---
+    # Add prominent warning field for negative catalyst alerts
+    if is_negative_alert:
+        # Extract negative keywords that triggered the alert
+        negative_keywords = []
+        try:
+            if scored:
+                if isinstance(scored, dict):
+                    negative_keywords = scored.get("negative_keywords", [])
+                else:
+                    negative_keywords = getattr(scored, "negative_keywords", [])
+        except Exception:
+            pass
+
+        # Format warning message with categories that were hit
+        if negative_keywords:
+            # Convert category names to human-readable labels
+            category_labels = {
+                "offering_negative": "Dilutive Offering",
+                "warrant_negative": "Warrant Exercise",
+                "dilution_negative": "Share Dilution",
+                "distress_negative": "Financial Distress",
+            }
+            warning_labels = [
+                category_labels.get(cat, cat.replace("_", " ").title())
+                for cat in negative_keywords
+            ]
+            warning_text = "🚨 " + " | ".join(warning_labels)
+        else:
+            warning_text = "🚨 Potential Exit Signal Detected"
+
+        # Insert warning field at the top (index 0) for visibility
+        fields.insert(
+            0,
+            {
+                "name": "⚠️ WARNING - NEGATIVE CATALYST",
+                "value": warning_text,
+                "inline": False,
+            },
+        )
+
     # Include reason when available
     if reason:
         fields.append({"name": "Reason", "value": reason[:1024], "inline": False})
 
+    # --- NEGATIVE ALERT TITLE FORMATTING ---
+    # Add warning emoji and label for negative catalyst alerts
+    if is_negative_alert:
+        alert_title = _deping(f"⚠️ NEGATIVE CATALYST - [{primary or '?'}] {title}")[:256]
+    else:
+        alert_title = _deping(f"[{primary or '?'}] {title}")[:256]
+
+    # Extract summary/description for context (from RSS feed or API)
+    # This provides users with more context about the news event
+    summary_text = ""
+    try:
+        raw_summary = item_dict.get("summary") or item_dict.get("description") or ""
+        if isinstance(raw_summary, str) and raw_summary.strip():
+            # Truncate to Discord's 4096 character limit for descriptions
+            # Use first 300 chars for clean embed layout
+            summary_text = _deping(raw_summary.strip()[:300])
+            if len(raw_summary) > 300:
+                summary_text += "..."
+    except Exception:
+        summary_text = ""
+
+    # Build footer text with source and timestamp
+    footer_parts = []
+    if src:
+        footer_parts.append(f"Source: {src}")
+    if ts:
+        try:
+            from dateutil import parser as date_parser
+            # Parse timestamp and format as readable time
+            if isinstance(ts, str):
+                ts_dt = date_parser.isoparse(ts)
+            else:
+                ts_dt = ts
+            # Format as HH:MM AM/PM
+            time_str = ts_dt.strftime("%I:%M %p")
+            footer_parts.append(f"Alert Time: {time_str}")
+        except Exception:
+            pass
+    footer_text = " | ".join(footer_parts) if footer_parts else "Catalyst-Bot"
+
     embed = {
-        "title": _deping(f"[{primary or '?'}] {title}")[:256],
+        "title": alert_title,
         "url": link,
         "color": color,
         "timestamp": ts,
         "fields": fields,
-        "footer": {"text": "Catalyst-Bot"},
+        "footer": {"text": footer_text},
     }
+
+    # Add description when summary is available (appears below title in Discord)
+    if summary_text:
+        embed["description"] = summary_text
     # Optionally add intraday indicators (VWAP/RSI14)
     try:
         s = get_settings()

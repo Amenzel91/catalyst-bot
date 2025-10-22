@@ -1,0 +1,85 @@
+Device set to use privateuseone:0
+$TEST: possibly delisted; no price data found  (period=1d)
+vwap_no_data ticker=TEST
+$TEST: possibly delisted; no price data found  (period=1d)
+vwap_no_data ticker=TEST
+$TEST: possibly delisted; no price data found  (period=1d)
+vwap_no_data ticker=TEST
+$TEST: possibly delisted; no price data found  (period=1d)
+vwap_no_data ticker=TEST
+
+NEGATIVE ALERT DETECTION TESTS
+======================================================================
+Testing negative catalyst detection system...
+
+======================================================================
+TEST 1: Public Offering Detection (DFLI)
+======================================================================
+
+Title: Dragonfly Energy Announces Proposed Public Offering of Common Stock and Pre-Fund...
+Score: 0.903
+Sentiment: 0.113
+Keywords: ['dilution', 'offering_negative', 'warrant_negative']
+Alert Type: POSITIVE
+Negative Keywords: ['offering_negative', 'warrant_negative']
+
+CHECKS:
+  Alert Type = NEGATIVE: FAIL
+  Has Negative Keywords: PASS
+  Score is Negative: FAIL
+
+======================================================================
+TEST 2: Dilutive Offering Detection
+======================================================================
+
+Title: Company Announces $50M Dilutive Equity Financing
+Score: 0.800
+Alert Type: POSITIVE
+Negative Keywords: ['dilution_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST 3: Warrant Exercise Detection
+======================================================================
+
+Title: Company Announces Warrant Exercise and Share Issuance
+Score: 0.851
+Alert Type: POSITIVE
+Negative Keywords: ['warrant_negative', 'dilution_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST 4: Positive News (Should NOT be Negative)
+======================================================================
+
+Title: Company Reports Record Earnings Beat, Raises Guidance
+Score: 0.420
+Alert Type: POSITIVE
+
+Correctly NOT flagged as negative: YES
+
+======================================================================
+TEST 5: Financial Distress Detection
+======================================================================
+
+Title: Company Receives Going Concern Warning from Auditors
+Score: 0.238
+Alert Type: POSITIVE
+Negative Keywords: ['distress_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST SUMMARY
+======================================================================
+[FAIL]: Offering Detection (DFLI)
+[FAIL]: Dilution Detection
+[FAIL]: Warrant Detection
+[PASS]: Positive News Check
+[FAIL]: Distress Detection
+
+Total: 1/5 tests passed
+
+4 test(s) failed

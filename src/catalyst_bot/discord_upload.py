@@ -79,27 +79,53 @@ def post_embed_with_attachment(
     # Fallback to webhook (no components support)
     log.debug("posting_via_webhook_no_buttons")
 
+    # DEBUG: Log embed image/thumbnail references
+    log.info("WEBHOOK_DEBUG file_path=%s file_exists=%s", file_path, file_path.exists())
+    log.info("WEBHOOK_DEBUG additional_files=%s", additional_files)
+    log.info("WEBHOOK_DEBUG embed_image_before=%s embed_thumbnail_before=%s",
+             embed.get("image", {}).get("url"),
+             embed.get("thumbnail", {}).get("url"))
+
     # Prepare multiple files if additional_files provided
     files_dict = {}
     open_files = []
 
     try:
-        # Primary file
+        # Primary chart file - use files[0] format for Discord webhooks
         f1 = open(file_path, "rb")
         open_files.append(f1)
-        files_dict["file"] = (file_path.name, f1, "image/png")
+        files_dict["files[0]"] = (file_path.name, f1, "image/png")
+        log.info("WEBHOOK_DEBUG uploading chart as files[0] filename=%s", file_path.name)
 
-        # Additional files (e.g., gauge)
+        # Additional gauge file - use files[1] format
         if additional_files:
-            for idx, add_file in enumerate(additional_files):
+            for add_file in additional_files:
                 if add_file and add_file.exists():
                     f = open(add_file, "rb")
                     open_files.append(f)
-                    files_dict[f"file{idx+1}"] = (add_file.name, f, "image/png")
+                    files_dict["files[1]"] = (add_file.name, f, "image/png")
+                    log.info("WEBHOOK_DEBUG uploading gauge as files[1] filename=%s", add_file.name)
+                    break
+
+        # IMPORTANT: Discord webhooks require FILENAME references (not field names)
+        # The embed references should already be set correctly in alerts.py
+        # We just need to ensure files are uploaded correctly
+        log.info("WEBHOOK_DEBUG embed references preserved: image=%s thumbnail=%s",
+                 embed.get("image", {}).get("url"),
+                 embed.get("thumbnail", {}).get("url"))
 
         data = {"payload_json": json.dumps({"embeds": [embed]})}
+
+        # DEBUG: Print full embed before sending
+        log.info("WEBHOOK_DEBUG embed_json=%s", json.dumps(embed, indent=2))
+        log.info("WEBHOOK_DEBUG files_dict_keys=%s", list(files_dict.keys()))
+
         r = requests.post(webhook_url, data=data, files=files_dict, timeout=15)
-        log.debug("webhook_response status=%d files=%d", r.status_code, len(files_dict))
+        log.info("WEBHOOK_DEBUG webhook_response status=%d files=%d", r.status_code, len(files_dict))
+
+        if r.status_code >= 400:
+            log.error("WEBHOOK_ERROR response=%s", r.text[:500])
+
         return 200 <= r.status_code < 300
 
     finally:
@@ -153,8 +179,45 @@ def _post_via_bot_api(
 
     headers = {"Authorization": f"Bot {bot_token}"}
 
+    # Build attachments array - required when using components with Bot API
+    # Discord Bot API requires ID-based references when using attachments array
+    attachments = []
+    file_index = 0
+
+    # Chart first (main image) - will be id:0
+    attachments.append({
+        "id": file_index,
+        "filename": file_path.name,
+        "description": "Chart"
+    })
+    chart_id = file_index
+    file_index += 1
+
+    # Gauge second (thumbnail) if present - will be id:1
+    gauge_id = None
+    if additional_files:
+        for add_file in additional_files:
+            if add_file and add_file.exists():
+                attachments.append({
+                    "id": file_index,
+                    "filename": add_file.name,
+                    "description": "Sentiment Gauge"
+                })
+                gauge_id = file_index
+                break
+
+    # DO NOT override embed references - keep filename-based refs from alerts.py
+    # Discord Bot API supports filename references even with attachments array
+    log.debug("bot_api_keeping_filename_references image=%s thumbnail=%s",
+             embed.get("image", {}).get("url"),
+             embed.get("thumbnail", {}).get("url"))
+
     # Multipart form data with file and JSON payload
-    payload = {"embeds": [embed], "components": components}
+    payload = {
+        "embeds": [embed],
+        "components": components,
+        "attachments": attachments
+    }
 
     data = {"payload_json": json.dumps(payload)}
 
@@ -170,18 +233,19 @@ def _post_via_bot_api(
         open_files = []
 
         try:
-            # Primary file
+            # Upload chart first (attachment id:0) - matches attachments[0]
             f1 = open(file_path, "rb")
             open_files.append(f1)
-            files_dict["file"] = (file_path.name, f1, "image/png")
+            files_dict["files[0]"] = (file_path.name, f1, "image/png")
 
-            # Additional files (e.g., gauge)
+            # Upload gauge second (attachment id:1) if present - matches attachments[1]
             if additional_files:
-                for idx, add_file in enumerate(additional_files):
+                for add_file in additional_files:
                     if add_file and add_file.exists():
                         f = open(add_file, "rb")
                         open_files.append(f)
-                        files_dict[f"file{idx+1}"] = (add_file.name, f, "image/png")
+                        files_dict["files[1]"] = (add_file.name, f, "image/png")
+                        break
 
             r = requests.post(
                 url, headers=headers, data=data, files=files_dict, timeout=15

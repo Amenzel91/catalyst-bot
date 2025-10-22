@@ -1,0 +1,54 @@
+{
+  "name": "Detailed Biotech Layout",
+  "description": "Comprehensive layout optimized for biotech/pharma catalysts with clinical data",
+  "embed": {
+    "title": "[TICKER] Biotech Catalyst Event",
+    "url": "https://example.com",
+    "color": 65280,
+    "fields": [
+      {
+        "name": "💰 Price Action",
+        "value": "$2.50 (↑ +25.00%)\nPrev: $2.00 | Vol: 1.5M",
+        "inline": true
+      },
+      {
+        "name": "📊 Volume Analysis",
+        "value": "Current: 1,500,000\nAvg: 300,000\nRVol: 5.0x 🚀",
+        "inline": true
+      },
+      {
+        "name": "📈 Confidence Score",
+        "value": "Score: 8.5/10\nSentiment: 0.85 (Bullish)\nCategory: High Conviction",
+        "inline": true
+      },
+      {
+        "name": "🔬 Catalyst Type",
+        "value": "FDA Approval / Clinical Trial / Partnership",
+        "inline": false
+      },
+      {
+        "name": "🎯 Key Metrics",
+        "value": "• Phase: III\n• Primary Endpoint: Met ✓\n• Statistical Significance: p<0.001\n• Safety Profile: Favorable",
+        "inline": false
+      },
+      {
+        "name": "🤖 AI Analysis",
+        "value": "LLM analysis shows strong bullish indicators with validated methodology...",
+        "inline": false
+      },
+      {
+        "name": "Source",
+        "value": "BusinessWire",
+        "inline": true
+      },
+      {
+        "name": "Tickers",
+        "value": "TICKER",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "Catalyst-Bot • Biotech Intelligence"
+    }
+  }
+}

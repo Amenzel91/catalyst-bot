@@ -85,3 +85,6 @@ get-all-tickers>=1.8,<2
 
 # Semantic Keyword Extraction (optional - for context-aware keyphrases)
 keybert>=0.8.0,<1
+
+# Google Trends Sentiment (optional - for retail search volume analysis)
+pytrends>=4.9.0,<5

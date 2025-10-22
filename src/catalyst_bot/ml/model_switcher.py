@@ -219,7 +219,7 @@ def _load_transformers_model(huggingface_id: str, device: Optional[str] = None) 
 
     Args:
         huggingface_id: HuggingFace model ID
-        device: Target device ('cuda', 'cpu', None=auto)
+        device: Target device ('cuda', 'dml', 'cpu', None=auto)
 
     Returns:
         Transformers sentiment-analysis pipeline
@@ -235,16 +235,27 @@ def _load_transformers_model(huggingface_id: str, device: Optional[str] = None) 
     if device is None:
         device = _auto_detect_device()
 
-    device_id = 0 if device == "cuda" else -1
-
     _logger.info("Loading %s on device: %s", huggingface_id, device)
 
     try:
-        model = pipeline(
-            "sentiment-analysis",
-            model=huggingface_id,
-            device=device_id,
-        )
+        # Handle DirectML device
+        if device == "dml":
+            import torch_directml
+
+            dml_device = torch_directml.device()
+            model = pipeline(
+                "sentiment-analysis",
+                model=huggingface_id,
+                device=dml_device,
+            )
+        else:
+            # CUDA or CPU
+            device_id = 0 if device == "cuda" else -1
+            model = pipeline(
+                "sentiment-analysis",
+                model=huggingface_id,
+                device=device_id,
+            )
         return model
     except Exception as e:
         _logger.error("Failed to load transformers model: %s", e)
@@ -255,13 +266,24 @@ def _auto_detect_device() -> str:
     """Auto-detect best available device.
 
     Returns:
-        'cuda' if GPU available, 'cpu' otherwise
+        'cuda' if NVIDIA GPU available, 'dml' if DirectML available, 'cpu' otherwise
     """
     try:
         import torch
 
+        # Check for NVIDIA CUDA
         if torch.cuda.is_available():
             return "cuda"
+
+        # Check for DirectML (AMD/Intel GPUs on Windows)
+        try:
+            import torch_directml
+
+            if torch_directml.is_available():
+                _logger.info("DirectML detected - using AMD/Intel GPU acceleration")
+                return "dml"
+        except ImportError:
+            pass
     except ImportError:
         pass
 

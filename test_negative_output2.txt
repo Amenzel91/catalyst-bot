@@ -1,0 +1,120 @@
+INFO - src.catalyst_bot.semantic_keywords - Initializing KeyBERT with model: all-MiniLM-L6-v2
+INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+INFO - sentence_transformers.SentenceTransformer - Use pytorch device_name: cpu
+INFO - src.catalyst_bot.semantic_keywords - KeyBERT model initialized successfully in 0.91s
+INFO - src.catalyst_bot.ml.model_switcher - Loading sentiment model: finbert (FinBERT - Financial domain BERT (high accuracy))
+INFO - src.catalyst_bot.ml.model_switcher - DirectML detected - using AMD/Intel GPU acceleration
+INFO - src.catalyst_bot.ml.model_switcher - Loading ProsusAI/finbert on device: dml
+Device set to use privateuseone:0
+INFO - src.catalyst_bot.ml.model_switcher - Model cached: finbert:auto
+INFO - src.catalyst_bot.ml.batch_sentiment - BatchSentimentScorer initialized: type=transformers, batch_size=10
+INFO - src.catalyst_bot.classify - ml_sentiment_model_loaded model=finbert
+INFO - src.catalyst_bot.classify - DEBUG_NEGATIVE_ALERT_CHECK ticker=DFLI neg_keywords=['offering_negative', 'warrant_negative'] feature_flag=False
+INFO - market_regime - market_regime_init cache_ttl_sec=300
+INFO - market_regime - regime_update regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS spy_20d_return=0.72% multiplier=0.80 confidence=1.00 t_ms=455.7
+INFO - src.catalyst_bot.classify - regime_adjustment_applied ticker=DFLI regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS multiplier=0.80 pre_score=1.613 post_score=1.290
+INFO - src.catalyst_bot.classify - float_adjustment_applied ticker=DFLI float_class=UNKNOWN float_shares=0.00M multiplier=1.00 pre_score=1.290 post_score=1.290
+INFO - src.catalyst_bot.vwap_calculator - vwap_calculated ticker=DFLI vwap=2.2305 current_price=1.9650 distance=-11.90% signal=STRONG_BEARISH
+INFO - src.catalyst_bot.classify - vwap_adjustment ticker=DFLI vwap=2.2305 current_price=1.9650 distance=-11.90% signal=STRONG_BEARISH multiplier=0.70 pre_score=1.290 post_score=0.903
+INFO - earnings_scorer - earnings_result_detected ticker=TEST source=test
+INFO - src.catalyst_bot.classify - DEBUG_NEGATIVE_ALERT_CHECK ticker=TEST neg_keywords=['dilution_negative'] feature_flag=False
+INFO - src.catalyst_bot.classify - regime_adjustment_applied ticker=TEST regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS multiplier=0.80 pre_score=1.000 post_score=0.800
+INFO - src.catalyst_bot.classify - float_adjustment_applied ticker=TEST float_class=UNKNOWN float_shares=0.00M multiplier=1.00 pre_score=0.800 post_score=0.800
+ERROR - yfinance - $TEST: possibly delisted; no price data found  (period=1d)
+WARNING - src.catalyst_bot.vwap_calculator - vwap_no_data ticker=TEST
+INFO - earnings_scorer - earnings_result_detected ticker=TEST source=test
+INFO - src.catalyst_bot.classify - DEBUG_NEGATIVE_ALERT_CHECK ticker=TEST neg_keywords=['warrant_negative', 'dilution_negative'] feature_flag=False
+INFO - src.catalyst_bot.classify - regime_adjustment_applied ticker=TEST regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS multiplier=0.80 pre_score=1.064 post_score=0.851
+INFO - src.catalyst_bot.classify - float_adjustment_applied ticker=TEST float_class=UNKNOWN float_shares=0.00M multiplier=1.00 pre_score=0.851 post_score=0.851
+ERROR - yfinance - $TEST: possibly delisted; no price data found  (period=1d)
+WARNING - src.catalyst_bot.vwap_calculator - vwap_no_data ticker=TEST
+INFO - src.catalyst_bot.classify - DEBUG_NEGATIVE_ALERT_CHECK ticker=TEST neg_keywords=[] feature_flag=False
+INFO - src.catalyst_bot.classify - regime_adjustment_applied ticker=TEST regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS multiplier=0.80 pre_score=0.525 post_score=0.420
+INFO - src.catalyst_bot.classify - float_adjustment_applied ticker=TEST float_class=UNKNOWN float_shares=0.00M multiplier=1.00 pre_score=0.420 post_score=0.420
+ERROR - yfinance - $TEST: possibly delisted; no price data found  (period=1d)
+WARNING - src.catalyst_bot.vwap_calculator - vwap_no_data ticker=TEST
+INFO - src.catalyst_bot.classify - DEBUG_NEGATIVE_ALERT_CHECK ticker=TEST neg_keywords=['distress_negative'] feature_flag=False
+INFO - src.catalyst_bot.classify - regime_adjustment_applied ticker=TEST regime=HIGH_VOLATILITY vix=20.64 spy_trend=SIDEWAYS multiplier=0.80 pre_score=0.297 post_score=0.238
+INFO - src.catalyst_bot.classify - float_adjustment_applied ticker=TEST float_class=UNKNOWN float_shares=0.00M multiplier=1.00 pre_score=0.238 post_score=0.238
+ERROR - yfinance - $TEST: possibly delisted; no price data found  (period=1d)
+WARNING - src.catalyst_bot.vwap_calculator - vwap_no_data ticker=TEST
+
+NEGATIVE ALERT DETECTION TESTS
+======================================================================
+Testing negative catalyst detection system...
+
+======================================================================
+TEST 1: Public Offering Detection (DFLI)
+======================================================================
+
+Title: Dragonfly Energy Announces Proposed Public Offering of Common Stock and Pre-Fund...
+Score: 0.903
+Sentiment: 0.113
+Keywords: ['dilution', 'offering_negative', 'warrant_negative']
+Alert Type: POSITIVE
+Negative Keywords: ['offering_negative', 'warrant_negative']
+
+CHECKS:
+  Alert Type = NEGATIVE: FAIL
+  Has Negative Keywords: PASS
+  Score is Negative: FAIL
+
+======================================================================
+TEST 2: Dilutive Offering Detection
+======================================================================
+
+Title: Company Announces $50M Dilutive Equity Financing
+Score: 0.800
+Alert Type: POSITIVE
+Negative Keywords: ['dilution_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST 3: Warrant Exercise Detection
+======================================================================
+
+Title: Company Announces Warrant Exercise and Share Issuance
+Score: 0.851
+Alert Type: POSITIVE
+Negative Keywords: ['warrant_negative', 'dilution_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST 4: Positive News (Should NOT be Negative)
+======================================================================
+
+Title: Company Reports Record Earnings Beat, Raises Guidance
+Score: 0.420
+Alert Type: POSITIVE
+
+Correctly NOT flagged as negative: YES
+
+======================================================================
+TEST 5: Financial Distress Detection
+======================================================================
+
+Title: Company Receives Going Concern Warning from Auditors
+Score: 0.238
+Alert Type: POSITIVE
+Negative Keywords: ['distress_negative']
+
+Negative alert detected: NO
+
+======================================================================
+TEST SUMMARY
+======================================================================
+[FAIL]: Offering Detection (DFLI)
+[FAIL]: Dilution Detection
+[FAIL]: Warrant Detection
+[PASS]: Positive News Check
+[FAIL]: Distress Detection
+
+Total: 1/5 tests passed
+
+4 test(s) failed
+INFO - src.catalyst_bot.semantic_keywords - Initializing KeyBERT with model: all-MiniLM-L6-v2
+INFO - sentence_transformers.SentenceTransformer - Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+INFO - sentence_transformers.SentenceTransformer - Use pytorch device_name: cpu
+INFO - src.catalyst_bot.semantic_keywords - KeyBERT model initialized successfully in 1.01s

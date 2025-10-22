@@ -208,7 +208,7 @@ def handle_interaction(interaction_data: Dict[str, Any]) -> Optional[Dict[str, A
         cache = get_cache()
 
         # Try cache first
-        chart_path = cache.get(ticker, timeframe)
+        chart_path = cache.get_cached_chart(ticker, timeframe)
 
         if chart_path is None:
             # Generate new chart
@@ -217,7 +217,7 @@ def handle_interaction(interaction_data: Dict[str, Any]) -> Optional[Dict[str, A
             )
 
             if chart_path:
-                cache.put(ticker, timeframe, chart_path)
+                cache.cache_chart(ticker, timeframe, chart_path)
 
         if chart_path is None:
             # Failed to generate chart

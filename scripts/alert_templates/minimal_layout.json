@@ -1,0 +1,34 @@
+{
+  "name": "Minimal Layout",
+  "description": "Compact alert layout with essential information only",
+  "embed": {
+    "title": "[TICKER] Catalyst Headline",
+    "url": "https://example.com",
+    "color": 45567,
+    "fields": [
+      {
+        "name": "Price",
+        "value": "$2.50 (+25.00%)",
+        "inline": true
+      },
+      {
+        "name": "Volume",
+        "value": "1.5M (5.0x)",
+        "inline": true
+      },
+      {
+        "name": "Score",
+        "value": "8.5/10",
+        "inline": true
+      },
+      {
+        "name": "Tickers",
+        "value": "TICKER",
+        "inline": false
+      }
+    ],
+    "footer": {
+      "text": "Catalyst-Bot"
+    }
+  }
+}

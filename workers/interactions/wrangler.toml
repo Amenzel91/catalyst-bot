@@ -1,0 +1,62 @@
+# Cloudflare Workers configuration for Discord Interactions Handler
+# ===================================================================
+#
+# This file configures the Cloudflare Worker that handles Discord
+# interaction callbacks for the Catalyst Bot.
+#
+# For more information about wrangler.toml configuration:
+# https://developers.cloudflare.com/workers/wrangler/configuration/
+
+# Worker name - will be used in the worker URL
+name = "catalyst-bot-interactions"
+
+# Enable workers.dev subdomain
+workers_dev = true
+
+# Cloudflare account compatibility date
+# Use the latest date to get the newest features and fixes
+compatibility_date = "2024-01-01"
+
+# Main entry point
+main = "index.js"
+
+# Worker type - "javascript" for standard JS workers
+[build]
+command = ""
+
+# Environment variables
+# =====================
+# Set these using: wrangler secret put <KEY_NAME>
+#
+# Required secrets:
+# - DISCORD_PUBLIC_KEY: Discord application public key (for signature verification)
+# - DISCORD_BOT_TOKEN: Discord bot token (for API calls)
+#
+# DO NOT put actual secrets in this file - use wrangler secret put instead!
+
+# Example of how to set non-secret environment variables:
+# [vars]
+# ENVIRONMENT = "production"
+# LOG_LEVEL = "info"
+
+# Routes (optional - configure custom domain routing)
+# ==================================================
+# Uncomment and modify if you want to route from a custom domain:
+# routes = [
+#   { pattern = "interactions.catalystbot.com/*", zone_name = "catalystbot.com" }
+# ]
+
+# Triggers (optional - configure cron triggers)
+# ============================================
+# [triggers]
+# crons = []
+
+# Limits and Performance
+# ======================
+# CPU time limit per request (default: 10ms on free, 50ms on paid)
+# limits = { cpu_ms = 50 }
+
+# Compatibility flags
+# ===================
+# [compatibility_flags]
+# nodejs_compat = true  # Uncomment if you need Node.js compatibility

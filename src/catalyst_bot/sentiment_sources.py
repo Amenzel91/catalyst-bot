@@ -386,6 +386,473 @@ def _fetch_finnhub_sentiment(
     return score, label, 1, details
 
 
+def _fetch_stocktwits_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+    """Fetch social sentiment from StockTwits.
+
+    StockTwits provides real-time social sentiment from its investor community.
+    The API returns recent messages (tweets) for a ticker with explicit
+    bullish/bearish labels when authors tag their sentiment. We aggregate
+    these labeled messages into a composite score.
+
+    Free tier: 200 calls/hour, no API key required (but recommended for
+    higher limits).
+
+    Returns
+    -------
+    tuple or None
+        (score, label, n_messages, details) where score is derived from
+        bullish/bearish message ratio, or None on error
+    """
+    if not ticker:
+        return None
+    # StockTwits API endpoint for symbol stream
+    base_url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker.upper()}.json"
+    headers = {}
+    # API key is optional but provides higher rate limits when present
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        resp = requests.get(base_url, headers=headers, timeout=8)
+    except Exception as e:
+        log.debug("stocktwits_sentiment_request error=%s", e.__class__.__name__)
+        return None
+
+    if resp.status_code != 200:
+        if resp.status_code in (401, 403, 429):
+            log.debug(
+                "stocktwits_sentiment_http status=%s ticker=%s",
+                resp.status_code,
+                ticker,
+            )
+        return None
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+
+    messages = data.get("messages") or []
+    if not messages:
+        return None
+
+    # Count bullish/bearish messages
+    bullish_count = 0
+    bearish_count = 0
+    neutral_count = 0
+
+    for msg in messages:
+        entities = msg.get("entities") or {}
+        sentiment_obj = entities.get("sentiment")
+        if not sentiment_obj:
+            neutral_count += 1
+            continue
+
+        basic_sentiment = sentiment_obj.get("basic")
+        if basic_sentiment == "Bullish":
+            bullish_count += 1
+        elif basic_sentiment == "Bearish":
+            bearish_count += 1
+        else:
+            neutral_count += 1
+
+    total_labeled = bullish_count + bearish_count
+    if total_labeled == 0:
+        # No sentiment labels available, treat as neutral
+        return 0.0, "Neutral", len(messages), {"provider": "stocktwits"}
+
+    # Calculate sentiment score from bullish/bearish ratio
+    # Score range: [-1.0, 1.0]
+    score = (bullish_count - bearish_count) / total_labeled
+    label = _label_from_score(score)
+
+    details = {
+        "n_articles": len(messages),
+        "provider": "stocktwits",
+        "bullish": bullish_count,
+        "bearish": bearish_count,
+        "neutral": neutral_count,
+    }
+
+    log.debug(
+        "stocktwits_sentiment ticker=%s bullish=%d bearish=%d neutral=%d score=%.2f",
+        ticker.upper(),
+        bullish_count,
+        bearish_count,
+        neutral_count,
+        score,
+    )
+
+    return score, label, len(messages), details
+
+
+def _fetch_reddit_sentiment(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+    """Fetch social sentiment from Reddit using PRAW library.
+
+    Searches relevant subreddits (wallstreetbets, stocks, pennystocks) for
+    recent mentions of the ticker and analyzes sentiment using VADER.
+    Reddit's API requires authentication via client_id:client_secret format
+    in the api_key parameter.
+
+    Free tier: 60 requests/minute per OAuth client
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol to search for
+    api_key : str
+        Reddit credentials in format "client_id:client_secret:user_agent"
+        Example: "abc123:def456:catalyst-bot/1.0"
+
+    Returns
+    -------
+    tuple or None
+        (score, label, n_posts, details) where score is VADER compound
+        sentiment averaged across matching posts, or None on error
+    """
+    if not ticker or not api_key:
+        return None
+
+    # Parse Reddit credentials from api_key
+    try:
+        parts = api_key.split(":")
+        if len(parts) < 3:
+            log.debug("reddit_sentiment_invalid_key format must be client_id:client_secret:user_agent")
+            return None
+        client_id = parts[0]
+        client_secret = parts[1]
+        user_agent = ":".join(parts[2:])  # User agent may contain colons
+    except Exception as e:
+        log.debug("reddit_sentiment_key_parse_error error=%s", e.__class__.__name__)
+        return None
+
+    # Import PRAW dynamically to avoid requiring it if Reddit sentiment is disabled
+    try:
+        import praw  # type: ignore
+    except ImportError:
+        log.debug("reddit_sentiment_praw_not_installed install via: pip install praw")
+        return None
+
+    # Import VADER for sentiment analysis
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        vader = SentimentIntensityAnalyzer()
+    except ImportError:
+        log.debug("reddit_sentiment_vader_not_available")
+        return None
+
+    try:
+        reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent,
+        )
+    except Exception as e:
+        log.debug("reddit_sentiment_init_error error=%s", e.__class__.__name__)
+        return None
+
+    # Subreddits to search (focused on trading and penny stocks)
+    subreddits = ["wallstreetbets", "stocks", "pennystocks", "StockMarket"]
+    ticker_upper = ticker.upper()
+
+    # Search for ticker mentions across subreddits
+    # Use "$TICKER" format common in trading subreddits
+    search_queries = [
+        f"${ticker_upper}",
+        ticker_upper,
+        f"${ticker_upper} OR {ticker_upper}",
+    ]
+
+    scores: List[float] = []
+    post_count = 0
+
+    try:
+        for subreddit_name in subreddits:
+            try:
+                subreddit = reddit.subreddit(subreddit_name)
+
+                # Search recent posts (limit to avoid rate limits)
+                # Use first search query (most specific)
+                for submission in subreddit.search(
+                    search_queries[0], time_filter="day", limit=10
+                ):
+                    post_count += 1
+
+                    # Analyze title + selftext sentiment
+                    text = f"{submission.title} {submission.selftext}"
+                    sentiment = vader.polarity_scores(text)
+                    compound = sentiment.get("compound", 0.0)
+                    scores.append(compound)
+
+                    # Also check top comments for additional context
+                    try:
+                        submission.comments.replace_more(limit=0)
+                        for comment in list(submission.comments)[:3]:  # Top 3 comments
+                            comment_sentiment = vader.polarity_scores(comment.body)
+                            scores.append(comment_sentiment.get("compound", 0.0))
+                    except Exception:
+                        pass  # Comment loading can fail, continue
+
+            except Exception as e:
+                log.debug(
+                    "reddit_sentiment_subreddit_error subreddit=%s error=%s",
+                    subreddit_name,
+                    e.__class__.__name__,
+                )
+                continue
+    except Exception as e:
+        log.debug("reddit_sentiment_search_error error=%s", e.__class__.__name__)
+        return None
+
+    if not scores:
+        return None
+
+    # Average sentiment across all posts and comments
+    avg_score = sum(scores) / len(scores)
+    label = _label_from_score(avg_score)
+
+    details = {
+        "n_articles": post_count,
+        "provider": "reddit",
+        "n_sentiment_items": len(scores),
+        "subreddits": subreddits,
+    }
+
+    log.debug(
+        "reddit_sentiment ticker=%s posts=%d sentiment_items=%d score=%.2f",
+        ticker_upper,
+        post_count,
+        len(scores),
+        avg_score,
+    )
+
+    return avg_score, label, post_count, details
+
+
+def _fetch_analyst_recommendations(
+    ticker: str, api_key: str
+) -> Optional[Tuple[float, str, int, Dict[str, Any]]]:
+    """Fetch analyst recommendations from Finnhub.
+
+    Analyst ratings and upgrades trigger institutional buying and are a strong
+    bullish signal. This function retrieves consensus analyst recommendations
+    (buy/hold/sell counts) and detects recent changes (upgrades/downgrades).
+
+    The Finnhub API provides historical recommendation trends with timestamps,
+    allowing us to weight recent changes more heavily than older data.
+
+    Free tier: 60 calls/minute
+
+    Sentiment Calculation
+    ---------------------
+    Net recommendation score is calculated as:
+        score = (strongBuy * 1.0 + buy * 0.5 - sell * 0.5 - strongSell * 1.0) / total_analysts
+
+    Normalized to [-1, 1] range. Recent changes (last 7-30 days) receive
+    additional sentiment boosts/penalties:
+        - Upgrade in last 7 days: +0.4 sentiment boost
+        - Initiated coverage with Buy: +0.3 boost
+        - Downgrade in last 7 days: -0.4 sentiment penalty
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol
+    api_key : str
+        Finnhub API key
+
+    Returns
+    -------
+    tuple or None
+        (score, label, n_recommendations, details) where score is in [-1, 1],
+        label is "Bullish"/"Neutral"/"Bearish", n_recommendations is the
+        total number of analyst ratings considered, and details contains
+        consensus breakdown and recent changes. Returns None on error.
+    """
+    if not api_key or not ticker:
+        return None
+
+    base_url = "https://finnhub.io/api/v1/stock/recommendation"
+    params = {
+        "symbol": ticker.upper(),
+        "token": api_key,
+    }
+
+    try:
+        resp = requests.get(base_url, params=params, timeout=8)
+    except Exception as e:
+        log.debug("analyst_recommendations_request error=%s", e.__class__.__name__)
+        return None
+
+    if resp.status_code != 200:
+        if resp.status_code in (401, 403, 429):
+            log.debug(
+                "analyst_recommendations_http status=%s ticker=%s",
+                resp.status_code,
+                ticker,
+            )
+        return None
+
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+
+    if not data or not isinstance(data, list):
+        return None
+
+    # Finnhub returns list of recommendation snapshots ordered by period (most recent first)
+    # Each snapshot contains: {period, strongBuy, buy, hold, sell, strongSell}
+    # We prioritize the most recent data (first item) but also detect recent changes
+
+    if len(data) == 0:
+        return None
+
+    # Get most recent recommendation snapshot
+    latest = data[0]
+    try:
+        strong_buy = int(latest.get("strongBuy") or 0)
+        buy = int(latest.get("buy") or 0)
+        hold = int(latest.get("hold") or 0)
+        sell = int(latest.get("sell") or 0)
+        strong_sell = int(latest.get("strongSell") or 0)
+    except (ValueError, TypeError):
+        return None
+
+    total_analysts = strong_buy + buy + hold + sell + strong_sell
+    if total_analysts == 0:
+        return None
+
+    # Calculate base sentiment score from consensus
+    # Formula: (strongBuy * 1.0 + buy * 0.5 - sell * 0.5 - strongSell * 1.0) / total
+    numerator = (strong_buy * 1.0) + (buy * 0.5) - (sell * 0.5) - (strong_sell * 1.0)
+    base_score = numerator / float(total_analysts)
+
+    # Clamp to [-1, 1] range
+    base_score = max(-1.0, min(1.0, base_score))
+
+    # Detect recent changes (upgrades/downgrades) by comparing recent snapshots
+    # Look at last 30 days of data to identify trends
+    import datetime
+
+    recent_upgrade = False
+    recent_downgrade = False
+    recent_initiation = False
+
+    try:
+        now = datetime.datetime.utcnow()
+        # Parse period field (format: "YYYY-MM-DD" or "YYYY-MM-01")
+        for i in range(min(len(data), 6)):  # Check last 6 months of data
+            snapshot = data[i]
+            period_str = snapshot.get("period")
+            if not period_str:
+                continue
+
+            try:
+                # Parse period date
+                period_date = datetime.datetime.strptime(period_str, "%Y-%m-%d")
+                days_ago = (now - period_date).days
+
+                # Only consider data from last 30 days for recent changes
+                if days_ago > 30:
+                    continue
+
+                # Compare with previous snapshot (if available)
+                if i + 1 < len(data):
+                    prev = data[i + 1]
+                    prev_strong_buy = int(prev.get("strongBuy") or 0)
+                    prev_buy = int(prev.get("buy") or 0)
+                    prev_sell = int(prev.get("sell") or 0)
+                    prev_strong_sell = int(prev.get("strongSell") or 0)
+
+                    curr_strong_buy = int(snapshot.get("strongBuy") or 0)
+                    curr_buy = int(snapshot.get("buy") or 0)
+                    curr_sell = int(snapshot.get("sell") or 0)
+                    curr_strong_sell = int(snapshot.get("strongSell") or 0)
+
+                    # Detect upgrade: increase in buy ratings or decrease in sell ratings
+                    if (
+                        curr_strong_buy > prev_strong_buy
+                        or curr_buy > prev_buy
+                        or curr_sell < prev_sell
+                        or curr_strong_sell < prev_strong_sell
+                    ):
+                        if days_ago <= 7:
+                            recent_upgrade = True
+
+                    # Detect downgrade: decrease in buy ratings or increase in sell ratings
+                    if (
+                        curr_strong_buy < prev_strong_buy
+                        or curr_buy < prev_buy
+                        or curr_sell > prev_sell
+                        or curr_strong_sell > prev_strong_sell
+                    ):
+                        if days_ago <= 7:
+                            recent_downgrade = True
+                else:
+                    # First snapshot with coverage - check if it's a recent initiation with Buy
+                    if days_ago <= 7 and (strong_buy > 0 or buy > 0):
+                        recent_initiation = True
+
+            except (ValueError, TypeError):
+                continue
+    except Exception:
+        pass
+
+    # Apply sentiment boosts/penalties based on recent changes
+    sentiment_adjustment = 0.0
+
+    if recent_upgrade:
+        sentiment_adjustment += 0.4  # Upgrade in last 7 days
+    if recent_initiation:
+        sentiment_adjustment += 0.3  # Initiated coverage with Buy
+    if recent_downgrade:
+        sentiment_adjustment -= 0.4  # Downgrade in last 7 days
+
+    # Calculate final sentiment with adjustments
+    final_score = base_score + sentiment_adjustment
+    final_score = max(-1.0, min(1.0, final_score))  # Clamp again
+
+    # Determine label
+    label = _label_from_score(final_score)
+
+    # Build details dictionary
+    details = {
+        "n_articles": 1,  # Treat as single consensus data point
+        "provider": "analyst",
+        "strong_buy": strong_buy,
+        "buy": buy,
+        "hold": hold,
+        "sell": sell,
+        "strong_sell": strong_sell,
+        "total_analysts": total_analysts,
+        "consensus": "Buy" if strong_buy + buy > sell + strong_sell else "Hold" if strong_buy + buy == sell + strong_sell else "Sell",
+        "recent_upgrade": recent_upgrade,
+        "recent_downgrade": recent_downgrade,
+        "recent_initiation": recent_initiation,
+        "base_score": base_score,
+        "sentiment_adjustment": sentiment_adjustment,
+    }
+
+    log.debug(
+        "analyst_recommendations ticker=%s total=%d strongBuy=%d buy=%d hold=%d sell=%d strongSell=%d score=%.2f",
+        ticker.upper(),
+        total_analysts,
+        strong_buy,
+        buy,
+        hold,
+        sell,
+        strong_sell,
+        final_score,
+    )
+
+    return final_score, label, 1, details
+
+
 # Mapping of provider identifiers to their fetch functions.
 #
 # NEWS/SENTIMENT PROVIDER PRIORITY STRATEGY:
@@ -398,16 +865,31 @@ def _fetch_finnhub_sentiment(
 #    - Company news, analyst ratings, earnings calendars
 #    - No cost, generous rate limits
 #
-# 2. BACKUP: Alpha Vantage (uses existing subscription)
+# 2. INSTITUTIONAL SENTIMENT: Analyst Recommendations (FREE via Finnhub)
+#    - Consensus analyst ratings (buy/hold/sell counts)
+#    - Recent upgrades/downgrades detection
+#    - Institutional sentiment indicator
+#    - Weight: 0.10 (moderate influence)
+#
+# 3. SOCIAL SENTIMENT: StockTwits + Reddit (FREE tiers)
+#    - StockTwits: 200 calls/hour, real-time investor sentiment
+#    - Reddit: 60 req/min, community discussion analysis
+#    - Complements news with social/retail sentiment
+#    - Research shows social divergence creates 15% larger moves
+#
+# 4. BACKUP: Alpha Vantage (uses existing subscription)
 #    - News sentiment endpoint available
 #    - Already subscribed for price data
 #
-# 3. BACKUP: Marketaux (requires separate API key)
-# 4. BACKUP: StockNewsAPI (requires separate API key)
+# 5. BACKUP: Marketaux (requires separate API key)
+# 6. BACKUP: StockNewsAPI (requires separate API key)
 #
 # Additional providers can be appended here in future patches.
 _PROVIDERS = {
     "finnhub": _fetch_finnhub_sentiment,  # PRIMARY for news/sentiment
+    "analyst": _fetch_analyst_recommendations,  # INSTITUTIONAL sentiment (Finnhub)
+    "stocktwits": _fetch_stocktwits_sentiment,  # SOCIAL sentiment (free)
+    "reddit": _fetch_reddit_sentiment,  # SOCIAL sentiment (free)
     "alpha": _fetch_alpha_sentiment,  # BACKUP (existing subscription)
     "marketaux": _fetch_marketaux_sentiment,  # BACKUP (optional)
     "stocknews": _fetch_stocknews_sentiment,  # BACKUP (optional)

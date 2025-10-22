@@ -181,11 +181,12 @@ class TickerValidator:
             self._valid_tickers = FALLBACK_VALID_TICKERS.copy()
         except Exception as e:
             logger.warning(
-                "Failed to load ticker list (%s), using fallback list of %d common tickers",
+                "Failed to load ticker list (%s), disabling ticker validation to avoid false rejections",
                 str(e),
-                len(FALLBACK_VALID_TICKERS),
             )
-            self._valid_tickers = FALLBACK_VALID_TICKERS.copy()
+            # Don't use restrictive fallback list for penny stock bot
+            # Ticker extraction logic will handle false positives (ESMO, FDA, etc.)
+            self._valid_tickers = None
 
     def is_valid(self, ticker: str) -> bool:
         """

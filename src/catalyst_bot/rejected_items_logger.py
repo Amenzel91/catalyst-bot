@@ -6,11 +6,16 @@ by the Missed Opportunities Analyzer to discover new keywords and optimize filte
 
 Only logs items within price range ($0.10-$10) to avoid massive files.
 
+CRITICAL FIX: Added deduplication based on (ticker, rejection_ts) tuple to prevent
+duplicate logging of the same rejection event. Uses a bounded LRU cache for memory efficiency.
+
 Author: Claude Code (MOA Phase 1)
 Date: 2025-10-10
+Updated: 2025-10-16 (Added deduplication)
 """
 
 import json
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,6 +23,11 @@ from typing import Any, Dict, Optional
 # Price range filter: only log items within this range
 PRICE_FLOOR = 0.10
 PRICE_CEILING = 10.00
+
+# Deduplication cache: stores (ticker, rejection_ts_minute) tuples
+# Uses OrderedDict as an LRU cache with max 10,000 entries
+_DEDUPE_CACHE: OrderedDict[tuple, bool] = OrderedDict()
+_DEDUPE_CACHE_MAX_SIZE = 10_000  # Keep last 10k rejections (~ 1-2 days at high volume)
 
 
 def should_log_rejected_item(price: Optional[float]) -> bool:
@@ -39,6 +49,46 @@ def should_log_rejected_item(price: Optional[float]) -> bool:
     return PRICE_FLOOR <= price <= PRICE_CEILING
 
 
+def _dedupe_check_and_add(ticker: str, rejection_reason: str) -> bool:
+    """
+    Check if this (ticker, rejection_reason) tuple was already logged recently.
+
+    Uses a bounded LRU cache to track recent rejections and prevent duplicates.
+    The cache is keyed by (ticker, rejection_reason, timestamp_minute) to deduplicate
+    within 1-minute windows.
+
+    Args:
+        ticker: Stock ticker symbol
+        rejection_reason: Reason code (LOW_SCORE, HIGH_PRICE, etc.)
+
+    Returns:
+        bool: True if this is a new rejection (should log), False if duplicate
+    """
+    global _DEDUPE_CACHE
+
+    # Create deduplication key: (ticker, reason, minute)
+    # This groups rejections within 1-minute windows to prevent rapid-fire duplicates
+    now = datetime.now(timezone.utc)
+    minute_ts = now.replace(second=0, microsecond=0).isoformat()
+    dedupe_key = (ticker.upper(), rejection_reason, minute_ts)
+
+    # Check if we've seen this key recently
+    if dedupe_key in _DEDUPE_CACHE:
+        # Move to end (LRU)
+        _DEDUPE_CACHE.move_to_end(dedupe_key)
+        return False  # Duplicate, skip logging
+
+    # New rejection - add to cache
+    _DEDUPE_CACHE[dedupe_key] = True
+
+    # Trim cache if it exceeds max size (LRU eviction)
+    if len(_DEDUPE_CACHE) > _DEDUPE_CACHE_MAX_SIZE:
+        # Remove oldest entry (FIFO from front)
+        _DEDUPE_CACHE.popitem(last=False)
+
+    return True  # New rejection, should log
+
+
 def log_rejected_item(
     item: Dict[str, Any],
     rejection_reason: str,
@@ -49,7 +99,11 @@ def log_rejected_item(
     scored: Optional[Any] = None,
 ) -> None:
     """
-    Log a rejected item to data/rejected_items.jsonl.
+    Log a rejected item to data/rejected_items.jsonl with deduplication.
+
+    Uses a bounded LRU cache to prevent duplicate logging of the same rejection
+    event within 1-minute windows. This prevents log file bloat when the same
+    ticker is rejected multiple times in quick succession.
 
     Args:
         item: Original news item dict
@@ -68,6 +122,11 @@ def log_rejected_item(
     ticker = item.get("ticker", "").strip()
     if not ticker:
         return  # Skip items without tickers
+
+    # CRITICAL FIX: Check for duplicates before logging
+    # This prevents the same rejection from being logged multiple times
+    if not _dedupe_check_and_add(ticker, rejection_reason):
+        return  # Duplicate rejection, skip logging
 
     # Extract sentiment breakdown from item's raw dict
     # The breakdown is stored in item.raw by classify.py (line 341-342)

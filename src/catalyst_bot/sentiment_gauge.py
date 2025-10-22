@@ -1,7 +1,7 @@
 """Sentiment gauge visual generator for Discord embeds.
 
-Creates a gradient gauge chart showing aggregate sentiment score with
-color-coded zones and an arrow indicator.
+Creates a radial speedometer gauge showing aggregate sentiment score with
+color-coded zones and a needle indicator (2x larger than previous version).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def generate_sentiment_gauge(
     out_dir: str | Path = "out/gauges",
     style: str = "dark",
 ) -> Optional[Path]:
-    """Generate a sentiment gauge chart showing score on gradient scale.
+    """Generate a radial speedometer sentiment gauge (2x larger, modern design).
 
     Parameters
     ----------
@@ -50,6 +50,7 @@ def generate_sentiment_gauge(
     """
     try:
         import matplotlib
+        import numpy as np
 
         matplotlib.use("Agg", force=True)
 
@@ -74,10 +75,10 @@ def generate_sentiment_gauge(
         filename = f"gauge_{ticker_safe}_{timestamp}.png"
         save_path = out_path / filename
 
-        # Create figure (increased size for better visibility as Discord thumbnail)
-        fig, ax = plt.subplots(figsize=(14, 5), dpi=120)
+        # Create figure (10% larger to be more visible as thumbnail)
+        fig, ax = plt.subplots(figsize=(11, 11), dpi=150)
 
-        # Define color zones and labels
+        # Define color zones (same as before)
         zones = [
             {"min": -100, "max": -40, "color": "#D32F2F", "label": "Strong Bearish"},
             {"min": -40, "max": -10, "color": "#FF6F00", "label": "Bearish"},
@@ -98,52 +99,118 @@ def generate_sentiment_gauge(
             text_color = "#000000"
             border_color = "#CCCCCC"
 
-        # Draw gradient bar with zones
-        bar_height = 0.6
-        bar_y = 0.5
+        # Speedometer settings
+        # Convert score range (-100 to +100) to angle range (180° to 0°)
+        # -100 = 180° (left), 0 = 90° (top), +100 = 0° (right)
+        min_angle = 0  # Right (positive)
+        max_angle = 180  # Left (negative)
+        center_x, center_y = 0.5, 0.3  # Center of speedometer
+        radius_outer = 0.35
+        radius_inner = 0.25
 
+        # Draw color zones as arcs
         for zone in zones:
-            # Calculate position and width
-            x_start = (zone["min"] + 100) / 200  # Normalize to 0-1
-            x_end = (zone["max"] + 100) / 200
-            width = x_end - x_start
+            # Calculate angles for this zone
+            angle_start = max_angle - ((zone["min"] + 100) / 200 * (max_angle - min_angle))
+            angle_end = max_angle - ((zone["max"] + 100) / 200 * (max_angle - min_angle))
 
-            # Draw rectangle for this zone
-            rect = mpatches.Rectangle(
-                (x_start, bar_y - bar_height / 2),
-                width,
-                bar_height,
+            # Create wedge (arc segment)
+            wedge = mpatches.Wedge(
+                (center_x, center_y),
+                radius_outer,
+                angle_end,
+                angle_start,
+                width=radius_outer - radius_inner,
                 facecolor=zone["color"],
                 edgecolor=border_color,
-                linewidth=0.5,
+                linewidth=1.5,
+                alpha=0.9,
             )
-            ax.add_patch(rect)
+            ax.add_patch(wedge)
 
-        # Calculate arrow position
-        arrow_x = (score + 100) / 200  # Normalize to 0-1
+        # Draw tick marks and labels
+        tick_values = [-100, -50, 0, 50, 100]
+        for value in tick_values:
+            # Calculate angle
+            angle = max_angle - ((value + 100) / 200 * (max_angle - min_angle))
+            angle_rad = np.radians(angle)
 
-        # Draw arrow pointing to score (only goes through colored bar, not title)
-        arrow_props = dict(
-            arrowstyle="->", lw=3, color=text_color, connectionstyle="arc3,rad=0"
-        )
+            # Outer tick mark
+            tick_outer_x = center_x + radius_outer * np.cos(angle_rad)
+            tick_outer_y = center_y + radius_outer * np.sin(angle_rad)
 
-        # Arrow goes from top of bar to bottom of bar (only through colored area)
+            # Inner tick mark position (shorter tick)
+            tick_inner_x = center_x + (radius_outer + 0.03) * np.cos(angle_rad)
+            tick_inner_y = center_y + (radius_outer + 0.03) * np.sin(angle_rad)
+
+            # Draw tick mark
+            ax.plot(
+                [tick_outer_x, tick_inner_x],
+                [tick_outer_y, tick_inner_y],
+                color=text_color,
+                linewidth=2,
+                alpha=0.8,
+            )
+
+            # Add value label
+            label_x = center_x + (radius_outer + 0.08) * np.cos(angle_rad)
+            label_y = center_y + (radius_outer + 0.08) * np.sin(angle_rad)
+            ax.text(
+                label_x,
+                label_y,
+                str(value),
+                ha="center",
+                va="center",
+                fontsize=11,
+                color=text_color,
+                fontweight="bold",
+                alpha=0.9,
+            )
+
+        # Calculate needle angle
+        needle_angle = max_angle - ((score + 100) / 200 * (max_angle - min_angle))
+        needle_angle_rad = np.radians(needle_angle)
+
+        # Draw needle (from center to outer edge)
+        needle_length = radius_outer - 0.02
+        needle_x = center_x + needle_length * np.cos(needle_angle_rad)
+        needle_y = center_y + needle_length * np.sin(needle_angle_rad)
+
+        # Draw needle as thick line with arrow
         ax.annotate(
             "",
-            xy=(arrow_x, bar_y - bar_height / 2),  # Arrow tip at bottom of bar
-            xytext=(arrow_x, bar_y + bar_height / 2),  # Arrow start at TOP of bar
-            arrowprops=arrow_props,
+            xy=(needle_x, needle_y),
+            xytext=(center_x, center_y),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                lw=4,
+                color="#FF0000",  # Red needle
+                shrinkA=0,
+                shrinkB=0,
+            ),
+            zorder=100,
         )
 
-        # Add score label above arrow
+        # Draw center circle (hub)
+        center_circle = plt.Circle(
+            (center_x, center_y),
+            0.03,
+            color="#000000",
+            ec=text_color,
+            linewidth=2,
+            zorder=101,
+        )
+        ax.add_patch(center_circle)
+
+        # Add score text in center (below needle hub)
         score_text = f"{score:+.0f}"
         ax.text(
-            arrow_x,
-            bar_y + bar_height / 2 + 0.35,
+            center_x,
+            center_y - 0.12,
             score_text,
             ha="center",
-            va="bottom",
-            fontsize=16,
+            va="center",
+            fontsize=32,
             fontweight="bold",
             color=text_color,
         )
@@ -153,55 +220,36 @@ def generate_sentiment_gauge(
             (z["label"] for z in zones if z["min"] <= score <= z["max"]), "Neutral"
         )
 
-        # Add zone label below arrow
+        # Add zone label below score
         ax.text(
-            arrow_x,
-            bar_y - bar_height / 2 - 0.15,
+            center_x,
+            center_y - 0.20,
             current_zone,
             ha="center",
-            va="top",
-            fontsize=11,
+            va="center",
+            fontsize=16,
             color=text_color,
             style="italic",
+            alpha=0.9,
         )
 
-        # Add scale markers
-        for value in [-100, -50, 0, 50, 100]:
-            x_pos = (value + 100) / 200
-            ax.plot(
-                [x_pos, x_pos],
-                [bar_y - bar_height / 2 - 0.02, bar_y - bar_height / 2],
-                color=border_color,
-                linewidth=1,
-            )
-            ax.text(
-                x_pos,
-                bar_y - bar_height / 2 - 0.05,
-                str(value),
-                ha="center",
-                va="top",
-                fontsize=8,
-                color=text_color,
-                alpha=0.7,
-            )
-
-        # Add title
-        title = f"Aggregate Sentiment Score{' - ' + ticker if ticker else ''}"
+        # Add title above speedometer
+        title = f"Sentiment Score{' - ' + ticker if ticker else ''}"
         ax.text(
-            0.5,
-            0.95,
+            center_x,
+            0.75,
             title,
             ha="center",
-            va="top",
-            fontsize=14,
+            va="center",
+            fontsize=18,
             fontweight="bold",
             color=text_color,
-            transform=ax.transAxes,
         )
 
         # Set axis limits and remove axes
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
+        ax.set_aspect("equal")
         ax.axis("off")
 
         # Tight layout
@@ -213,7 +261,7 @@ def generate_sentiment_gauge(
             facecolor=fig.get_facecolor(),
             edgecolor="none",
             bbox_inches="tight",
-            dpi=100,
+            dpi=150,
         )
         plt.close(fig)
 

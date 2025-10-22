@@ -14,6 +14,9 @@ Environment Variables:
 * ``LLM_LOCAL_MAX_LENGTH`` – Max article length for local (default: 1000)
 * ``GEMINI_API_KEY`` – Gemini API key (free tier: 1500 req/day)
 * ``ANTHROPIC_API_KEY`` – Anthropic Claude key (paid fallback)
+
+CRITICAL FIX: Added rate limit tracking with exponential backoff to prevent
+API quota exhaustion and rate limit errors.
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -43,6 +48,145 @@ except ImportError:
     genai = None
 
 _logger = logging.getLogger(__name__)
+
+
+# Rate limit tracking for Gemini and Claude
+class RateLimitTracker:
+    """
+    Track API calls per minute/hour and implement exponential backoff.
+
+    Prevents quota exhaustion by monitoring request rates and applying
+    backoff when approaching limits.
+    """
+
+    def __init__(
+        self,
+        requests_per_minute: int = 60,
+        requests_per_hour: int = 1500,
+        backoff_threshold: float = 0.8,
+    ):
+        """
+        Initialize rate limit tracker.
+
+        Args:
+            requests_per_minute: Max requests per minute (default: 60)
+            requests_per_hour: Max requests per hour (default: 1500)
+            backoff_threshold: Start backoff at this fraction of limit (default: 0.8 = 80%)
+        """
+        self.requests_per_minute = requests_per_minute
+        self.requests_per_hour = requests_per_hour
+        self.backoff_threshold = backoff_threshold
+
+        # Track recent requests with timestamps
+        self.minute_window: deque[float] = deque(maxlen=requests_per_minute)
+        self.hour_window: deque[float] = deque(maxlen=requests_per_hour)
+
+        # Backoff state
+        self.backoff_until = 0.0  # Timestamp when backoff ends
+        self.consecutive_failures = 0
+
+    def record_request(self) -> None:
+        """Record a new API request."""
+        now = time.time()
+        self.minute_window.append(now)
+        self.hour_window.append(now)
+
+    def record_success(self) -> None:
+        """Record a successful request (resets failure counter)."""
+        self.consecutive_failures = 0
+        self.backoff_until = 0.0
+
+    def record_failure(self, is_rate_limit: bool = False) -> None:
+        """
+        Record a failed request.
+
+        Args:
+            is_rate_limit: True if failure was due to rate limiting (429 error)
+        """
+        self.consecutive_failures += 1
+
+        if is_rate_limit:
+            # Exponential backoff: 2^failures seconds (max 300s = 5 min)
+            backoff_seconds = min(2 ** self.consecutive_failures, 300)
+            self.backoff_until = time.time() + backoff_seconds
+            _logger.warning(
+                "rate_limit_backoff failures=%d backoff_sec=%d",
+                self.consecutive_failures,
+                backoff_seconds,
+            )
+
+    def should_backoff(self) -> tuple[bool, float]:
+        """
+        Check if we should apply backoff before making a request.
+
+        Returns:
+            Tuple of (should_wait, wait_seconds)
+        """
+        now = time.time()
+
+        # Check if we're in active backoff period
+        if now < self.backoff_until:
+            wait = self.backoff_until - now
+            return True, wait
+
+        # Clean up old requests outside time windows
+        minute_cutoff = now - 60
+        hour_cutoff = now - 3600
+
+        # Remove old requests (deque is FIFO, so oldest are at front)
+        while self.minute_window and self.minute_window[0] < minute_cutoff:
+            self.minute_window.popleft()
+        while self.hour_window and self.hour_window[0] < hour_cutoff:
+            self.hour_window.popleft()
+
+        # Check if we're approaching rate limits
+        minute_usage = len(self.minute_window) / self.requests_per_minute
+        hour_usage = len(self.hour_window) / self.requests_per_hour
+
+        # Apply soft backoff when approaching limits
+        if minute_usage >= self.backoff_threshold:
+            # Calculate wait time to stay under limit
+            # If at 80% of limit, wait proportionally longer
+            wait = (minute_usage - self.backoff_threshold) * 2.0
+            _logger.info(
+                "rate_limit_soft_backoff window=minute usage=%.1f%% wait=%.2fs",
+                minute_usage * 100,
+                wait,
+            )
+            return True, wait
+
+        if hour_usage >= self.backoff_threshold:
+            # Hourly limit approaching - apply small delay
+            wait = (hour_usage - self.backoff_threshold) * 5.0
+            _logger.info(
+                "rate_limit_soft_backoff window=hour usage=%.1f%% wait=%.2fs",
+                hour_usage * 100,
+                wait,
+            )
+            return True, wait
+
+        return False, 0.0
+
+    def get_stats(self) -> dict:
+        """Get current rate limit statistics."""
+        now = time.time()
+        minute_cutoff = now - 60
+        hour_cutoff = now - 3600
+
+        # Count requests in windows
+        minute_count = sum(1 for ts in self.minute_window if ts >= minute_cutoff)
+        hour_count = sum(1 for ts in self.hour_window if ts >= hour_cutoff)
+
+        return {
+            "requests_last_minute": minute_count,
+            "requests_last_hour": hour_count,
+            "minute_limit": self.requests_per_minute,
+            "hour_limit": self.requests_per_hour,
+            "minute_usage_pct": round((minute_count / self.requests_per_minute) * 100, 1),
+            "hour_usage_pct": round((hour_count / self.requests_per_hour) * 100, 1),
+            "consecutive_failures": self.consecutive_failures,
+            "in_backoff": now < self.backoff_until,
+        }
 
 
 @dataclass
@@ -93,6 +237,20 @@ class HybridLLMRouter:
         # Track health status
         self.local_healthy = True
         self.gemini_quota_remaining = 1500  # Daily free tier
+
+        # CRITICAL FIX: Initialize rate limit trackers
+        # Gemini free tier: 15 RPM, 1500 RPD (requests per day)
+        self.gemini_rate_limiter = RateLimitTracker(
+            requests_per_minute=15,
+            requests_per_hour=1500,
+            backoff_threshold=0.8,
+        )
+        # Claude paid tier: 50 RPM typical, adjust based on your tier
+        self.claude_rate_limiter = RateLimitTracker(
+            requests_per_minute=50,
+            requests_per_hour=5000,
+            backoff_threshold=0.8,
+        )
 
         # Initialize clients
         self.gemini_client = None
@@ -167,27 +325,84 @@ class HybridLLMRouter:
 
         # Decision 2: Try Gemini Flash (medium complexity, free)
         if self.config.gemini_enabled and self.gemini_quota_remaining > 100:
-            try:
-                result = await self._call_gemini(prompt)
-                if result:
-                    self.gemini_quota_remaining -= 1
-                    _logger.debug(
-                        "llm_route provider=gemini success=True quota=%d",
-                        self.gemini_quota_remaining,
+            # CRITICAL FIX: Check rate limits before calling Gemini
+            should_wait, wait_time = self.gemini_rate_limiter.should_backoff()
+            if should_wait:
+                _logger.info(
+                    "llm_gemini_rate_limit_backoff wait_sec=%.2f stats=%s",
+                    wait_time,
+                    self.gemini_rate_limiter.get_stats(),
+                )
+                # Wait if backoff time is reasonable (<5s)
+                if wait_time < 5.0:
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Skip Gemini and try Claude instead
+                    _logger.warning("llm_gemini_skipped reason=rate_limit_backoff_too_long wait_sec=%.2f", wait_time)
+                    pass  # Fall through to Claude
+
+            if not should_wait or wait_time < 5.0:
+                try:
+                    self.gemini_rate_limiter.record_request()
+                    result = await self._call_gemini(prompt)
+                    if result:
+                        self.gemini_rate_limiter.record_success()
+                        self.gemini_quota_remaining -= 1
+                        _logger.debug(
+                            "llm_route provider=gemini success=True quota=%d rate_stats=%s",
+                            self.gemini_quota_remaining,
+                            self.gemini_rate_limiter.get_stats(),
+                        )
+                        return result
+                    else:
+                        self.gemini_rate_limiter.record_failure(is_rate_limit=False)
+                except Exception as e:
+                    # Check if it's a rate limit error (429 or quota exceeded)
+                    error_msg = str(e).lower()
+                    is_rate_limit = "429" in error_msg or "rate limit" in error_msg or "quota" in error_msg
+                    self.gemini_rate_limiter.record_failure(is_rate_limit=is_rate_limit)
+                    _logger.warning(
+                        "llm_gemini_failed err=%s is_rate_limit=%s",
+                        str(e),
+                        is_rate_limit,
                     )
-                    return result
-            except Exception as e:
-                _logger.warning("llm_gemini_failed err=%s", str(e))
 
         # Decision 3: Fallback to Anthropic Claude (reliable, paid)
         if self.config.anthropic_enabled:
+            # CRITICAL FIX: Check rate limits before calling Claude
+            should_wait, wait_time = self.claude_rate_limiter.should_backoff()
+            if should_wait:
+                _logger.info(
+                    "llm_claude_rate_limit_backoff wait_sec=%.2f stats=%s",
+                    wait_time,
+                    self.claude_rate_limiter.get_stats(),
+                )
+                # Always wait for Claude (it's our last resort)
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+
             try:
+                self.claude_rate_limiter.record_request()
                 result = await self._call_anthropic(prompt)
                 if result:
-                    _logger.debug("llm_route provider=anthropic success=True")
+                    self.claude_rate_limiter.record_success()
+                    _logger.debug(
+                        "llm_route provider=anthropic success=True rate_stats=%s",
+                        self.claude_rate_limiter.get_stats(),
+                    )
                     return result
+                else:
+                    self.claude_rate_limiter.record_failure(is_rate_limit=False)
             except Exception as e:
-                _logger.warning("llm_anthropic_failed err=%s", str(e))
+                # Check if it's a rate limit error (429)
+                error_msg = str(e).lower()
+                is_rate_limit = "429" in error_msg or "rate limit" in error_msg
+                self.claude_rate_limiter.record_failure(is_rate_limit=is_rate_limit)
+                _logger.warning(
+                    "llm_anthropic_failed err=%s is_rate_limit=%s",
+                    str(e),
+                    is_rate_limit,
+                )
 
         # All providers failed
         _logger.error(

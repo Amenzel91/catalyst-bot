@@ -110,6 +110,43 @@ _HEADLINE_EXCLUSIONS = {
     "LIVE",
 }
 
+# Exclusion list for common acronyms that appear in parentheses but are NOT tickers
+# These are organizations, conferences, regulatory bodies, etc. that get falsely matched
+# by the company+ticker pattern like "European Society for Medical Oncology (ESMO)"
+_PARENTHETICAL_EXCLUSIONS = {
+    # Medical/Scientific Conferences
+    "ESMO",  # European Society for Medical Oncology
+    "ASCO",  # American Society of Clinical Oncology
+    "ASH",   # American Society of Hematology
+    "AACR",  # American Association for Cancer Research
+    "AHA",   # American Heart Association
+    # Regulatory/Government
+    "FDA",   # Food and Drug Administration
+    "EMA",   # European Medicines Agency
+    "SEC",   # Securities and Exchange Commission (already a filing source, but not a ticker)
+    "FTC",   # Federal Trade Commission
+    "DOJ",   # Department of Justice
+    "EPA",   # Environmental Protection Agency
+    "WHO",   # World Health Organization
+    "CDC",   # Centers for Disease Control
+    # Stock Exchanges (to avoid matching exchange names as tickers)
+    "NYSE",  # New York Stock Exchange
+    "NASDAQ",
+    "AMEX",  # American Stock Exchange
+    # Business/Industry Organizations
+    "CEO",   # Chief Executive Officer
+    "CFO",   # Chief Financial Officer
+    "CTO",   # Chief Technology Officer
+    "COO",   # Chief Operating Officer
+    "IPO",   # Initial Public Offering
+    "M&A",   # Mergers and Acquisitions
+    "R&D",   # Research and Development
+    # Common Abbreviations
+    "USA",
+    "EU",
+    "UK",
+}
+
 
 def _get_regex(
     allow_otc: Optional[bool],
@@ -157,6 +194,8 @@ def ticker_from_title(
 
     Validates headline start patterns against exclusion list to avoid
     false positives like "PRICE: Stock rises" or "UPDATE: Company announces".
+    Also validates against parenthetical exclusions to avoid matching
+    organization acronyms like "(ESMO)" or "(FDA)" as tickers.
     """
     if not title:
         return None
@@ -171,6 +210,10 @@ def ticker_from_title(
 
     # Normalize ticker
     t = _norm(raw)
+
+    # Check against parenthetical exclusions (ESMO, FDA, etc.)
+    if t in _PARENTHETICAL_EXCLUSIONS:
+        return None
 
     # Check if this is a headline start pattern match
     # The headline pattern is ^([A-Z]{2,5}):\s+ so it matches at start with a colon
@@ -195,6 +238,8 @@ def extract_tickers_from_title(
 
     Validates headline start patterns against exclusion list to avoid
     false positives like "PRICE: Stock rises" or "UPDATE: Company announces".
+    Also validates against parenthetical exclusions to avoid matching
+    organization acronyms like "(ESMO)" or "(FDA)" as tickers.
     """
     if not title:
         return []
@@ -206,6 +251,10 @@ def extract_tickers_from_title(
         if not raw:
             continue
         t = _norm(raw)
+
+        # Check against parenthetical exclusions (ESMO, FDA, etc.)
+        if t in _PARENTHETICAL_EXCLUSIONS:
+            continue
 
         # Check if this is a headline start pattern match
         # The headline pattern is ^([A-Z]{2,5}):\s+ so it matches at start with a colon

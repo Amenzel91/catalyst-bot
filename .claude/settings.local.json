@@ -1,17 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venvScriptspytest.exe tests/test_html_cleaning.py tests/test_title_ticker.py tests/test_ticker_extraction_integration.py -q --tb=no)",
-      "Bash(.venv/Scripts/python.exe:*)",
-      "Bash(.venv/Scripts/pytest.exe tests/test_html_cleaning.py tests/test_title_ticker.py tests/test_ticker_extraction_integration.py -q --tb=no)",
-      "Bash(.venv/Scripts/pre-commit.exe run:*)",
-      "Bash(pip show:*)",
+      "Bash(powershell:*)",
+      "Bash(dir:*)",
+      "Bash(git restore:*)",
+      "Bash(python:*)",
+      "Bash(cat:*)",
+      "Bash(pre-commit run:*)",
+      "Bash(if exist \"data\\news_velocity_test.db\" del /f \"data\\news_velocity_test.db\")",
       "Bash(pip install:*)",
-      "Bash(.venvScriptspytest.exe tests/test_special_securities.py tests/test_ticker_validation.py tests/test_feed_state_manager.py tests/test_feeds_etag_integration.py tests/test_semantic_keywords.py tests/test_html_cleaning.py tests/test_title_ticker.py tests/test_ticker_extraction_integration.py -v --tb=short)",
-      "Bash(.venv/Scripts/pytest.exe tests/test_special_securities.py tests/test_ticker_validation.py tests/test_feed_state_manager.py tests/test_feeds_etag_integration.py tests/test_semantic_keywords.py tests/test_html_cleaning.py tests/test_title_ticker.py tests/test_ticker_extraction_integration.py -v --tb=short)",
-      "Bash(.venv/Scripts/pytest.exe tests/test_special_securities.py tests/test_ticker_validation.py tests/test_feed_state_manager.py tests/test_feeds_etag_integration.py tests/test_semantic_keywords.py tests/test_html_cleaning.py tests/test_title_ticker.py tests/test_ticker_extraction_integration.py -q --tb=no)",
-      "Bash(git mv:*)",
-      "Bash(move:*)"
+      "Bash(echo:*)",
+      "Bash(pip show:*)",
+      "Bash(pytest:*)",
+      "Bash(del test_aftermarket_integration.py)",
+      "Bash(findstr:*)",
+      "Bash(awk:*)",
+      "Bash(tee:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

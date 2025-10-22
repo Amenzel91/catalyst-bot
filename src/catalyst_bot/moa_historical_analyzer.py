@@ -1050,6 +1050,88 @@ def save_analysis_report(
         raise
 
 
+def update_keyword_stats_file(recommendations: List[Dict[str, Any]], min_confidence: float = 0.6) -> Path:
+    """
+    Update keyword_stats.json with recommended weights from MOA analysis.
+
+    This creates a closed-loop system where nightly analysis automatically
+    updates keyword weights based on historical performance data.
+
+    Args:
+        recommendations: List of keyword weight recommendations from calculate_weight_recommendations()
+        min_confidence: Minimum confidence threshold to apply updates (default: 0.6)
+
+    Returns:
+        Path to updated keyword_stats.json file
+
+    Notes:
+        - Only applies recommendations with confidence >= min_confidence (safety threshold)
+        - Preserves existing weights for keywords not in recommendations
+        - Uses correct schema format: {"weights": {...}, "last_updated": "...", "source": "..."}
+    """
+    root, _ = _ensure_moa_dirs()
+    stats_path = root / "data" / "analyzer" / "keyword_stats.json"
+
+    # Load existing weights
+    existing_weights = {}
+    if stats_path.exists():
+        try:
+            with open(stats_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Handle both flat and wrapped formats for backward compatibility
+                existing_weights = data.get("weights", data)
+        except Exception as e:
+            log.warning(f"failed_to_load_existing_weights path={stats_path} err={e}")
+
+    # Track updates
+    updates_applied = 0
+    updates_skipped_confidence = 0
+
+    # Apply recommendations
+    for rec in recommendations:
+        keyword = rec["keyword"]
+        weight = rec["recommended_weight"]
+        confidence = rec.get("confidence", 0.5)
+
+        # Only apply if confidence >= threshold (safety check)
+        if confidence >= min_confidence:
+            old_weight = existing_weights.get(keyword, 1.0)
+            existing_weights[keyword] = weight
+            updates_applied += 1
+
+            log.info(
+                f"keyword_weight_updated keyword={keyword} old={old_weight:.2f} "
+                f"new={weight:.2f} confidence={confidence:.2f}"
+            )
+        else:
+            updates_skipped_confidence += 1
+            log.debug(
+                f"keyword_weight_skipped_low_confidence keyword={keyword} "
+                f"confidence={confidence:.2f} threshold={min_confidence:.2f}"
+            )
+
+    # Save with correct schema format
+    output = {
+        "weights": existing_weights,
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "source": "moa_nightly_analyzer",
+        "total_keywords": len(existing_weights),
+        "updates_applied": updates_applied,
+        "min_confidence_threshold": min_confidence
+    }
+
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(stats_path, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2)
+
+    log.info(
+        f"keyword_stats_updated path={stats_path} keywords={len(existing_weights)} "
+        f"updates_applied={updates_applied} skipped={updates_skipped_confidence}"
+    )
+
+    return stats_path
+
+
 def run_historical_moa_analysis() -> Dict[str, Any]:
     """
     Run complete MOA analysis using historical outcomes data.

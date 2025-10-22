@@ -131,7 +131,7 @@ class ChartCache:
         """Get TTL for a timeframe (default: 300 seconds)."""
         return self.ttl_map.get(timeframe.upper(), 300)
 
-    def get_cached_chart(self, ticker: str, timeframe: str) -> Optional[str]:
+    def get_cached_chart(self, ticker: str, timeframe: str) -> Optional[Path]:
         """Retrieve a cached chart URL if not expired.
 
         Parameters
@@ -143,8 +143,8 @@ class ChartCache:
 
         Returns
         -------
-        Optional[str]
-            Cached chart URL or None if cache miss/expired
+        Optional[Path]
+            Cached chart path or None if cache miss/expired
         """
         ticker = ticker.upper()
         timeframe = timeframe.upper()
@@ -179,13 +179,14 @@ class ChartCache:
             return None
 
         log.info("cache_hit ticker=%s tf=%s age=%ds", ticker, timeframe, age)
-        return url
+        # Convert string path to Path object for compatibility
+        return Path(url) if isinstance(url, str) else url
 
     def cache_chart(
         self,
         ticker: str,
         timeframe: str,
-        url: str,
+        url: str | Path,
         ttl_seconds: Optional[int] = None,
     ) -> None:
         """Store a chart URL in the cache.
@@ -204,6 +205,9 @@ class ChartCache:
         ticker = ticker.upper()
         timeframe = timeframe.upper()
 
+        # Convert Path to string if needed
+        url_str = str(url) if isinstance(url, Path) else url
+
         # Use custom TTL or default based on timeframe
         ttl = ttl_seconds if ttl_seconds is not None else self._get_ttl(timeframe)
         created_at = int(time.time())
@@ -215,7 +219,7 @@ class ChartCache:
                 (ticker, timeframe, url, created_at, ttl)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (ticker, timeframe, url, created_at, ttl),
+                (ticker, timeframe, url_str, created_at, ttl),
             )
             conn.commit()
 
@@ -224,7 +228,7 @@ class ChartCache:
             ticker,
             timeframe,
             ttl,
-            url[:60],
+            url_str[:60],
         )
 
     def clear_expired(self) -> int:

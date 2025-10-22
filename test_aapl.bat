@@ -1,0 +1,2 @@
+@echo off
+python scripts/test_alert_appearance.py --ticker AAPL --price 175.50 --prev-close 170.00 --volume 50000000 --avg-volume 45000000 --sentiment 0.75 --score 7.5 --catalyst "Product Launch" --reason "Apple announces new product"
