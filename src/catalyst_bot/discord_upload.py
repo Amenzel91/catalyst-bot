@@ -81,7 +81,15 @@ def post_embed_with_attachment(
 
     # DEBUG: Log embed image/thumbnail references
     log.info("WEBHOOK_DEBUG file_path=%s file_exists=%s", file_path, file_path.exists())
+    if file_path.exists():
+        log.info("WEBHOOK_DEBUG file_size_bytes=%d file_absolute_path=%s",
+                 file_path.stat().st_size, file_path.absolute())
     log.info("WEBHOOK_DEBUG additional_files=%s", additional_files)
+    if additional_files:
+        for idx, add_file in enumerate(additional_files):
+            if add_file and add_file.exists():
+                log.info("WEBHOOK_DEBUG additional_file[%d] name=%s size=%d",
+                         idx, add_file.name, add_file.stat().st_size)
     log.info("WEBHOOK_DEBUG embed_image_before=%s embed_thumbnail_before=%s",
              embed.get("image", {}).get("url"),
              embed.get("thumbnail", {}).get("url"))
@@ -107,24 +115,64 @@ def post_embed_with_attachment(
                     log.info("WEBHOOK_DEBUG uploading gauge as files[1] filename=%s", add_file.name)
                     break
 
-        # IMPORTANT: Discord webhooks require FILENAME references (not field names)
-        # The embed references should already be set correctly in alerts.py
-        # We just need to ensure files are uploaded correctly
+        # IMPORTANT: Discord API v10+ REQUIRES an attachments array when using attachment:// references
+        # This fixes the recurring bug where charts are generated but don't appear in Discord
         log.info("WEBHOOK_DEBUG embed references preserved: image=%s thumbnail=%s",
                  embed.get("image", {}).get("url"),
                  embed.get("thumbnail", {}).get("url"))
 
-        data = {"payload_json": json.dumps({"embeds": [embed]})}
+        # Build attachments array dynamically based on uploaded files
+        attachments_array = []
+
+        # Primary chart attachment (always present)
+        attachments_array.append({
+            "id": 0,
+            "filename": file_path.name,
+            "description": "Chart"
+        })
+
+        # Additional files (gauge, etc.) if present
+        if additional_files:
+            for idx, add_file in enumerate(additional_files, start=1):
+                if add_file and add_file.exists():
+                    attachments_array.append({
+                        "id": idx,
+                        "filename": add_file.name,
+                        "description": "Sentiment Gauge"
+                    })
+                    break  # Only first additional file
+
+        log.info("WEBHOOK_DEBUG attachments_array=%s", attachments_array)
+
+        # Build payload with attachments array (REQUIRED for Discord API v10+)
+        payload_json = {
+            "embeds": [embed],
+            "attachments": attachments_array
+        }
+
+        data = {"payload_json": json.dumps(payload_json)}
 
         # DEBUG: Print full embed before sending
         log.info("WEBHOOK_DEBUG embed_json=%s", json.dumps(embed, indent=2))
         log.info("WEBHOOK_DEBUG files_dict_keys=%s", list(files_dict.keys()))
 
         r = requests.post(webhook_url, data=data, files=files_dict, timeout=15)
-        log.info("WEBHOOK_DEBUG webhook_response status=%d files=%d", r.status_code, len(files_dict))
+        log.info("WEBHOOK_DEBUG webhook_response status=%d files=%d content_length=%d",
+                 r.status_code, len(files_dict), len(r.content) if r.content else 0)
+
+        # Log full response for debugging
+        if r.status_code >= 200 and r.status_code < 300:
+            log.info("WEBHOOK_SUCCESS response_preview=%s", r.text[:200] if r.text else "empty")
 
         if r.status_code >= 400:
-            log.error("WEBHOOK_ERROR response=%s", r.text[:500])
+            log.error("WEBHOOK_ERROR status=%d response_full=%s", r.status_code, r.text[:1000])
+            # Check for specific Discord error messages
+            if "Cannot send an empty message" in r.text:
+                log.error("WEBHOOK_ERROR_DETAIL empty_message_detected - embed may be malformed")
+            if "Invalid Form Body" in r.text:
+                log.error("WEBHOOK_ERROR_DETAIL invalid_form_body - check embed structure")
+            if "attachments" in r.text.lower():
+                log.error("WEBHOOK_ERROR_DETAIL attachment_issue - files may not be uploading correctly")
 
         return 200 <= r.status_code < 300
 
@@ -222,11 +270,15 @@ def _post_via_bot_api(
     data = {"payload_json": json.dumps(payload)}
 
     try:
-        log.debug("posting_to_bot_api url=%s", url)
-        log.debug(
-            "file_attachment name=%s exists=%s", file_path.name, file_path.exists()
-        )
-        log.debug("components_count count=%d", len(components))
+        log.info("BOT_API_DEBUG posting_to_bot_api url=%s", url)
+        log.info("BOT_API_DEBUG file_attachment name=%s exists=%s size=%d",
+                 file_path.name, file_path.exists(),
+                 file_path.stat().st_size if file_path.exists() else 0)
+        log.info("BOT_API_DEBUG components_count count=%d", len(components))
+        log.info("BOT_API_DEBUG attachments_array=%s", attachments)
+        log.info("BOT_API_DEBUG embed_image=%s embed_thumbnail=%s",
+                 embed.get("image", {}).get("url"),
+                 embed.get("thumbnail", {}).get("url"))
 
         # Prepare multiple files
         files_dict = {}
@@ -250,12 +302,22 @@ def _post_via_bot_api(
             r = requests.post(
                 url, headers=headers, data=data, files=files_dict, timeout=15
             )
-            log.debug(
-                "bot_api_response status=%d files=%d", r.status_code, len(files_dict)
-            )
+            log.info("BOT_API_DEBUG response status=%d files=%d content_length=%d",
+                     r.status_code, len(files_dict), len(r.content) if r.content else 0)
+
+            # Log success response preview
+            if r.status_code >= 200 and r.status_code < 300:
+                log.info("BOT_API_SUCCESS response_preview=%s", r.text[:200] if r.text else "empty")
 
             if r.status_code >= 400:
-                log.debug("error_response body=%s", r.text[:500])
+                log.error("BOT_API_ERROR status=%d response_full=%s", r.status_code, r.text[:1000])
+                # Check for specific Discord error messages
+                if "Cannot send an empty message" in r.text:
+                    log.error("BOT_API_ERROR_DETAIL empty_message_detected")
+                if "Invalid Form Body" in r.text:
+                    log.error("BOT_API_ERROR_DETAIL invalid_form_body")
+                if "attachments" in r.text.lower():
+                    log.error("BOT_API_ERROR_DETAIL attachment_issue")
 
             return 200 <= r.status_code < 300
 

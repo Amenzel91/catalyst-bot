@@ -1,0 +1,780 @@
+"""SEC filing-specific Discord alert formatting and delivery.
+
+This module provides enhanced Discord embeds and interactive components for
+SEC filing alerts, integrating with the filing prioritization system and RAG Q&A.
+
+Key Features:
+- Rich embeds with metrics, guidance, and sentiment
+- Priority-based color coding (critical=red, high=yellow, medium=blue)
+- Interactive buttons (View Filing, Dig Deeper, Generate Chart)
+- Integration with filing_prioritizer.py for scoring
+- Integration with rag_system.py for Q&A functionality
+
+Environment Variables:
+- SEC_FILING_ALERTS_ENABLED: Enable SEC-specific alerts (default: true)
+- SEC_ALERT_MIN_PRIORITY: Minimum priority tier to send alerts (default: high)
+
+Example:
+    >>> from sec_filing_alerts import send_sec_filing_alert
+    >>> from filing_prioritizer import calculate_priority
+    >>>
+    >>> priority = calculate_priority(filing, sentiment, guidance, watchlist=["AAPL"])
+    >>> await send_sec_filing_alert(
+    ...     filing_section=filing,
+    ...     sentiment_output=sentiment,
+    ...     guidance_analysis=guidance,
+    ...     numeric_metrics=metrics,
+    ...     priority_score=priority,
+    ...     llm_summary="Strong Q4 results with revenue beat...",
+    ...     keywords=["earnings_beat", "revenue_growth", "guidance_raised"],
+    ...     webhook_url=discord_webhook_url,
+    ... )
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+try:
+    from .logging_utils import get_logger
+except Exception:
+    import logging
+
+    logging.basicConfig(level=logging.INFO)
+
+    def get_logger(_):
+        return logging.getLogger("sec_filing_alerts")
+
+
+log = get_logger("sec_filing_alerts")
+
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+# Priority tier emojis and colors
+PRIORITY_CONFIG = {
+    "critical": {
+        "emoji": "🔴",
+        "color": 0xFF0000,  # Red
+        "label": "CRITICAL",
+    },
+    "high": {
+        "emoji": "🟡",
+        "color": 0xFFD700,  # Gold
+        "label": "HIGH",
+    },
+    "medium": {
+        "emoji": "🔵",
+        "color": 0x3498DB,  # Blue
+        "label": "MEDIUM",
+    },
+    "low": {
+        "emoji": "⚪",
+        "color": 0x95A5A6,  # Gray
+        "label": "LOW",
+    },
+}
+
+# Sentiment emojis
+SENTIMENT_EMOJIS = {
+    "bullish": "🟢",
+    "bearish": "🔴",
+    "neutral": "⚪",
+    "mixed": "🟡",
+}
+
+
+# ============================================================================
+# Embed Creation
+# ============================================================================
+
+
+def create_sec_filing_embed(
+    filing_section,
+    sentiment_output,
+    guidance_analysis=None,
+    numeric_metrics=None,
+    priority_score=None,
+    llm_summary: str = "",
+    keywords: List[str] = None,
+) -> dict:
+    """
+    Create rich Discord embed for SEC filing alert.
+
+    Layout:
+    - Title: 🚨 {TICKER} | {Filing Type} - {Priority Badge}
+    - Summary: LLM-generated 100-150 word summary
+    - Key Metrics: Revenue, EPS, margins with YoY changes
+    - Guidance: Raised/Lowered/Maintained with specifics
+    - Sentiment: Score + emoji + justification
+    - Footer: Impact weight, confidence, filing timestamp
+
+    Parameters
+    ----------
+    filing_section : FilingSection
+        Parsed filing from sec_parser.py
+    sentiment_output : SECSentimentOutput
+        Sentiment analysis from sec_sentiment.py
+    guidance_analysis : GuidanceAnalysis, optional
+        Forward guidance from guidance_extractor.py
+    numeric_metrics : NumericMetrics, optional
+        Financial metrics from numeric_extractor.py
+    priority_score : PriorityScore, optional
+        Priority score from filing_prioritizer.py
+    llm_summary : str
+        Summary from llm_chain.py
+    keywords : list[str], optional
+        Keywords from llm_chain.py
+
+    Returns
+    -------
+    dict
+        Discord embed dictionary
+
+    Examples
+    --------
+    >>> embed = create_sec_filing_embed(
+    ...     filing_section=filing,
+    ...     sentiment_output=sentiment,
+    ...     priority_score=priority,
+    ...     llm_summary="Strong Q4 with 25% revenue growth...",
+    ...     keywords=["earnings_beat", "revenue_growth"],
+    ... )
+    >>> embed["title"]
+    '🚨 AAPL | 8-K Item 2.02 - 🔴 CRITICAL'
+    """
+    # Determine priority configuration
+    tier = priority_score.tier if priority_score else "medium"
+    priority_cfg = PRIORITY_CONFIG.get(tier, PRIORITY_CONFIG["medium"])
+
+    # Build title with priority badge
+    title_parts = [
+        priority_cfg["emoji"],
+        filing_section.ticker.upper(),
+        "|",
+        filing_section.filing_type,
+    ]
+
+    # Add item code for 8-K filings
+    if filing_section.filing_type == "8-K" and filing_section.item_code:
+        title_parts.append(f"Item {filing_section.item_code}")
+
+    # Add catalyst type if available
+    if filing_section.catalyst_type:
+        catalyst_display = filing_section.catalyst_type.replace("_", " ").title()
+        title_parts.append(f"- {catalyst_display}")
+
+    title = " ".join(title_parts)
+
+    # Create embed dict (Discord webhook format)
+    embed = {
+        "title": title[:256],  # Discord limit
+        "description": llm_summary[:4096] if llm_summary else "Processing...",
+        "color": priority_cfg["color"],
+        "url": filing_section.filing_url,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "fields": [],
+    }
+
+    # Add priority field
+    priority_value = f"{priority_cfg['emoji']} **{priority_cfg['label']}**"
+    if priority_score:
+        priority_value += f" ({priority_score.total:.2f})"
+        # Add reason breakdown
+        if priority_score.reasons:
+            reasons_text = "\n".join(f"• {r}" for r in priority_score.reasons[:3])
+            priority_value += f"\n{reasons_text}"
+
+    _add_field(embed, "Priority", priority_value, inline=False)
+
+    # Add key metrics if available
+    if numeric_metrics:
+        metrics_parts = []
+
+        # Revenue
+        if hasattr(numeric_metrics, "revenue") and numeric_metrics.revenue:
+            rev = numeric_metrics.revenue
+            if rev.value:
+                metrics_parts.append(f"**Revenue:** ${rev.value:,.0f}M")
+                if rev.yoy_change:
+                    change_emoji = "📈" if rev.yoy_change > 0 else "📉"
+                    metrics_parts[-1] += f" ({change_emoji} {rev.yoy_change:+.1f}%)"
+
+        # EPS
+        if hasattr(numeric_metrics, "eps") and numeric_metrics.eps:
+            eps = numeric_metrics.eps
+            if eps.value:
+                metrics_parts.append(f"**EPS:** ${eps.value:.2f}")
+                if eps.yoy_change:
+                    change_emoji = "📈" if eps.yoy_change > 0 else "📉"
+                    metrics_parts[-1] += f" ({change_emoji} {eps.yoy_change:+.1f}%)"
+
+        # Margins
+        if hasattr(numeric_metrics, "margins") and numeric_metrics.margins:
+            margins = numeric_metrics.margins
+            if margins.gross_margin:
+                metrics_parts.append(f"**Gross Margin:** {margins.gross_margin:.1f}%")
+            if margins.operating_margin:
+                metrics_parts.append(f"**Operating Margin:** {margins.operating_margin:.1f}%")
+
+        if metrics_parts:
+            metrics_value = "\n".join(metrics_parts)
+            _add_field(embed, "💰 Key Metrics", metrics_value, inline=False)
+
+    # Add guidance if available
+    if guidance_analysis and guidance_analysis.has_guidance:
+        guidance_parts = []
+
+        for item in guidance_analysis.guidance_items:
+            # Determine emoji based on change direction
+            if item.change_direction == "raised":
+                emoji = "✅"
+                label = "Raised"
+            elif item.change_direction == "lowered":
+                emoji = "❌"
+                label = "Lowered"
+            elif item.change_direction == "maintained":
+                emoji = "⚖️"
+                label = "Maintained"
+            else:
+                emoji = "🆕"
+                label = "New"
+
+            # Format guidance item
+            guidance_str = f"{emoji} **{label}** {item.guidance_type.replace('_', ' ').title()}"
+
+            # Add target range if available
+            if item.target_low or item.target_high:
+                targets = []
+                if item.target_low:
+                    targets.append(f"${item.target_low:,.0f}M")
+                if item.target_high:
+                    targets.append(f"${item.target_high:,.0f}M")
+                guidance_str += f": {' - '.join(targets)}"
+
+            # Add confidence
+            if item.confidence_level != "unknown":
+                guidance_str += f" ({item.confidence_level})"
+
+            guidance_parts.append(guidance_str)
+
+        if guidance_parts:
+            guidance_value = "\n".join(guidance_parts)
+            _add_field(embed, "📈 Forward Guidance", guidance_value, inline=False)
+
+    # Add sentiment
+    if sentiment_output:
+        # Determine sentiment emoji
+        score = sentiment_output.score
+        if score >= 0.3:
+            sentiment_emoji = SENTIMENT_EMOJIS["bullish"]
+            sentiment_label = "Bullish"
+        elif score <= -0.3:
+            sentiment_emoji = SENTIMENT_EMOJIS["bearish"]
+            sentiment_label = "Bearish"
+        else:
+            sentiment_emoji = SENTIMENT_EMOJIS["neutral"]
+            sentiment_label = "Neutral"
+
+        sentiment_value = f"{sentiment_emoji} **{sentiment_label}** ({sentiment_output.score:+.2f})"
+
+        # Add weighted score if different
+        if abs(sentiment_output.weighted_score - sentiment_output.score) > 0.05:
+            sentiment_value += f"\nWeighted: {sentiment_output.weighted_score:+.2f}"
+
+        # Add justification
+        if sentiment_output.justification:
+            just_text = sentiment_output.justification[:200]
+            sentiment_value += f"\n*{just_text}...*"
+
+        _add_field(embed, "🎯 Sentiment", sentiment_value, inline=False)
+
+    # Add keywords if available
+    if keywords:
+        keywords_display = ", ".join(f"`{kw}`" for kw in keywords[:10])
+        _add_field(embed, "🏷️ Keywords", keywords_display, inline=False)
+
+    # Set footer with metadata
+    footer_parts = []
+
+    if priority_score:
+        footer_parts.append(f"Urgency: {priority_score.urgency:.2f}")
+        footer_parts.append(f"Impact: {priority_score.impact:.2f}")
+        footer_parts.append(f"Relevance: {priority_score.relevance:.2f}")
+
+    if sentiment_output and hasattr(sentiment_output, "confidence"):
+        footer_parts.append(f"Confidence: {sentiment_output.confidence:.0%}")
+
+    footer_text = " | ".join(footer_parts)
+    embed["footer"] = {"text": footer_text[:2048]}
+
+    return embed
+
+
+def _add_field(embed, name: str, value: str, inline: bool = True):
+    """Add field to embed dict."""
+    if "fields" not in embed:
+        embed["fields"] = []
+    embed["fields"].append(
+        {
+            "name": name,
+            "value": value or "\u200b",  # Zero-width space for empty fields
+            "inline": inline,
+        }
+    )
+
+
+# ============================================================================
+# Interactive Components
+# ============================================================================
+
+
+def create_sec_filing_buttons(
+    ticker: str,
+    filing_url: str,
+    enable_rag: bool = True,
+    enable_chart: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Create interactive Discord buttons for SEC filing alerts.
+
+    Buttons:
+    1. View Filing 📄 - Link to SEC.gov filing
+    2. Dig Deeper 🔍 - Trigger RAG Q&A (requires interaction endpoint)
+    3. Generate Chart 📊 - Generate price chart
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol
+    filing_url : str
+        URL to SEC filing
+    enable_rag : bool
+        Enable "Dig Deeper" button (requires RAG system)
+    enable_chart : bool
+        Enable chart generation button
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of action rows with button components
+
+    Examples
+    --------
+    >>> buttons = create_sec_filing_buttons("AAPL", "https://sec.gov/...", enable_rag=True)
+    >>> len(buttons)
+    1  # One action row
+    >>> len(buttons[0]["components"])
+    3  # Three buttons
+    """
+    buttons = []
+
+    # Button 1: View Filing (link button)
+    buttons.append(
+        {
+            "type": 2,  # Button
+            "style": 5,  # Link button (gray)
+            "label": "View Filing",
+            "url": filing_url,
+            "emoji": {"name": "📄"},
+        }
+    )
+
+    # Button 2: Dig Deeper (requires interaction endpoint)
+    if enable_rag:
+        buttons.append(
+            {
+                "type": 2,  # Button
+                "style": 1,  # Primary (blue)
+                "label": "Dig Deeper",
+                "custom_id": f"rag_query_{ticker}",
+                "emoji": {"name": "🔍"},
+            }
+        )
+
+    # Button 3: Generate Chart
+    if enable_chart:
+        buttons.append(
+            {
+                "type": 2,  # Button
+                "style": 2,  # Secondary (gray)
+                "label": "Chart",
+                "custom_id": f"chart_{ticker}_1D",
+                "emoji": {"name": "📊"},
+            }
+        )
+
+    # Return as action row (Discord requires buttons in rows)
+    return [{"type": 1, "components": buttons}]  # Action row
+
+
+# ============================================================================
+# Alert Sending
+# ============================================================================
+
+
+async def send_sec_filing_alert(
+    filing_section,
+    sentiment_output,
+    guidance_analysis=None,
+    numeric_metrics=None,
+    priority_score=None,
+    llm_summary: str = "",
+    keywords: List[str] = None,
+    webhook_url: str = None,
+    enable_buttons: bool = True,
+) -> Optional[dict]:
+    """
+    Send SEC filing alert to Discord with rich embed and interactive buttons.
+
+    This is the main entry point for sending SEC filing alerts. It creates
+    a rich embed with priority scoring, metrics, guidance, and sentiment,
+    then adds interactive buttons for viewing the filing, RAG Q&A, and charting.
+
+    Parameters
+    ----------
+    filing_section : FilingSection
+        Parsed filing from sec_parser.py
+    sentiment_output : SECSentimentOutput
+        Sentiment analysis from sec_sentiment.py
+    guidance_analysis : GuidanceAnalysis, optional
+        Forward guidance from guidance_extractor.py
+    numeric_metrics : NumericMetrics, optional
+        Financial metrics from numeric_extractor.py
+    priority_score : PriorityScore, optional
+        Priority score from filing_prioritizer.py
+    llm_summary : str
+        LLM-generated summary
+    keywords : list[str], optional
+        Extracted keywords
+    webhook_url : str, optional
+        Discord webhook URL (falls back to DISCORD_WEBHOOK env var)
+    enable_buttons : bool
+        Add interactive buttons (default: true)
+
+    Returns
+    -------
+    dict or None
+        Message dict with 'id' and 'channel_id', or None on failure
+
+    Examples
+    --------
+    >>> priority = calculate_priority(filing, sentiment, guidance, watchlist=["AAPL"])
+    >>> result = await send_sec_filing_alert(
+    ...     filing_section=filing,
+    ...     sentiment_output=sentiment,
+    ...     guidance_analysis=guidance,
+    ...     numeric_metrics=metrics,
+    ...     priority_score=priority,
+    ...     llm_summary="Strong Q4 results...",
+    ...     keywords=["earnings_beat"],
+    ...     webhook_url=os.getenv("DISCORD_WEBHOOK"),
+    ... )
+    >>> result["id"]
+    1234567890123456789
+    """
+    # Check if SEC filing alerts are enabled
+    if not is_sec_filing_alerts_enabled():
+        log.debug("SEC filing alerts disabled via configuration")
+        return None
+
+    # Check minimum priority threshold
+    if priority_score:
+        min_tier = get_min_priority_tier()
+        tier_order = ["low", "medium", "high", "critical"]
+        if tier_order.index(priority_score.tier) < tier_order.index(min_tier):
+            log.info(
+                f"Skipping alert for {filing_section.ticker}: "
+                f"priority {priority_score.tier} below threshold {min_tier}"
+            )
+            return None
+
+    # Get webhook URL
+    if not webhook_url:
+        webhook_url = os.getenv("DISCORD_WEBHOOK")
+
+    if not webhook_url:
+        log.error("No Discord webhook URL configured")
+        return None
+
+    # Create embed
+    embed = create_sec_filing_embed(
+        filing_section=filing_section,
+        sentiment_output=sentiment_output,
+        guidance_analysis=guidance_analysis,
+        numeric_metrics=numeric_metrics,
+        priority_score=priority_score,
+        llm_summary=llm_summary,
+        keywords=keywords,
+    )
+
+    # Create buttons
+    components = None
+    if enable_buttons:
+        try:
+            from .rag_system import is_rag_enabled
+
+            enable_rag = is_rag_enabled()
+        except Exception:
+            enable_rag = False
+
+        components = create_sec_filing_buttons(
+            ticker=filing_section.ticker,
+            filing_url=filing_section.filing_url,
+            enable_rag=enable_rag,
+            enable_chart=True,
+        )
+
+    # Send to Discord using aiohttp directly
+    try:
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            # Build payload with embeds and optional components
+            payload = {
+                "embeds": [embed if isinstance(embed, dict) else embed],
+            }
+
+            if components:
+                payload["components"] = components
+
+            # Send to webhook
+            response = await session.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+
+            if response.status in (200, 204):
+                message_data = await response.json()
+                log.info(
+                    f"sec_filing_alert_sent ticker={filing_section.ticker} "
+                    f"filing_type={filing_section.filing_type} "
+                    f"priority={priority_score.tier if priority_score else 'unknown'}"
+                )
+                return message_data
+            else:
+                error_text = await response.text()
+                log.error(f"Discord webhook failed: {response.status} {error_text}")
+                return None
+
+    except Exception as e:
+        log.error(f"Failed to send SEC filing alert: {e}", exc_info=True)
+        return None
+
+
+# ============================================================================
+# RAG Integration (Dig Deeper Button Handler)
+# ============================================================================
+
+
+async def handle_dig_deeper_interaction(
+    ticker: str,
+    user_question: str,
+    interaction_token: str,
+    webhook_url: str,
+) -> bool:
+    """
+    Handle "Dig Deeper" button interaction by querying RAG system.
+
+    This function is called when a user clicks the "Dig Deeper" button
+    on a SEC filing alert. It retrieves relevant filing chunks from the
+    RAG system and generates an answer using the LLM.
+
+    Note: Requires Discord Application with interaction endpoint configured.
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol
+    user_question : str
+        User's question about the filing
+    interaction_token : str
+        Discord interaction token for responding
+    webhook_url : str
+        Discord webhook URL for editing response
+
+    Returns
+    -------
+    bool
+        True if successfully handled, False otherwise
+
+    Examples
+    --------
+    >>> # Called from Discord interaction endpoint
+    >>> await handle_dig_deeper_interaction(
+    ...     ticker="AAPL",
+    ...     user_question="What were the acquisition terms?",
+    ...     interaction_token="interaction_token_here",
+    ...     webhook_url=webhook_url,
+    ... )
+    True
+    """
+    try:
+        from .rag_system import get_rag
+
+        rag = get_rag()
+        if not rag:
+            log.warning("RAG system not available for Dig Deeper interaction")
+            return False
+
+        # Query RAG system
+        answer = await rag.answer_question(user_question, ticker)
+
+        # Send response via interaction webhook
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            # Edit original interaction response
+            edit_url = f"{webhook_url}/messages/@original"
+
+            payload = {
+                "content": f"**Q:** {user_question}\n\n**A:** {answer}",
+            }
+
+            response = await session.patch(
+                edit_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+
+            if response.status in (200, 204):
+                log.info(f"rag_interaction_success ticker={ticker}")
+                return True
+            else:
+                log.error(f"Failed to edit interaction response: {response.status}")
+                return False
+
+    except Exception as e:
+        log.error(f"Failed to handle Dig Deeper interaction: {e}", exc_info=True)
+        return False
+
+
+# ============================================================================
+# Configuration Helpers
+# ============================================================================
+
+
+def is_sec_filing_alerts_enabled() -> bool:
+    """Check if SEC filing alerts are enabled."""
+    return os.getenv("SEC_FILING_ALERTS_ENABLED", "true").lower() in ("true", "1", "yes")
+
+
+def get_min_priority_tier() -> str:
+    """Get minimum priority tier for sending alerts."""
+    tier = os.getenv("SEC_ALERT_MIN_PRIORITY", "high").lower()
+    if tier in ("critical", "high", "medium", "low"):
+        return tier
+    return "high"  # Default
+
+
+# ============================================================================
+# Batch Alert Digest
+# ============================================================================
+
+
+async def send_daily_digest(
+    filings: List[dict],
+    webhook_url: str = None,
+) -> Optional[dict]:
+    """
+    Send daily digest of medium/low priority filings.
+
+    Groups filings by ticker and summarizes key developments for users
+    who don't want real-time alerts for every filing.
+
+    Parameters
+    ----------
+    filings : list[dict]
+        List of filing dicts with keys: ticker, filing_type, summary, priority
+    webhook_url : str, optional
+        Discord webhook URL
+
+    Returns
+    -------
+    dict or None
+        Message dict or None on failure
+
+    Examples
+    --------
+    >>> filings = [
+    ...     {"ticker": "AAPL", "filing_type": "10-Q", "summary": "...", "priority": 0.5},
+    ...     {"ticker": "MSFT", "filing_type": "8-K", "summary": "...", "priority": 0.4},
+    ... ]
+    >>> await send_daily_digest(filings, webhook_url=os.getenv("DISCORD_WEBHOOK"))
+    """
+    if not filings:
+        log.debug("No filings for daily digest")
+        return None
+
+    if not webhook_url:
+        webhook_url = os.getenv("DISCORD_WEBHOOK")
+
+    if not webhook_url:
+        log.error("No Discord webhook URL configured for digest")
+        return None
+
+    try:
+        import aiohttp
+
+        # Group filings by ticker
+        by_ticker = {}
+        for filing in filings:
+            ticker = filing.get("ticker", "UNKNOWN")
+            if ticker not in by_ticker:
+                by_ticker[ticker] = []
+            by_ticker[ticker].append(filing)
+
+        # Create digest embed (dict format)
+        embed = {
+            "title": "📰 Daily SEC Filings Digest",
+            "description": f"Summary of {len(filings)} filings from {len(by_ticker)} companies",
+            "color": 0x3498DB,  # Blue
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "fields": [],
+            "footer": {"text": "Medium/Low priority filings • View individual filings for details"},
+        }
+
+        # Add ticker summaries (max 25 fields)
+        for ticker, ticker_filings in list(by_ticker.items())[:25]:
+            filing_types = ", ".join(f.get("filing_type", "?") for f in ticker_filings)
+            summary_parts = [f"**Filings:** {filing_types}"]
+
+            # Add first summary if available
+            if ticker_filings[0].get("summary"):
+                summary_text = ticker_filings[0]["summary"][:100]
+                summary_parts.append(f"{summary_text}...")
+
+            embed["fields"].append({
+                "name": f"{ticker} ({len(ticker_filings)} filing{'s' if len(ticker_filings) > 1 else ''})",
+                "value": "\n".join(summary_parts),
+                "inline": False,
+            })
+
+        # Send digest via webhook
+        async with aiohttp.ClientSession() as session:
+            payload = {"embeds": [embed]}
+
+            response = await session.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+
+            if response.status in (200, 204):
+                message_data = await response.json()
+                log.info(f"daily_digest_sent filings_count={len(filings)} tickers={len(by_ticker)}")
+                return message_data
+            else:
+                error_text = await response.text()
+                log.error(f"Failed to send daily digest: {response.status} {error_text}")
+                return None
+
+    except Exception as e:
+        log.error(f"Failed to send daily digest: {e}", exc_info=True)
+        return None

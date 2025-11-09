@@ -95,7 +95,7 @@ def analyze_sec_filing(
     if summary:
         filing_context += f"\nSummary: {summary[:500]}"  # Limit to 500 chars
 
-    system_prompt = """You are a financial analyst specializing in SEC filings for penny stocks.
+    system_prompt = """You are a financial analyst specializing in SEC filings for penny stocks and day trading alerts.
 Analyze the filing and respond with a JSON object containing:
 {
   "sentiment": <float from -1 (very bearish) to +1 (very bullish)>,
@@ -104,19 +104,32 @@ Analyze the filing and respond with a JSON object containing:
   "dilution": "<estimated dilution percentage or 'N/A'>",
   "has_warrants": <true/false>,
   "catalysts": [<list of key catalysts like "capital raise", "debt conversion", etc.>],
-  "summary": "<1-2 sentence summary>",
+  "summary": "<1-2 sentence summary with EXPLICIT trading context>",
   "risk_level": "<'low', 'medium', or 'high'>"
 }
 
+IMPORTANT - Summary Format:
+Your summary MUST start with clear trading context:
+- BULLISH filings: Start with "BULLISH: [reason]..." or "POSITIVE: [reason]..."
+- BEARISH filings: Start with "BEARISH: [reason]..." or "NEGATIVE: [reason]..."
+- NEUTRAL filings: Start with "NEUTRAL: [reason]..." or "MIXED: [reason]..."
+
+Examples:
+- "BULLISH: $10M institutional investment at premium to market price, non-dilutive financing strengthens balance sheet."
+- "BEARISH: $5M dilutive offering with full warrant coverage, represents 15% dilution to existing shareholders."
+- "NEUTRAL: Standard 8-K disclosure with no material financial impact, administrative filing only."
+
 Key factors:
 - 424B5/FWP: Usually offerings (dilutive, bearish unless priced well)
-- 8-K Item 1.01: Material agreements (context-dependent)
+- 8-K Item 1.01: Material agreements (context-dependent, analyze terms)
 - 8-K Item 2.02: Earnings (positive if beats, negative if misses)
-- 8-K Item 8.01: General updates (neutral to positive)
-- Warrants/convertibles: Dilution risk (bearish)
+- 8-K Item 8.01: General updates (usually neutral, analyze specifics)
+- Warrants/convertibles: Dilution risk (bearish due to future dilution)
 - Large deal size relative to market cap: Higher dilution (bearish)
-- Institutional investment: Bullish signal
-"""
+- Institutional investment: Bullish signal (validates company)
+- Debt restructuring: Mixed (reduces pressure but may dilute)
+
+CRITICAL: Traders need immediate clarity on whether to BUY or AVOID. Make your summary actionable."""
 
     user_prompt = f"""Analyze this SEC filing:
 
@@ -519,11 +532,36 @@ async def extract_keywords_from_document(
         if "dilution_pct" in analysis:
             result["dilution_pct"] = analysis.get("dilution_pct")
 
+        # Add enhanced LLM output fields
+        if "reasoning" in analysis:
+            result["llm_reasoning"] = str(analysis["reasoning"])
+        if "event_context" in analysis:
+            result["event_context"] = str(analysis["event_context"])
+        if "trading_thesis" in analysis:
+            result["trading_thesis"] = str(analysis["trading_thesis"])
+        if "expected_price_action" in analysis:
+            result["expected_price_action"] = str(analysis["expected_price_action"])
+
         if result["keywords"]:
-            log.info(
+            # Enhanced logging with LLM reasoning
+            log_msg = (
                 f"sec_keywords_extracted filing={filing_type} analysis_type={analysis_type} "
                 f"keywords={result['keywords']} material={result['material']}"
             )
+
+            # Add reasoning to log if available
+            if "llm_reasoning" in result:
+                log_msg += f" reasoning=\"{result['llm_reasoning'][:100]}...\""
+
+            # Add event context for delisting scenarios
+            if "event_context" in result and result["event_context"] != "null":
+                log_msg += f" event_context={result['event_context']}"
+
+            # Add expected price action
+            if "expected_price_action" in result:
+                log_msg += f" expected_action={result['expected_price_action']}"
+
+            log.info(log_msg)
         else:
             log.debug(f"sec_no_keywords_found filing={filing_type}")
 
@@ -536,4 +574,179 @@ async def extract_keywords_from_document(
         return {}
     except Exception as e:
         log.error(f"keyword_extraction_failed filing={filing_type} err={e}")
+        return {}
+
+
+# ============================================================================
+# WAVE 4: Batch SEC LLM Processing
+# ============================================================================
+
+
+async def batch_extract_keywords_from_documents(
+    sec_filings: list[dict],
+) -> dict[str, dict]:
+    """
+    Batch process multiple SEC filings in parallel using asyncio.gather().
+
+    Agent 2: Integrated with SEC LLM cache to avoid duplicate analysis.
+
+    This eliminates the serial processing bottleneck from calling extract_keywords_from_document_sync()
+    in a loop, which creates a new event loop for each filing.
+
+    Parameters
+    ----------
+    sec_filings : list of dict
+        List of SEC filing items, each containing:
+        - 'item_id': Unique identifier for caching results
+        - 'document_text': Full or partial text of SEC filing
+        - 'title': Filing title
+        - 'filing_type': Type of filing (e.g., '8-K', '424B5')
+        - 'ticker': Stock ticker (optional, for cache key)
+        - 'filing_id': Accession number or unique ID (optional, for cache key)
+
+    Returns
+    -------
+    dict
+        Dictionary mapping item_id -> extraction results (keywords, sentiment, etc.)
+
+    Example
+    -------
+    >>> filings = [
+    ...     {
+    ...         'item_id': 'AAPL_8k_123',
+    ...         'document_text': '...',
+    ...         'title': 'Form 8-K - Apple Inc.',
+    ...         'filing_type': '8-K',
+    ...         'ticker': 'AAPL',
+    ...         'filing_id': '0001234567-25-000123'
+    ...     },
+    ...     # ... more filings
+    ... ]
+    >>> results = await batch_extract_keywords_from_documents(filings)
+    >>> print(results['AAPL_8k_123']['keywords'])
+    ['earnings', 'revenue_beat']
+    """
+    if not sec_filings:
+        return {}
+
+    import asyncio
+    import hashlib
+    import time
+
+    # Agent 2: Initialize SEC LLM cache
+    from .sec_llm_cache import get_sec_llm_cache
+    cache = get_sec_llm_cache()
+
+    # Separate filings into cached and uncached
+    tasks = []
+    item_ids = []
+    results_dict = {}
+    cache_hits = 0
+
+    for filing in sec_filings:
+        item_id = filing.get("item_id")
+        doc_text = filing.get("document_text", "")
+        title = filing.get("title", "")
+        filing_type = filing.get("filing_type", "8-K")
+        ticker = filing.get("ticker", "UNKNOWN")
+        filing_id = filing.get("filing_id", item_id)
+
+        if not item_id or not doc_text:
+            log.warning(
+                "batch_extract_invalid_filing item_id=%s doc_len=%d",
+                item_id,
+                len(doc_text) if doc_text else 0,
+            )
+            continue
+
+        # Agent 2: Check cache first
+        doc_hash = hashlib.md5(doc_text[:1000].encode()).hexdigest()[:8]
+        cached_result = cache.get_cached_sec_analysis(
+            filing_id=filing_id,
+            ticker=ticker,
+            filing_type=filing_type,
+            document_hash=doc_hash,
+        )
+
+        if cached_result is not None:
+            # Cache hit - use cached result
+            results_dict[item_id] = cached_result
+            cache_hits += 1
+            log.debug(
+                "sec_llm_cache_hit_batch item_id=%s ticker=%s filing_type=%s",
+                item_id,
+                ticker,
+                filing_type,
+            )
+        else:
+            # Cache miss - create async task for LLM analysis
+            task = extract_keywords_from_document(
+                document_text=doc_text, title=title, filing_type=filing_type
+            )
+            tasks.append((task, item_id, filing_id, ticker, filing_type, doc_hash))
+            item_ids.append(item_id)
+
+    # Log cache performance
+    if cache_hits > 0:
+        log.info(
+            "sec_llm_batch_cache_hits count=%d/%d (%.1f%% cached)",
+            cache_hits,
+            len(sec_filings),
+            (cache_hits / len(sec_filings)) * 100,
+        )
+
+    if not tasks:
+        # All results from cache
+        return results_dict
+
+    # Process uncached filings in parallel
+    log.info("batch_extract_starting count=%d (cache_hits=%d)", len(tasks), cache_hits)
+    start_time = time.time()
+
+    try:
+        # Extract just the async tasks for gather()
+        async_tasks = [t[0] for t in tasks]
+        results_list = await asyncio.gather(*async_tasks, return_exceptions=True)
+
+        # Build results dictionary and cache new results
+        success_count = 0
+        error_count = 0
+
+        for (_, item_id, filing_id, ticker, filing_type, doc_hash), result in zip(tasks, results_list):
+            if isinstance(result, Exception):
+                log.warning("batch_extract_failed item_id=%s err=%s", item_id, str(result))
+                error_count += 1
+                results_dict[item_id] = {}  # Empty result on error
+            elif result and isinstance(result, dict):
+                results_dict[item_id] = result
+                success_count += 1
+
+                # Agent 2: Cache the result
+                cache.cache_sec_analysis(
+                    filing_id=filing_id,
+                    ticker=ticker,
+                    filing_type=filing_type,
+                    analysis_result=result,
+                    document_hash=doc_hash,
+                )
+            else:
+                log.debug("batch_extract_no_result item_id=%s", item_id)
+                results_dict[item_id] = {}
+
+        elapsed = time.time() - start_time
+        log.info(
+            "batch_extract_complete total=%d cached=%d analyzed=%d success=%d errors=%d elapsed=%.2fs avg=%.2fs",
+            len(sec_filings),
+            cache_hits,
+            len(tasks),
+            success_count,
+            error_count,
+            elapsed,
+            elapsed / len(tasks) if tasks else 0,
+        )
+
+        return results_dict
+
+    except Exception as e:
+        log.error("batch_extract_gather_failed err=%s", str(e), exc_info=True)
         return {}

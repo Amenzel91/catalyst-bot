@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from .logging_utils import get_logger
-from .storage import DB_PATH, connect
+from .storage import DB_PATH, connect, init_optimized_connection
 
 log = get_logger("breakout_feedback")
 

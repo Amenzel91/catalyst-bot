@@ -415,22 +415,34 @@ def get_last_price_snapshot(
        - Excellent rate limits (1000 req/hr on starter plan)
        - Intraday OHLC data available
        - Requires: FEATURE_TIINGO=1, TIINGO_API_KEY
+       - NOTE: Does NOT support OTC tickers
 
     2. BACKUP: Alpha Vantage GLOBAL_QUOTE
        - Free tier: 25 API calls/day (very limited)
        - Falls back when Tiingo unavailable
        - Requires: ALPHAVANTAGE_API_KEY
+       - NOTE: Limited OTC ticker support
 
     3. BACKUP: yfinance
        - Final fallback, no API key required
        - Uses fast_info and history() methods
        - May be slower and less reliable
+       - BEST SUPPORT for OTC tickers
+
+    OTC TICKER HANDLING:
+    ====================
+    OTC tickers (OTCQB, OTCQX, Pink Sheets) are NOT supported by Tiingo IEX
+    and have limited support in Alpha Vantage. For OTC tickers, this function
+    automatically prioritizes yfinance as the PRIMARY provider to maximize
+    success rate.
+
+    OTC Detection: Checks if ticker validation marks it as OTC exchange
 
     Respects the MARKET_PROVIDER_ORDER setting to determine provider precedence.
     Supported identifiers include:
-      - ``tiingo`` (Tiingo IEX API - PRIMARY)
+      - ``tiingo`` (Tiingo IEX API - PRIMARY for listed stocks)
       - ``av`` or ``alpha`` (Alpha Vantage - BACKUP)
-      - ``yf`` or ``yahoo`` (yfinance - BACKUP)
+      - ``yf`` or ``yahoo`` (yfinance - PRIMARY for OTC, BACKUP for listed)
 
     Providers are tried in order; missing values from earlier providers may be
     filled by later ones. Telemetry is logged for each provider attempt, including
@@ -461,6 +473,39 @@ def get_last_price_snapshot(
     if not order_str:
         order_str = "av,yf,tiingo"
     providers = [p.strip().lower() for p in str(order_str).split(",") if p.strip()]
+
+    # OTC TICKER FIX: Detect OTC tickers and prioritize yfinance
+    # Tiingo IEX and Alpha Vantage do not support OTC markets reliably
+    # yfinance has the best OTC ticker support via Yahoo Finance data
+    is_otc = False
+    try:
+        from .ticker_validation import TickerValidator
+        validator = TickerValidator()
+        is_otc = validator.is_otc(nt)
+        if is_otc:
+            # Reorder providers: yfinance first, then others
+            log.info(
+                "otc_ticker_detected ticker=%s provider_reorder=yf_first",
+                nt
+            )
+            # Move yfinance variants to front
+            yf_providers = [p for p in providers if p in {"yf", "yahoo", "yfinance"}]
+            other_providers = [p for p in providers if p not in {"yf", "yahoo", "yfinance"}]
+            providers = yf_providers + other_providers
+            # Ensure yfinance is always in the list for OTC tickers
+            if not yf_providers:
+                log.warning(
+                    "otc_ticker_missing_yfinance ticker=%s adding_yf_provider",
+                    nt
+                )
+                providers = ["yf"] + providers
+    except Exception as e:
+        # If OTC detection fails, continue with default provider order
+        log.debug(
+            "otc_detection_failed ticker=%s err=%s continuing_with_defaults",
+            nt,
+            str(e.__class__.__name__)
+        )
 
     # Helper to log telemetry
     def _log_provider(
@@ -607,6 +652,16 @@ def get_last_price_snapshot(
             continue
 
     # After trying all providers, return what we have (possibly None values)
+    # Log warning if OTC ticker failed to get price data
+    if is_otc and (last is None or prev is None):
+        log.warning(
+            "otc_price_unavailable ticker=%s providers_tried=%s last=%s prev=%s "
+            "hint=yfinance_is_best_for_otc",
+            nt,
+            ",".join(providers),
+            "available" if last is not None else "N/A",
+            "available" if prev is not None else "N/A"
+        )
     return last, prev
 
 
@@ -713,10 +768,19 @@ def batch_get_prices(
                 last_row = ticker_data.iloc[-1]
                 last_price = last_row.get("Close")
 
+                # FIX: Pandas returns NaN for missing data, convert to None
+                # NaN would pass through filters since NaN != None and NaN > 10 = False
+                import math
+                if last_price is not None and (math.isnan(last_price) or not math.isfinite(last_price)):
+                    last_price = None
+
                 # Get prev close (if available)
                 if len(ticker_data) >= 2:
                     prev_row = ticker_data.iloc[-2]
                     prev_close = prev_row.get("Close")
+                    # FIX: Convert NaN to None
+                    if prev_close is not None and (math.isnan(prev_close) or not math.isfinite(prev_close)):
+                        prev_close = None
                 else:
                     prev_close = None
 
@@ -729,6 +793,9 @@ def batch_get_prices(
                 ):  # noqa: E501
                     try:
                         change_pct = ((last_price - prev_close) / prev_close) * 100.0
+                        # FIX: Check if result is NaN
+                        if math.isnan(change_pct) or not math.isfinite(change_pct):
+                            change_pct = None
                     except Exception:
                         pass
 
@@ -766,6 +833,38 @@ def batch_get_prices(
         norm_t = _norm_ticker(ticker)
         if norm_t and norm_t not in results:
             results[norm_t] = (None, None)
+
+    # TIINGO FALLBACK: Retry failed tickers using get_price() which has Tiingo support
+    # This gives us reliable fallback for tickers where yfinance fails
+    failed_tickers = [
+        ticker for ticker, (price, _) in results.items() if price is None
+    ]
+
+    if failed_tickers:
+        log.info(
+            "tiingo_fallback_retry failed_count=%d tickers=%s",
+            len(failed_tickers),
+            ",".join(failed_tickers[:5]) + ("..." if len(failed_tickers) > 5 else "")
+        )
+
+        for ticker in failed_tickers:
+            try:
+                # get_price() has built-in provider chain (tiingo -> av -> yf)
+                fallback_price, fallback_change = get_price(ticker)
+                if fallback_price is not None:
+                    results[ticker] = (fallback_price, fallback_change)
+                    log.debug(
+                        "tiingo_fallback_success ticker=%s price=%.2f change=%.2f",
+                        ticker,
+                        fallback_price,
+                        fallback_change if fallback_change is not None else 0.0
+                    )
+            except Exception as e:
+                log.debug(
+                    "tiingo_fallback_failed ticker=%s err=%s",
+                    ticker,
+                    e.__class__.__name__
+                )
 
     return results
 

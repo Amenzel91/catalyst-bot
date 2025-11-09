@@ -312,12 +312,13 @@ def _init_cache_db() -> None:
     Creates the SQLite database file and tables if they don't exist.
     Uses WAL mode for better concurrent access.
     """
+    from .storage import init_optimized_connection
+
     db_path = Path(CACHE_DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(db_path))
+    conn = init_optimized_connection(str(db_path))
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS fundamental_cache (
                 ticker TEXT NOT NULL,
@@ -351,9 +352,11 @@ def _get_cached_value(
     Returns:
         Cached value if fresh, None otherwise
     """
+    from .storage import init_optimized_connection
+
     try:
         _init_cache_db()
-        conn = sqlite3.connect(CACHE_DB_PATH)
+        conn = init_optimized_connection(CACHE_DB_PATH)
         try:
             cursor = conn.execute(
                 "SELECT value, cached_at FROM fundamental_cache WHERE ticker = ? AND metric = ?",
@@ -406,9 +409,11 @@ def _cache_value(ticker: str, metric: str, value: Optional[float]) -> None:
         metric: Metric name (e.g., "float_shares", "short_interest")
         value: Value to cache (can be None)
     """
+    from .storage import init_optimized_connection
+
     try:
         _init_cache_db()
-        conn = sqlite3.connect(CACHE_DB_PATH)
+        conn = init_optimized_connection(CACHE_DB_PATH)
         try:
             now = datetime.now(timezone.utc).isoformat()
             conn.execute(
@@ -608,9 +613,11 @@ def clear_cache(ticker: Optional[str] = None, metric: Optional[str] = None) -> i
         >>> # Clear specific metric for ticker
         >>> count = clear_cache("AAPL", "short_interest")
     """
+    from .storage import init_optimized_connection
+
     try:
         _init_cache_db()
-        conn = sqlite3.connect(CACHE_DB_PATH)
+        conn = init_optimized_connection(CACHE_DB_PATH)
         try:
             if ticker and metric:
                 cursor = conn.execute(

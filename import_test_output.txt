@@ -1,0 +1,68 @@
+Failed to load ticker list (Error tokenizing data. C error: Expected 1 fields in line 9, saw 14
+), disabling ticker validation to avoid false rejections
+================================================================================
+AGENT 4: IMPORT & DEPENDENCY VALIDATION
+================================================================================
+
+[TEST 1] Core Module Imports
+--------------------------------------------------------------------------------
+[PASS] catalyst_bot.config: PASS (0.033s)
+[PASS] catalyst_bot.runner: PASS (1480.893s)
+[PASS] catalyst_bot.classify: PASS (0.000s)
+[PASS] catalyst_bot.alerts: PASS (0.000s)
+[PASS] catalyst_bot.charts_advanced: PASS (0.000s)
+[PASS] catalyst_bot.feeds: PASS (0.000s)
+[PASS] catalyst_bot.float_data: PASS (0.000s)
+[PASS] catalyst_bot.ticker_validation: PASS (0.000s)
+[PASS] catalyst_bot.dedupe: PASS (0.001s)
+
+[TEST 2] Wave 2-4 New Module Imports
+--------------------------------------------------------------------------------
+[PASS] catalyst_bot.catalyst_badges: PASS (0.000s)
+[PASS] catalyst_bot.multi_ticker_handler: PASS (0.000s)
+[PASS] catalyst_bot.offering_sentiment: PASS (0.000s)
+[PASS] catalyst_bot.sentiment_gauge: PASS (0.000s)
+[PASS] catalyst_bot.discord_interactions: PASS (0.000s)
+[PASS] catalyst_bot.llm_hybrid: PASS (1.972s)
+[PASS] catalyst_bot.moa_historical_analyzer: PASS (0.001s)
+[PASS] catalyst_bot.sentiment_tracking: PASS (0.001s)
+[PASS] catalyst_bot.trade_plan: PASS (0.000s)
+
+[TEST 3] Circular Dependency Check
+--------------------------------------------------------------------------------
+[PASS] catalyst_bot.config: Clean import
+[PASS] catalyst_bot.alerts: Clean import
+[PASS] catalyst_bot.classify: Clean import
+[PASS] catalyst_bot.runner: Clean import
+[PASS] catalyst_bot.discord_interactions: Clean import
+[PASS] catalyst_bot.llm_hybrid: Clean import
+
+[TEST 4] Third-Party Dependencies
+--------------------------------------------------------------------------------
+[OK] pandas: Installed
+[OK] numpy: Installed
+[OK] matplotlib: Installed
+[MISSING] discord: NOT INSTALLED
+[OK] requests: Installed
+[OK] yfinance: Installed
+[MISSING] pandas_ta: NOT INSTALLED
+[OK] anthropic: Installed
+[MISSING] openai: NOT INSTALLED
+
+[TEST 5] Import Performance Analysis
+--------------------------------------------------------------------------------
+Slow imports (>1.0s):
+  [WARN] catalyst_bot.runner: 1480.893s
+  [WARN] catalyst_bot.llm_hybrid: 1.972s
+
+================================================================================
+SUMMARY
+================================================================================
+Core Imports: 9/9 passed
+Wave 2-4 Imports: 9/9 passed
+Circular Dependencies: 0 found
+Missing Dependencies: 3 (discord, pandas_ta, openai)
+Import Health Score: 85/100
+Deployment Blocker: NO
+
+[OK] Results saved to import_validation_results.json

@@ -8,12 +8,8 @@ import pytest
 
 
 def pytest_configure(config):
-    # Suppress only the well-known Python 3.12+ deprecation for datetime.utcnow() in tests.
-    warnings.filterwarnings(
-        "ignore",
-        message=r"datetime\.datetime\.utcnow\(\) is deprecated.*",
-        category=DeprecationWarning,
-    )
+    # Previously suppressed datetime.utcnow() warnings, now fixed with timezone-aware datetime.
+    pass
 
 
 def pytest_collection_modifyitems(config, items):

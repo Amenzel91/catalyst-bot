@@ -88,7 +88,9 @@ class ChartCache:
 
     def _init_db(self):
         """Create the chart_cache table if it doesn't exist."""
-        with sqlite3.connect(str(self.db_path)) as conn:
+        from .storage import init_optimized_connection
+
+        with init_optimized_connection(str(self.db_path)) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS chart_cache (
@@ -114,9 +116,11 @@ class ChartCache:
 
     def _cleanup_old_entries(self):
         """Delete entries older than 24 hours on startup."""
+        from .storage import init_optimized_connection
+
         cutoff = int(time.time()) - (24 * 60 * 60)  # 24 hours ago
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with init_optimized_connection(str(self.db_path)) as conn:
             cursor = conn.execute(
                 "DELETE FROM chart_cache WHERE created_at < ?",
                 (cutoff,),
@@ -146,10 +150,12 @@ class ChartCache:
         Optional[Path]
             Cached chart path or None if cache miss/expired
         """
+        from .storage import init_optimized_connection
+
         ticker = ticker.upper()
         timeframe = timeframe.upper()
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with init_optimized_connection(str(self.db_path)) as conn:
             cursor = conn.execute(
                 """
                 SELECT url, created_at, ttl
@@ -179,8 +185,13 @@ class ChartCache:
             return None
 
         log.info("cache_hit ticker=%s tf=%s age=%ds", ticker, timeframe, age)
-        # Convert string path to Path object for compatibility
-        return Path(url) if isinstance(url, str) else url
+        # Convert string path to Path object and ALWAYS resolve to absolute path
+        # This fixes the recurring chart embedding bug (relative paths fail when CWD changes)
+        cached_path = Path(url) if isinstance(url, str) else url
+        absolute_path = cached_path.resolve()
+        log.info("cache_path_resolved ticker=%s relative=%s absolute=%s",
+                 ticker, cached_path, absolute_path)
+        return absolute_path
 
     def cache_chart(
         self,
@@ -208,11 +219,13 @@ class ChartCache:
         # Convert Path to string if needed
         url_str = str(url) if isinstance(url, Path) else url
 
+        from .storage import init_optimized_connection
+
         # Use custom TTL or default based on timeframe
         ttl = ttl_seconds if ttl_seconds is not None else self._get_ttl(timeframe)
         created_at = int(time.time())
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with init_optimized_connection(str(self.db_path)) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO chart_cache
@@ -239,9 +252,11 @@ class ChartCache:
         int
             Number of entries removed
         """
+        from .storage import init_optimized_connection
+
         now = int(time.time())
 
-        with sqlite3.connect(str(self.db_path)) as conn:
+        with init_optimized_connection(str(self.db_path)) as conn:
             cursor = conn.execute(
                 """
                 DELETE FROM chart_cache
@@ -265,7 +280,9 @@ class ChartCache:
         int
             Number of entries removed
         """
-        with sqlite3.connect(str(self.db_path)) as conn:
+        from .storage import init_optimized_connection
+
+        with init_optimized_connection(str(self.db_path)) as conn:
             cursor = conn.execute("DELETE FROM chart_cache")
             deleted = cursor.rowcount
             conn.commit()
@@ -281,7 +298,9 @@ class ChartCache:
         dict
             Cache statistics including size, oldest/newest entries
         """
-        with sqlite3.connect(str(self.db_path)) as conn:
+        from .storage import init_optimized_connection
+
+        with init_optimized_connection(str(self.db_path)) as conn:
             # Get total count
             cursor = conn.execute("SELECT COUNT(*) FROM chart_cache")
             total = cursor.fetchone()[0]

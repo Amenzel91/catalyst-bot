@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,9 +63,25 @@ class SeenStore:
 
         self.cfg = config
         self.cfg.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.cfg.path), check_same_thread=False)
+        self._lock = threading.Lock()  # Thread-safe access protection
+        self._conn = None
+        self._init_connection()
         self._ensure_schema()
         self.purge_expired()
+
+    def _init_connection(self) -> None:
+        """Initialize connection with WAL mode and optimized pragmas."""
+        from catalyst_bot.storage import init_optimized_connection
+
+        self._conn = init_optimized_connection(
+            str(self.cfg.path),
+            timeout=30
+        )
+
+        # Note: check_same_thread is not needed with init_optimized_connection
+        # as cross-thread access is protected by self._lock
+
+        log.info("seen_store_initialized path=%s wal_mode=enabled", self.cfg.path)
 
     def _ensure_schema(self) -> None:
         cur = self._conn.cursor()
@@ -78,37 +95,88 @@ class SeenStore:
         )
         self._conn.commit()
 
+    def close(self) -> None:
+        """Explicitly close connection."""
+        if self._conn:
+            try:
+                self._conn.close()
+                log.debug("seen_store_connection_closed")
+            except Exception as e:
+                log.warning("seen_store_close_error err=%s", str(e))
+            finally:
+                self._conn = None
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+        return False  # Don't suppress exceptions
+
     def purge_expired(self) -> None:
+        """Remove expired entries (thread-safe)."""
         ttl_secs = self.cfg.ttl_days * 86400
         cutoff = int(time.time()) - ttl_secs
-        try:
-            cur = self._conn.cursor()
-            cur.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
-            self._conn.commit()
-        except Exception as e:  # pragma: no cover - non-fatal
-            log.warning("purge_expired_failed", extra={"error": str(e)})
+        with self._lock:
+            try:
+                cur = self._conn.cursor()
+                cur.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
+                self._conn.commit()
+                log.debug("purge_expired_success cutoff=%d", cutoff)
+            except Exception as e:  # pragma: no cover - non-fatal
+                log.warning("purge_expired_failed", extra={"error": str(e)})
 
     def is_seen(self, item_id: str) -> bool:
-        try:
-            cur = self._conn.cursor()
-            cur.execute("SELECT 1 FROM seen WHERE id = ? LIMIT 1", (item_id,))
-            row = cur.fetchone()
-            return row is not None
-        except Exception as e:  # pragma: no cover - non-fatal
-            log.warning("is_seen_failed", extra={"error": str(e)})
-            return False
+        """Check if item is seen (thread-safe)."""
+        with self._lock:
+            try:
+                cur = self._conn.cursor()
+                cur.execute("SELECT 1 FROM seen WHERE id = ? LIMIT 1", (item_id,))
+                row = cur.fetchone()
+                return row is not None
+            except Exception as e:  # pragma: no cover - non-fatal
+                log.error("is_seen_error item_id=%s err=%s", item_id, str(e), exc_info=True)
+                return False  # Assume not seen on error (safer)
 
     def mark_seen(self, item_id: str, ts: Optional[int] = None) -> None:
+        """Mark item as seen (thread-safe)."""
         ts = int(time.time()) if ts is None else int(ts)
-        try:
-            cur = self._conn.cursor()
-            cur.execute(
-                "INSERT OR REPLACE INTO seen(id, ts) VALUES(?, ?)",
-                (item_id, ts),
-            )
-            self._conn.commit()
-        except Exception as e:  # pragma: no cover - non-fatal
-            log.warning("mark_seen_failed", extra={"error": str(e)})
+        with self._lock:
+            try:
+                cur = self._conn.cursor()
+                cur.execute(
+                    "INSERT OR REPLACE INTO seen(id, ts) VALUES(?, ?)",
+                    (item_id, ts),
+                )
+                self._conn.commit()
+                log.debug("marked_seen item_id=%s", item_id)
+            except Exception as e:  # pragma: no cover - non-fatal
+                log.error("mark_seen_error item_id=%s err=%s", item_id, str(e), exc_info=True)
+                raise  # Re-raise for caller to handle
+
+    def cleanup_old_entries(self, days_old: int = 30) -> int:
+        """
+        Remove entries older than N days (thread-safe).
+
+        Args:
+            days_old: Number of days to keep. Entries older than this are deleted.
+
+        Returns:
+            Number of entries deleted.
+        """
+        with self._lock:
+            try:
+                cutoff = int(time.time()) - (days_old * 86400)
+                cursor = self._conn.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
+                deleted = cursor.rowcount
+                self._conn.commit()
+                log.info("seen_store_cleanup deleted=%d cutoff_days=%d", deleted, days_old)
+                return deleted
+            except Exception as e:
+                log.error("cleanup_error err=%s", str(e), exc_info=True)
+                return 0
 
 
 def should_filter(item_id: str, store: Optional[SeenStore] = None) -> bool:

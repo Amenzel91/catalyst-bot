@@ -126,3 +126,5 @@ Desktop.ini
 # -----------------------------------------------------------------------------
 .dockerignore
 docker-compose.override.yml
+.env.backup
+.env.staging.backup

@@ -30,6 +30,15 @@ TICKER_PATTERN = re.compile(r"^[A-Z0-9.\-/=^]+$", re.IGNORECASE)
 # Maximum ticker length (some tickers can be longer than 5 chars)
 MAX_TICKER_LENGTH = 20
 
+# Common crypto tickers to block (unless on user watchlist)
+# These are not stocks but cryptocurrencies
+CRYPTO_TICKERS = {
+    "BTC", "ETH", "SOL", "ADA", "DOT", "LINK", "UNI", "AVAX", "MATIC",
+    "DOGE", "SHIB", "LTC", "XRP", "BCH", "ETC", "XLM", "ATOM", "ALGO",
+    "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "DOT-USD",  # Yahoo Finance crypto format
+    "BTCUSD", "ETHUSD", "SOLUSD",  # Alternative crypto formats
+}
+
 
 def validate_ticker(ticker: str, allow_empty: bool = False) -> Optional[str]:
     """Validate and sanitize a ticker symbol.
@@ -92,6 +101,18 @@ def validate_ticker(ticker: str, allow_empty: bool = False) -> Optional[str]:
     # Normalize to uppercase
     ticker_normalized = ticker_str.upper()
 
+    # Block OTC/foreign tickers (user doesn't want these alerting)
+    # - Foreign ADRs ending in "F" are typically 5+ chars (e.g., AIMTF, NSRGY)
+    # - Don't block short tickers like CLF (3 chars, NYSE-listed)
+    if ticker_normalized.endswith("F") and len(ticker_normalized) >= 5:
+        log.info("ticker_validation_failed reason=foreign_adr ticker=%s", ticker_normalized)
+        return None
+
+    # Block OTC market suffixes
+    if ticker_normalized.endswith(("OTC", "PK", "QB", "QX")):
+        log.info("ticker_validation_failed reason=otc_market ticker=%s", ticker_normalized)
+        return None
+
     # Additional security checks - block obvious injection attempts
     dangerous_patterns = [
         "..",  # Path traversal
@@ -138,6 +159,51 @@ def validate_ticker(ticker: str, allow_empty: bool = False) -> Optional[str]:
 
     log.debug("ticker_validated ticker=%s", ticker_normalized)
     return ticker_normalized
+
+
+def is_crypto_ticker(ticker: str, watchlist: Optional[set] = None) -> bool:
+    """Check if a ticker is a cryptocurrency (unless on watchlist).
+
+    Parameters
+    ----------
+    ticker : str
+        The ticker symbol to check (should be normalized/uppercase)
+    watchlist : Optional[set]
+        Set of watchlist tickers. If provided and ticker is in watchlist,
+        crypto tickers are allowed through.
+
+    Returns
+    -------
+    bool
+        True if ticker is crypto AND not on watchlist (should be filtered),
+        False if ticker is allowed (either not crypto, or crypto but on watchlist)
+
+    Examples
+    --------
+    >>> is_crypto_ticker("BTC")
+    True
+    >>> is_crypto_ticker("SOL-USD")
+    True
+    >>> is_crypto_ticker("AAPL")
+    False
+    >>> is_crypto_ticker("BTC", watchlist={"BTC", "AAPL"})
+    False  # Allowed because on watchlist
+    """
+    if not ticker:
+        return False
+
+    ticker_upper = ticker.upper()
+
+    # Check if it's a known crypto ticker
+    if ticker_upper in CRYPTO_TICKERS:
+        # If watchlist provided and ticker is on it, allow it
+        if watchlist and ticker_upper in watchlist:
+            log.debug("crypto_ticker_allowed ticker=%s reason=on_watchlist", ticker_upper)
+            return False  # Not filtered (allowed)
+        # Crypto ticker not on watchlist - should be filtered
+        return True
+
+    return False
 
 
 def validate_timeframe(timeframe: str) -> Optional[str]:

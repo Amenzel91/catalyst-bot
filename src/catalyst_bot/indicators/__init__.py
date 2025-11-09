@@ -53,6 +53,9 @@ from .volume_profile import (
     calculate_volume_profile,
     find_point_of_control,
     find_volume_nodes,
+    generate_horizontal_volume_bars,
+    identify_hvn_lvn,
+    render_volume_profile_data,
 )
 
 __all__ = [
@@ -75,6 +78,9 @@ __all__ = [
     "find_point_of_control",
     "calculate_value_area",
     "find_volume_nodes",
+    "generate_horizontal_volume_bars",
+    "identify_hvn_lvn",
+    "render_volume_profile_data",
     # MTF Analysis
     "detect_trend",
     "analyze_multiple_timeframes",

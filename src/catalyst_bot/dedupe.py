@@ -25,12 +25,27 @@ def normalize_title(title: str) -> str:
     """Return a normalized version of a headline for hashing/comparison.
 
     The normalization process removes extra whitespace, lowercases the
-    text, and strips non‑alphanumeric characters. This function is
-    intentionally conservative to avoid accidentally conflating
-    unrelated headlines.
+    text, strips non‑alphanumeric characters, and normalizes synonyms
+    to reduce duplicate alerts with similar content.
     """
     # Remove punctuation and lowercase
     clean = re.sub(r"[^A-Za-z0-9]+", " ", title).lower()
+
+    # Normalize common synonym phrases to catch near-duplicates
+    # (e.g., "cuts outlook" = "lowers outlook" = "reduces outlook")
+    synonym_map = {
+        r"\b(cut|lower|reduce|slash)s?\s+(outlook|guidance|forecast)": "revises_outlook",
+        r"\b(miss|disappoint)(?:es|ed)?\s+(estimate|expectation)s?": "misses_estimates",
+        r"\b(price|cost)\s+(hike|increase|rise|surge)s?": "price_increase",
+        r"\b(consumer|customer)s?\s+(resist|avoid|reject)s?": "consumer_resistance",
+        r"\b(plunge|plummet|drop|fall|tank|crater)s?": "declines",
+        r"\b(surge|soar|jump|climb|rally)s?": "increases",
+        r"\b(tariff|tax)s?\s+(hurt|impact|affect)": "tariff_impact",
+    }
+
+    for pattern, replacement in synonym_map.items():
+        clean = re.sub(pattern, replacement, clean)
+
     # Collapse multiple spaces
     return " ".join(clean.split())
 
@@ -110,8 +125,10 @@ class FirstSeenIndex:
     """
 
     def __init__(self, db_path: str) -> None:
+        from .storage import init_optimized_connection
+
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self._conn = sqlite3.connect(db_path, timeout=10)
+        self._conn = init_optimized_connection(db_path, timeout=30)
         self._conn.execute(
             # Use a non-reserved table name instead of 'index'
             "CREATE TABLE IF NOT EXISTS first_seen_index("
@@ -196,11 +213,124 @@ def migrate(conn: sqlite3.Connection) -> None:
         pass
 
 
-# If your file does not already define signature_from(), add this minimal helper:
-try:
-    signature_from  # type: ignore[name-defined]
-except NameError:
+# MIGRATION NOTE (2025-10-24):
+# The signature_from() function now includes an optional 'ticker' parameter.
+# Existing code can continue to call signature_from(title, url) without ticker,
+# but new code should use signature_from(title, url, ticker) for better dedup.
+#
+# For temporal deduplication with sliding windows, use temporal_dedup_key() instead.
 
-    def signature_from(title: str, url: str) -> str:
-        core = normalize_title(title) + "|" + (url or "")
-        return hashlib.sha1(core.encode("utf-8")).hexdigest()
+
+def _extract_sec_accession_number(url: str) -> Optional[str]:
+    """
+    Extract SEC accession number from EDGAR URL.
+
+    SEC filings are uniquely identified by their accession numbers, not URLs.
+    Different feeds (RSS, WebSocket, API) may provide different URLs for the same filing.
+
+    Args:
+        url: SEC EDGAR URL (various formats supported)
+
+    Returns:
+        Accession number (e.g., "0001193125-24-249922") or None if not found
+
+    Examples:
+        >>> _extract_sec_accession_number("https://www.sec.gov/cgi-bin/viewer?action=view&cik=6201&accession_number=0001193125-24-249922")
+        '0001193125-24-249922'
+        >>> _extract_sec_accession_number("https://www.sec.gov/Archives/edgar/data/1234/000119312524249922/d12345.htm")
+        '0001193125-24-249922'
+    """
+    if not url or "sec.gov" not in url.lower():
+        return None
+
+    # Pattern 1: accession_number=NNNNNNNNNN-NN-NNNNNN (query parameter)
+    match = re.search(r"accession_number=(\d{10}-\d{2}-\d{6})", url)
+    if match:
+        return match.group(1)
+
+    # Pattern 2: /Archives/edgar/data/CIK/ACCESSION/filename.htm (path with dashes)
+    match = re.search(r"/(\d{10}-\d{2}-\d{6})/", url)
+    if match:
+        return match.group(1)
+
+    # Pattern 3: /NNNNNNNNNNNNNNNNNN/ (path without dashes - 18 digits)
+    match = re.search(r"/(\d{18})/", url)
+    if match:
+        # Re-add dashes: NNNNNNNNNN-NN-NNNNNN
+        raw = match.group(1)
+        return f"{raw[:10]}-{raw[10:12]}-{raw[12:]}"
+
+    # Pattern 4: Accession number in filename: 0001193125-24-249922.txt
+    match = re.search(r"/(\d{10}-\d{2}-\d{6})\.", url)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def signature_from(title: str, url: str, ticker: str = "") -> str:
+    """
+    Compute a stable signature for a news item.
+
+    Includes ticker to prevent cross-ticker deduplication.
+    E.g., "AAPL announces earnings" vs "TSLA announces earnings" get different signatures.
+
+    For SEC filings, uses accession numbers as the primary deduplication key instead of URLs.
+    This prevents duplicates when the same filing comes from different feeds (RSS, WebSocket, API)
+    with different URLs but the same accession number.
+
+    Args:
+        title: News headline
+        url: Article URL
+        ticker: Stock ticker symbol (optional but recommended)
+
+    Returns:
+        SHA1 hash of normalized content
+    """
+    # Normalize title
+    normalized_title = normalize_title(title)
+
+    # Include ticker in signature to allow same news for different tickers
+    ticker_component = ticker.upper().strip() if ticker else ""
+
+    # For SEC filings, extract and use accession number as primary dedup key
+    # This ensures same filing from different sources (RSS vs WebSocket) is caught as duplicate
+    accession_number = _extract_sec_accession_number(url)
+    if accession_number:
+        # Use accession number instead of full URL for SEC filings
+        # Format: ticker|title|accession (not URL) to catch cross-source duplicates
+        core = ticker_component + "|" + normalized_title + "|" + accession_number
+    else:
+        # Non-SEC items: use original logic (ticker + title + URL)
+        core = ticker_component + "|" + normalized_title + "|" + (url or "")
+
+    return hashlib.sha1(core.encode("utf-8")).hexdigest()
+
+
+def temporal_dedup_key(ticker: str, title: str, timestamp: int) -> str:
+    """
+    Generate a dedup key that includes time bucket for sliding window dedup.
+
+    Groups items into 30-minute buckets to prevent rapid-fire duplicates
+    while allowing same news to re-alert after sufficient time has passed.
+
+    Args:
+        ticker: Stock ticker symbol
+        title: News headline
+        timestamp: Unix timestamp (seconds since epoch)
+
+    Returns:
+        Dedup key combining ticker, title, and 30-min time bucket
+    """
+    # Bucket timestamp into 30-minute windows
+    # This allows same news to alert again after 30 minutes
+    bucket_size = 30 * 60  # 30 minutes in seconds
+    time_bucket = (timestamp // bucket_size) * bucket_size
+
+    # Normalize title
+    normalized_title = normalize_title(title)
+
+    # Combine ticker + title + time bucket
+    key = f"{ticker.upper()}|{normalized_title}|{time_bucket}"
+
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()

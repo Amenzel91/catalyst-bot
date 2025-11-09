@@ -692,20 +692,25 @@ def generate_multi_panel_chart(
         log.info("plotting ticker=%s tf=%s rows=%d", ticker, timeframe, len(df))
 
         # Plot the chart with multiple panels
-        fig, axes = mpf.plot(
-            df,
-            type="candle",
-            style=s,
-            volume=False,  # Volume removed - shown in Discord embed instead
-            addplot=addplot_main if addplot_main else None,
-            returnfig=True,
-            figsize=(17.4, 10.41),  # Match Discord embed aspect ratio (1740x1041px)
-            panel_ratios=(3, 1, 1),  # Price, RSI, MACD
-            ylabel="",  # Remove default ylabel, we'll customize it
-            warn_too_much_data=1000,
-            tight_layout=True,  # Use mplfinance's tight_layout to minimize margins
-            scale_padding={"left": 0.02, "right": 2.15, "top": 0.02, "bottom": 0.25},  # Full padding for complete price decimals
-        )
+        # Build plot kwargs (conditionally include addplot to avoid mplfinance validator error)
+        plot_kwargs = {
+            "type": "candle",
+            "style": s,
+            "volume": False,  # Volume removed - shown in Discord embed instead
+            "returnfig": True,
+            "figsize": (17.4, 10.41),  # Match Discord embed aspect ratio (1740x1041px)
+            "panel_ratios": (3, 1, 1),  # Price, RSI, MACD
+            "ylabel": "",  # Remove default ylabel, we'll customize it
+            "warn_too_much_data": 1000,
+            "tight_layout": True,  # Use mplfinance's tight_layout to minimize margins
+            "scale_padding": {"left": 0.02, "right": 2.15, "top": 0.02, "bottom": 0.25},  # Full padding for complete price decimals
+        }
+
+        # Only add addplot if we have indicators (avoids "None" validator error)
+        if addplot_main:
+            plot_kwargs["addplot"] = addplot_main
+
+        fig, axes = mpf.plot(df, **plot_kwargs)
 
         # Get price panel (first axis)
         price_ax = axes[0]

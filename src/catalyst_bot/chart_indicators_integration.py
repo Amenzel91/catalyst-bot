@@ -590,28 +590,62 @@ def generate_advanced_chart(
         )
 
     # Add pattern detection (Phase 4)
-    if "patterns" in indicators and os.getenv("CHART_SHOW_PATTERNS", "0") == "1":
+    if "patterns" in indicators and os.getenv("CHART_PATTERN_RECOGNITION", "1") == "1":
         try:
             from .indicators.cache import cache_patterns, get_cached_patterns
-            from .indicators.patterns import detect_all_patterns
+            from .indicators.patterns import (
+                detect_all_patterns,
+                detect_channels,
+                detect_double_tops_bottoms,
+                detect_flags_pennants,
+                detect_head_shoulders,
+                detect_triangles,
+            )
 
             # Check cache first
             cached_patterns = get_cached_patterns(ticker, timeframe)
             if cached_patterns:
                 patterns = cached_patterns
             else:
-                # Detect patterns
-                min_confidence = float(os.getenv("CHART_PATTERN_CONFIDENCE_MIN", "0.6"))
+                # Detect patterns based on individual toggles
+                patterns = []
+                min_confidence = float(os.getenv("CHART_PATTERN_SENSITIVITY", "0.6"))
+                lookback = int(os.getenv("CHART_PATTERN_LOOKBACK_MAX", "100"))
                 highs = prices.copy() if not volumes else None  # Placeholder
                 lows = prices.copy() if not volumes else None  # Placeholder
 
-                patterns = detect_all_patterns(
-                    prices=prices,
-                    highs=highs,
-                    lows=lows,
-                    volumes=volumes,
-                    min_confidence=min_confidence,
-                )
+                # Triangle patterns
+                if os.getenv("CHART_PATTERNS_TRIANGLES", "1") == "1":
+                    patterns.extend(
+                        detect_triangles(prices, highs or prices, lows or prices, lookback=lookback)
+                    )
+
+                # Head & Shoulders patterns
+                if os.getenv("CHART_PATTERNS_HEAD_SHOULDERS", "1") == "1":
+                    patterns.extend(
+                        detect_head_shoulders(prices, min_confidence=min_confidence, lookback=lookback)
+                    )
+
+                # Double Tops/Bottoms patterns
+                if os.getenv("CHART_PATTERNS_DOUBLE_TOPS", "1") == "1":
+                    patterns.extend(
+                        detect_double_tops_bottoms(prices, lookback=lookback)
+                    )
+
+                # Channel patterns
+                if os.getenv("CHART_PATTERNS_CHANNELS", "1") == "1":
+                    patterns.extend(
+                        detect_channels(prices, highs or prices, lows or prices, lookback=lookback)
+                    )
+
+                # Flags & Pennants patterns
+                if os.getenv("CHART_PATTERNS_FLAGS", "1") == "1" and volumes:
+                    patterns.extend(
+                        detect_flags_pennants(prices, volumes=volumes, lookback=lookback)
+                    )
+
+                # Filter by minimum confidence
+                patterns = [p for p in patterns if p.get("confidence", 0) >= min_confidence]
 
                 # Cache results
                 cache_patterns(ticker, patterns, timeframe)

@@ -208,6 +208,101 @@ class TestTickerValidator:
                 "ticker" in msg.lower() for msg in all_messages
             ), "Expected ticker loading message"
 
+    def test_otc_detection(self):
+        """Test OTC ticker detection."""
+        validator = TickerValidator()
+
+        # Should always have tickers (either from library or fallback)
+        assert validator.is_enabled, "Validator should have tickers loaded"
+
+        # Major exchange tickers should NOT be OTC
+        assert validator.is_otc("AAPL") == False
+        assert validator.is_otc("TSLA") == False
+        assert validator.is_otc("SPY") == False
+        assert validator.is_otc("MSFT") == False
+        assert validator.is_otc("GOOGL") == False
+
+        # Known OTC tickers should be detected (not in NASDAQ/NYSE/AMEX)
+        assert validator.is_otc("MMTXU") == True  # From user's example
+        assert validator.is_otc("RVLY") == True  # From user's example
+
+        # Edge cases
+        assert validator.is_otc("") == False  # Empty string
+        assert validator.is_otc("   ") == False  # Whitespace
+
+    def test_otc_case_insensitive(self):
+        """Test that OTC detection is case-insensitive."""
+        validator = TickerValidator()
+
+        # Should always have tickers (either from library or fallback)
+        assert validator.is_enabled, "Validator should have tickers loaded"
+
+        # Lowercase versions should work the same
+        assert validator.is_otc("aapl") == False
+        assert validator.is_otc("AAPL") == False
+        assert validator.is_otc("mmtxu") == True
+        assert validator.is_otc("MMTXU") == True
+
+    def test_validate_and_check_otc(self):
+        """Test combined validation and OTC check."""
+        validator = TickerValidator()
+
+        # Should always have tickers (either from library or fallback)
+        assert validator.is_enabled, "Validator should have tickers loaded"
+
+        # Valid major exchange ticker
+        is_valid, is_otc = validator.validate_and_check_otc("AAPL", source="test")
+        assert is_valid == True
+        assert is_otc == False
+
+        # OTC ticker (not in major exchanges)
+        is_valid, is_otc = validator.validate_and_check_otc("MMTXU", source="test")
+        # May or may not be "valid" depending on library, but should be OTC
+        assert is_otc == True
+
+        # Another OTC ticker
+        is_valid, is_otc = validator.validate_and_check_otc("RVLY", source="test")
+        assert is_otc == True
+
+    def test_validate_and_check_otc_logging(self, caplog):
+        """Test that validate_and_check_otc logs OTC detections."""
+        validator = TickerValidator()
+
+        # Should always have tickers (either from library or fallback)
+        assert validator.is_enabled, "Validator should have tickers loaded"
+
+        with caplog.at_level(logging.INFO):
+            # Test OTC ticker - should log
+            validator.validate_and_check_otc("MMTXU", source="test_feed")
+
+            # Should log OTC detection at INFO level
+            info_messages = [
+                record.message
+                for record in caplog.records
+                if record.levelname == "INFO"
+            ]
+            assert any(
+                "otc_ticker_detected" in msg and "MMTXU" in msg and "test_feed" in msg
+                for msg in info_messages
+            ), "Expected OTC detection log message"
+
+        # Clear log
+        caplog.clear()
+
+        with caplog.at_level(logging.INFO):
+            # Test major exchange ticker - should NOT log
+            validator.validate_and_check_otc("AAPL", source="test_feed")
+
+            # Should NOT log for non-OTC tickers
+            info_messages = [
+                record.message
+                for record in caplog.records
+                if record.levelname == "INFO"
+            ]
+            assert not any(
+                "otc_ticker_detected" in msg for msg in info_messages
+            ), "Should not log OTC detection for major exchange tickers"
+
 
 class TestTickerValidationIntegration:
     """Test integration with feeds.py normalization."""

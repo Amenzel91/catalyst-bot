@@ -24,6 +24,95 @@ except Exception:
 log = get_logger("sentiment_gauge")
 
 
+def create_enhanced_sentiment_gauge(score: float) -> dict:
+    """Create enhanced sentiment visualization for Discord embeds.
+
+    Converts a sentiment score (0-100 range) into a visually prominent gauge
+    with colored emoji circles, text label, and descriptive subtitle.
+
+    Parameters
+    ----------
+    score : float
+        Sentiment score in 0-100 range (or -100 to +100, will be normalized)
+
+    Returns
+    -------
+    dict
+        Dictionary with:
+        - 'label': Sentiment category (e.g., "VERY BULLISH", "NEUTRAL")
+        - 'bar': Visual bar with emoji circles and percentage
+        - 'description': Descriptive subtitle text
+        - 'emoji': Single emoji representing sentiment
+
+    Examples
+    --------
+    >>> gauge = create_enhanced_sentiment_gauge(82)
+    >>> print(gauge['label'])
+    'BULLISH'
+    >>> print(gauge['bar'])
+    '🟢🟢🟢🟢🟢🟢🟢🟢⚪⚪ 82%'
+    """
+    # Normalize score to 0-100 range if in -1 to +1 range (from bullishness gauge)
+    # This is detected by checking if score is between -1 and 1
+    if -1 <= score <= 1:
+        # Convert -1 to +1 range to 0 to 100 range
+        score = (score + 1.0) * 50.0
+
+    # Clamp to valid range (handles any out-of-bounds values)
+    score = max(0, min(100, score))
+
+    # Determine sentiment level and visual properties
+    if score >= 70:
+        if score >= 85:
+            label = "VERY BULLISH"
+            desc = "Strong positive sentiment detected"
+        else:
+            label = "BULLISH"
+            desc = "Positive sentiment trend"
+        emoji = "🟢"
+        single_emoji = "🟢"
+    elif score >= 55:
+        label = "SLIGHTLY BULLISH"
+        desc = "Moderately positive sentiment"
+        emoji = "🟡"
+        single_emoji = "🟡"
+    elif score >= 45:
+        label = "NEUTRAL"
+        desc = "Mixed or neutral sentiment"
+        emoji = "⚪"
+        single_emoji = "⚪"
+    elif score >= 30:
+        label = "SLIGHTLY BEARISH"
+        desc = "Moderately negative sentiment"
+        emoji = "🟠"
+        single_emoji = "🟠"
+    else:
+        if score >= 15:
+            label = "BEARISH"
+            desc = "Negative sentiment trend"
+        else:
+            label = "VERY BEARISH"
+            desc = "Strong negative sentiment detected"
+        emoji = "🔴"
+        single_emoji = "🔴"
+
+    # Create visual bar with 10 emoji circles for better visibility
+    filled = int(score / 10)
+    # Use appropriate emoji for filled portion based on sentiment
+    bar = (emoji * filled) + ("⚪" * (10 - filled))
+
+    # Format the complete bar with percentage
+    bar_with_pct = f"{bar} {score:.0f}%"
+
+    return {
+        "label": label,
+        "bar": bar_with_pct,
+        "description": desc,
+        "emoji": single_emoji,
+        "score": score,
+    }
+
+
 def generate_sentiment_gauge(
     score: float,
     ticker: str = "",

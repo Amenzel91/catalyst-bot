@@ -12,6 +12,7 @@ score.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -23,8 +24,12 @@ except Exception:  # pragma: no cover
     SentimentIntensityAnalyzer = None  # type: ignore
 
 from .config import get_settings
+from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem
 from .source_credibility import get_source_category, get_source_tier, get_source_weight
+
+# Module-level logger
+log = get_logger(__name__)
 
 # Semantic keyword extraction (optional)
 try:
@@ -41,6 +46,28 @@ except Exception:
 
     def score_earnings_event(*args, **kwargs):
         return None
+
+
+# Import offering sentiment correction to handle offering stage detection
+try:
+    from .offering_sentiment import (
+        apply_offering_sentiment_correction,
+        get_offering_stage_label,
+        is_debt_offering,
+    )
+
+    OFFERING_SENTIMENT_AVAILABLE = True
+except ImportError:
+    OFFERING_SENTIMENT_AVAILABLE = False
+
+    def apply_offering_sentiment_correction(*args, **kwargs):
+        return kwargs.get("current_sentiment", 0.0), None, False
+
+    def get_offering_stage_label(stage):
+        return "OFFERING"
+
+    def is_debt_offering(*args, **kwargs):
+        return False
 
 
 # Initialize a single VADER sentiment analyzer instance if available
@@ -727,10 +754,872 @@ def _score_of(scored) -> float:
     return 0.0
 
 
+def fast_classify(
+    item: NewsItem, keyword_weights: Optional[Dict[str, float]] = None
+) -> ScoredItem:
+    """Fast classification: only fast operations (keywords, sentiment, regime, source).
+
+    This function performs ONLY fast operations that can complete in <100ms:
+    - Keyword matching
+    - VADER sentiment (no API)
+    - ML sentiment scoring (batched, relatively fast)
+    - Regime adjustments (VIX/SPY, cached)
+    - Source credibility scoring
+    - Earnings scorer
+
+    Does NOT include slow operations like:
+    - RVOL fetching/adjustment
+    - Float data fetching/adjustment
+    - VWAP calculation/adjustment
+    - Volume/price divergence
+    - Insider trading sentiment
+
+    Parameters
+    ----------
+    item : NewsItem
+        News item to classify
+    keyword_weights : Optional[Dict[str, float]]
+        Dynamic keyword weights from analyzer
+
+    Returns
+    -------
+    ScoredItem
+        Scored item with enriched=False
+    """
+    settings = get_settings()
+    keyword_categories = settings.keyword_categories
+
+    # --- WAVE 0.1: Earnings Scorer Integration ---
+    earnings_result = None
+    import os
+
+    if os.getenv("FEATURE_EARNINGS_SCORER", "1") == "1":
+        try:
+            ticker = getattr(item, "ticker", None) or ""
+            source = getattr(item, "source", None) or ""
+            raw = getattr(item, "raw", None) or {}
+
+            if not source and isinstance(raw, dict):
+                source = raw.get("source", "")
+
+            earnings_result = score_earnings_event(
+                title=item.title or "",
+                description=getattr(item, "summary", None) or "",
+                ticker=ticker,
+                source=source,
+                use_api=True,
+            )
+        except Exception:
+            earnings_result = None
+
+    # Sentiment - Use multi-source aggregation (FAST sources only)
+    sentiment, sentiment_confidence, sentiment_breakdown = aggregate_sentiment_sources(
+        item, earnings_result=earnings_result
+    )
+
+    # --- Multi-dimensional sentiment ---
+    multi_dim_sentiment = None
+    if hasattr(item, "raw") and item.raw and isinstance(item.raw, dict):
+        multi_dim_data = item.raw.get("sentiment_analysis")
+        if multi_dim_data:
+            try:
+                from .llm_schemas import SentimentAnalysis
+
+                multi_dim_sentiment = SentimentAnalysis(**multi_dim_data)
+
+                if multi_dim_sentiment.confidence < 0.5:
+                    log.debug(
+                        "multi_dim_sentiment_rejected_low_confidence ticker=%s confidence=%.2f",
+                        getattr(item, "ticker", "N/A"),
+                        multi_dim_sentiment.confidence,
+                    )
+                    multi_dim_sentiment = None
+                else:
+                    if multi_dim_sentiment.confidence > sentiment_confidence:
+                        sentiment_confidence = multi_dim_sentiment.confidence
+
+                    categorical_sentiment = multi_dim_sentiment.to_numeric_sentiment()
+                    sentiment = 0.7 * sentiment + 0.3 * categorical_sentiment
+
+                    log.info(
+                        "multi_dim_sentiment_applied ticker=%s "
+                        "market_sentiment=%s urgency=%s risk=%s confidence=%.2f",
+                        getattr(item, "ticker", "N/A"),
+                        multi_dim_sentiment.market_sentiment,
+                        multi_dim_sentiment.urgency,
+                        multi_dim_sentiment.risk_level,
+                        multi_dim_sentiment.confidence,
+                    )
+            except Exception as e:
+                log.debug("multi_dim_sentiment_parse_failed err=%s", str(e))
+
+    # Store breakdown in item for debugging/analysis
+    if hasattr(item, "raw") and item.raw:
+        item.raw["sentiment_breakdown"] = sentiment_breakdown
+        item.raw["sentiment_confidence"] = sentiment_confidence
+
+    # Keyword hits & weights
+    title_lower = (item.title or "").lower()
+    summary_lower = (getattr(item, "summary", None) or "").lower()
+    combined_text = f"{title_lower} {summary_lower}"
+
+    hits: List[str] = []
+    total_keyword_score = 0.0
+    dynamic_weights = keyword_weights or load_dynamic_keyword_weights()
+
+    for category, keywords in keyword_categories.items():
+        for kw in keywords:
+            if kw in combined_text:
+                hits.append(category)
+                weight = float(
+                    dynamic_weights.get(category, settings.keyword_default_weight)
+                )
+                total_keyword_score += weight
+                break
+
+    # --- NEGATIVE KEYWORD DETECTION ---
+    negative_keywords = []
+    negative_keyword_categories = {
+        "offering_negative",
+        "warrant_negative",
+        "dilution_negative",
+        "distress_negative",
+    }
+
+    for category in hits:
+        if category in negative_keyword_categories:
+            negative_keywords.append(category)
+
+    # --- OFFERING SENTIMENT CORRECTION ---
+    # Apply intelligent offering stage detection BEFORE marking as negative
+    # This distinguishes between:
+    # - Dilutive offerings (announcement/pricing/upsize) = negative
+    # - Debt/notes offerings = neutral/positive (no dilution)
+    # - Offering closings = slightly positive (completion, no more dilution)
+    # - Oversubscribed offerings = possibly positive (demand signal)
+    offering_stage = None
+    offering_corrected = False
+    is_offering_related = "offering_negative" in negative_keywords
+
+    if is_offering_related and OFFERING_SENTIMENT_AVAILABLE:
+        title = item.title or ""
+        summary = getattr(item, "summary", None) or ""
+
+        # Apply offering sentiment correction
+        corrected_sentiment, offering_stage, offering_corrected = (
+            apply_offering_sentiment_correction(
+                title=title,
+                text=summary,
+                current_sentiment=sentiment,
+                min_confidence=0.7,
+            )
+        )
+
+        if offering_corrected:
+            log.info(
+                "offering_sentiment_corrected ticker=%s stage=%s "
+                "prev_sentiment=%.3f new_sentiment=%.3f",
+                getattr(item, "ticker", "N/A"),
+                offering_stage,
+                sentiment,
+                corrected_sentiment,
+            )
+            # Override sentiment with corrected value
+            sentiment = corrected_sentiment
+
+            # If offering stage is "closing" or "debt", don't treat as negative alert
+            # Closing = completion of offering (anti-dilutive, slightly bullish)
+            # Debt = notes/bonds offering (no equity dilution, neutral/positive)
+            if offering_stage in ("closing", "debt"):
+                # Remove offering_negative from negative_keywords
+                negative_keywords = [
+                    kw for kw in negative_keywords if kw != "offering_negative"
+                ]
+                log.info(
+                    "offering_non_dilutive_detected ticker=%s stage=%s removed_from_negative_alerts=True",
+                    getattr(item, "ticker", "N/A"),
+                    offering_stage,
+                )
+
+    alert_type = "N/A"
+    if negative_keywords and getattr(settings, "feature_negative_alerts", False):
+        alert_type = "NEGATIVE"
+        total_keyword_score = total_keyword_score * -2.0
+
+        log.info(
+            "negative_alert_detected ticker=%s negative_keywords=%s score_penalty_applied=True",
+            getattr(item, "ticker", "N/A"),
+            negative_keywords,
+        )
+
+    # Source weight
+    src_host = (item.source_host or "").lower()
+    source_weight = settings.rss_sources.get(src_host, 1.0)
+
+    # --- Source credibility scoring ---
+    credibility_weight = 1.0
+    credibility_tier = 3
+    source_url = getattr(item, "canonical_url", None) or getattr(item, "link", None)
+
+    if source_url:
+        credibility_tier = get_source_tier(source_url)
+        credibility_weight = get_source_weight(source_url)
+
+        if credibility_tier == 3 and credibility_weight < 1.0:
+            log.debug(
+                "source_credibility_downweight url=%s tier=%d weight=%.2f",
+                source_url[:100] if source_url else "N/A",
+                credibility_tier,
+                credibility_weight,
+            )
+
+    combined_source_weight = float(source_weight) * float(credibility_weight)
+
+    # --- SEMANTIC KEYWORD EXTRACTION (KeyBERT) ---
+    semantic_keywords = []
+    if _semantic_extractor and _semantic_extractor.is_available():
+        try:
+            import os
+
+            if os.getenv("FEATURE_SEMANTIC_KEYWORDS", "1") == "1":
+                top_n = int(os.getenv("SEMANTIC_KEYWORDS_TOP_N", "5"))
+                ngram_max = int(os.getenv("SEMANTIC_KEYWORDS_NGRAM_MAX", "3"))
+
+                semantic_keywords = _semantic_extractor.extract_from_feed_item(
+                    title=item.title or "",
+                    summary=getattr(item, "summary", None) or "",
+                    top_n=top_n,
+                    keyphrase_ngram_range=(1, ngram_max),
+                )
+
+                log.debug(
+                    "semantic_keywords_extracted ticker=%s keywords=%s",
+                    getattr(item, "ticker", "N/A"),
+                    semantic_keywords,
+                )
+        except Exception as e:
+            log.debug("semantic_keyword_extraction_failed err=%s", str(e))
+
+    # Aggregate relevance
+    relevance = float(total_keyword_score) * float(combined_source_weight)
+
+    # Total score: simple combination
+    total_score = relevance + sentiment
+
+    # Earnings boost/penalty
+    if earnings_result and earnings_result.get("is_earnings_result"):
+        earnings_sentiment = earnings_result.get("sentiment_score", 0.0)
+
+        if earnings_sentiment > 0.5:
+            total_score += 2.0
+            confidence_boost = 0.15
+        elif earnings_sentiment > 0:
+            total_score += 1.0
+            confidence_boost = 0.10
+        elif earnings_sentiment < -0.5:
+            total_score -= 1.5
+            confidence_boost = 0.10
+        elif earnings_sentiment < 0:
+            total_score -= 0.5
+            confidence_boost = 0.05
+        else:
+            confidence_boost = 0.0
+
+        sentiment_confidence = min(1.0, sentiment_confidence + confidence_boost)
+
+        if "earnings" not in hits:
+            hits.append("earnings")
+        if sentiment_label := earnings_result.get("sentiment_label"):
+            label_keyword = sentiment_label.lower().replace(" ", "_")
+            if label_keyword not in hits:
+                hits.append(label_keyword)
+
+    # --- FUNDAMENTAL DATA INTEGRATION ---
+    fundamental_score = 0.0
+    fundamental_metadata = None
+    ticker = getattr(item, "ticker", None)
+
+    if ticker and ticker.strip():
+        try:
+            from .fundamental_scoring import calculate_fundamental_score
+
+            fundamental_score, fundamental_metadata = calculate_fundamental_score(
+                ticker
+            )
+            if fundamental_score > 0:
+                total_score += fundamental_score
+
+                if fundamental_metadata.get("float_reason"):
+                    float_tag = f"fundamental_{fundamental_metadata['float_reason']}"
+                    if float_tag not in hits:
+                        hits.append(float_tag)
+
+                if fundamental_metadata.get("si_reason"):
+                    si_tag = f"fundamental_{fundamental_metadata['si_reason']}"
+                    if si_tag not in hits:
+                        hits.append(si_tag)
+
+                log.info(
+                    "fundamental_boost_applied ticker=%s boost=%.3f float_score=%.3f si_score=%.3f",
+                    ticker,
+                    fundamental_score,
+                    fundamental_metadata.get("float_score", 0.0),
+                    fundamental_metadata.get("si_score", 0.0),
+                )
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug(
+                "fundamental_scoring_failed ticker=%s err=%s",
+                ticker,
+                e.__class__.__name__,
+            )
+
+    # --- MARKET REGIME ADJUSTMENT ---
+    regime_multiplier = 1.0
+    regime_data = None
+
+    try:
+        from .market_regime import get_current_regime
+
+        regime_data = get_current_regime()
+        regime_multiplier = regime_data.get("multiplier", 1.0)
+
+        pre_regime_score = total_score
+        total_score = total_score * regime_multiplier
+
+        log.info(
+            "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
+            "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+            ticker or "N/A",
+            regime_data.get("regime", "UNKNOWN"),
+            regime_data.get("vix", 0.0),
+            regime_data.get("spy_trend", "UNKNOWN"),
+            regime_multiplier,
+            pre_regime_score,
+            total_score,
+        )
+    except ImportError:
+        pass
+    except Exception as e:
+        log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+
+    # Build ScoredItem with enriched=False
+    scored: ScoredItem | dict
+    try:
+        scored = ScoredItem(
+            relevance=relevance,
+            sentiment=sentiment,
+            tags=hits,
+            source_weight=total_score,
+            keyword_hits=hits.copy(),
+            enriched=False,
+            enrichment_timestamp=None,
+        )
+    except TypeError:
+        try:
+            scored = ScoredItem(relevance, sentiment, hits, total_score)
+        except Exception:
+            scored = {
+                "relevance": relevance,
+                "sentiment": sentiment,
+                "keywords": hits,
+                "score": total_score,
+            }
+
+    # Attach metadata to scored item (helper functions)
+    def _set_attr(obj, key, value):
+        if isinstance(obj, dict):
+            obj[key] = value
+        else:
+            try:
+                setattr(obj, key, value)
+            except Exception:
+                pass
+
+    # Negative alert metadata
+    _set_attr(scored, "alert_type", alert_type)
+    _set_attr(scored, "negative_keywords", negative_keywords)
+
+    # Multi-dimensional sentiment metadata
+    if multi_dim_sentiment:
+        _set_attr(scored, "market_sentiment", multi_dim_sentiment.market_sentiment)
+        _set_attr(scored, "sentiment_confidence", multi_dim_sentiment.confidence)
+        _set_attr(scored, "urgency", multi_dim_sentiment.urgency)
+        _set_attr(scored, "risk_level", multi_dim_sentiment.risk_level)
+        _set_attr(scored, "institutional_interest", multi_dim_sentiment.institutional_interest)
+        _set_attr(scored, "retail_hype_score", multi_dim_sentiment.retail_hype_score)
+        _set_attr(scored, "sentiment_reasoning", multi_dim_sentiment.reasoning)
+
+    # Source credibility metadata
+    _set_attr(scored, "source_credibility_tier", credibility_tier)
+    _set_attr(scored, "source_credibility_weight", credibility_weight)
+    _set_attr(
+        scored,
+        "source_credibility_category",
+        get_source_category(source_url) if source_url else "unknown",
+    )
+
+    # Earnings metadata
+    if earnings_result:
+        _set_attr(scored, "is_earnings_result", True)
+        _set_attr(scored, "earnings_sentiment_score", earnings_result.get("sentiment_score"))
+        _set_attr(scored, "earnings_sentiment_label", earnings_result.get("sentiment_label"))
+        _set_attr(scored, "earnings_eps_actual", earnings_result.get("eps_actual"))
+        _set_attr(scored, "earnings_eps_estimate", earnings_result.get("eps_estimate"))
+        _set_attr(scored, "earnings_revenue_actual", earnings_result.get("revenue_actual"))
+        _set_attr(scored, "earnings_revenue_estimate", earnings_result.get("revenue_estimate"))
+        _set_attr(scored, "earnings_data_source", earnings_result.get("data_source"))
+
+    # Fundamental metadata
+    if fundamental_metadata:
+        _set_attr(scored, "fundamental_score", fundamental_score)
+        _set_attr(scored, "fundamental_float_shares", fundamental_metadata.get("float_shares"))
+        _set_attr(scored, "fundamental_short_interest", fundamental_metadata.get("short_interest"))
+        _set_attr(scored, "fundamental_float_score", fundamental_metadata.get("float_score"))
+        _set_attr(scored, "fundamental_si_score", fundamental_metadata.get("si_score"))
+        _set_attr(scored, "fundamental_float_reason", fundamental_metadata.get("float_reason"))
+        _set_attr(scored, "fundamental_si_reason", fundamental_metadata.get("si_reason"))
+
+    # Market regime metadata
+    if regime_data:
+        _set_attr(scored, "market_regime", regime_data.get("regime"))
+        _set_attr(scored, "market_vix", regime_data.get("vix"))
+        _set_attr(scored, "market_spy_trend", regime_data.get("spy_trend"))
+        _set_attr(scored, "market_regime_multiplier", regime_multiplier)
+        _set_attr(scored, "market_spy_20d_return", regime_data.get("spy_20d_return"))
+
+    # Semantic keywords metadata
+    if semantic_keywords:
+        _set_attr(scored, "semantic_keywords", semantic_keywords)
+
+    # AI enrichment (optional, fast)
+    try:
+        adapter = get_adapter()
+        enr: AIEnrichment = adapter.enrich(item.title or "", None)
+
+        def _get_tags(obj):
+            if isinstance(obj, dict):
+                return list(obj.get("tags") or obj.get("keywords") or [])
+            return list(getattr(obj, "tags", []) or [])
+
+        def _set_tags(obj, new_tags: List[str]):
+            if isinstance(obj, dict):
+                obj["tags"] = new_tags
+            else:
+                try:
+                    setattr(obj, "tags", new_tags)
+                except Exception:
+                    pass
+
+        def _get_extra(obj) -> dict:
+            if isinstance(obj, dict):
+                obj.setdefault("extra", {})
+                return obj["extra"]
+            extra = getattr(obj, "extra", None)
+            if extra is None:
+                try:
+                    setattr(obj, "extra", {})
+                    extra = getattr(obj, "extra", {})
+                except Exception:
+                    extra = {}
+            return extra
+
+        if enr.ai_tags:
+            cur = set(_get_tags(scored))
+            cur.update(enr.ai_tags)
+            _set_tags(scored, sorted(cur))
+
+        if enr.ai_sentiment:
+            extra = _get_extra(scored)
+            extra["ai_sentiment"] = {
+                "label": enr.ai_sentiment.label,
+                "score": float(enr.ai_sentiment.score),
+            }
+    except Exception:
+        pass
+
+    return scored
+
+
+def enrich_scored_item(
+    scored: ScoredItem,
+    item: NewsItem,
+) -> ScoredItem:
+    """Enrich a scored item with slow operations (RVOL, float, VWAP, divergence, insider).
+
+    This function performs ONLY slow operations that may take >100ms:
+    - RVOL fetching/adjustment (API calls)
+    - Float data fetching/adjustment (API calls)
+    - VWAP calculation/adjustment (API calls)
+    - Volume/price divergence (requires RVOL data)
+    - Insider trading sentiment (SEC API calls)
+
+    Parameters
+    ----------
+    scored : ScoredItem
+        Scored item from fast_classify()
+    item : NewsItem
+        Original news item (for ticker, etc.)
+
+    Returns
+    -------
+    ScoredItem
+        Enriched scored item with enriched=True
+    """
+    import time
+
+    ticker = getattr(item, "ticker", None)
+    if not ticker or not ticker.strip():
+        # No ticker, can't enrich with these data sources
+        _set_attr(scored, "enriched", True)
+        _set_attr(scored, "enrichment_timestamp", time.time())
+        return scored
+
+    # Get current total_score from scored item
+    total_score = _get_score(scored)
+
+    # Helper to set attributes
+    def _set_attr(obj, key, value):
+        if isinstance(obj, dict):
+            obj[key] = value
+        else:
+            try:
+                setattr(obj, key, value)
+            except Exception:
+                pass
+
+    # --- RVOL (RELATIVE VOLUME) BOOST ---
+    rvol_multiplier = 1.0
+    rvol_data = None
+
+    try:
+        from .rvol import calculate_rvol_intraday
+
+        rvol_data = calculate_rvol_intraday(ticker)
+        if rvol_data:
+            rvol_multiplier = rvol_data.get("multiplier", 1.0)
+
+            pre_rvol_score = total_score
+            total_score = total_score * rvol_multiplier
+
+            log.info(
+                "rvol_adjustment ticker=%s rvol=%.2fx rvol_class=%s multiplier=%.2f "
+                "current_vol=%d avg_vol=%.0f pre_score=%.3f post_score=%.3f",
+                ticker,
+                rvol_data.get("rvol", 1.0),
+                rvol_data.get("rvol_class", "NORMAL"),
+                rvol_multiplier,
+                rvol_data.get("current_volume", 0),
+                rvol_data.get("avg_volume_20d", 0.0),
+                pre_rvol_score,
+                total_score,
+            )
+    except ImportError:
+        pass
+    except Exception as e:
+        log.debug(
+            "rvol_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
+        )
+
+    # --- FLOAT-BASED CONFIDENCE ADJUSTMENT ---
+    float_multiplier = 1.0
+    float_data = None
+
+    try:
+        from .float_data import get_float_data
+
+        float_data = get_float_data(ticker)
+        float_multiplier = float_data.get("multiplier", 1.0)
+
+        pre_float_score = total_score
+        total_score = total_score * float_multiplier
+
+        log.info(
+            "float_adjustment_applied ticker=%s float_class=%s float_shares=%.2fM "
+            "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+            ticker,
+            float_data.get("float_class", "UNKNOWN"),
+            (float_data.get("float_shares") or 0) / 1_000_000,
+            float_multiplier,
+            pre_float_score,
+            total_score,
+        )
+    except Exception as e:
+        log.warning("float_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+
+    # --- VOLUME-PRICE DIVERGENCE DETECTION ---
+    divergence_data = None
+    divergence_adjustment = 0.0
+
+    if rvol_data:
+        try:
+            from .volume_price_divergence import (
+                calculate_price_change,
+                calculate_volume_change_from_rvol,
+                detect_divergence,
+            )
+
+            price_change_pct = calculate_price_change(ticker)
+            volume_change_pct = calculate_volume_change_from_rvol(rvol_data)
+
+            if price_change_pct is not None and volume_change_pct is not None:
+                divergence_data = detect_divergence(
+                    ticker=ticker,
+                    price_change_pct=price_change_pct,
+                    volume_change_pct=volume_change_pct,
+                )
+
+                if divergence_data:
+                    divergence_adjustment = divergence_data.get("sentiment_adjustment", 0.0)
+
+                    pre_divergence_score = total_score
+                    total_score = total_score + divergence_adjustment
+
+                    log.info(
+                        "divergence_adjustment ticker=%s type=%s strength=%s "
+                        "price_change=%.2f%% volume_change=%.2f%% adjustment=%.3f "
+                        "pre_score=%.3f post_score=%.3f",
+                        ticker,
+                        divergence_data.get("divergence_type", "NONE"),
+                        divergence_data.get("signal_strength", "NONE"),
+                        divergence_data.get("price_change", 0.0) * 100,
+                        divergence_data.get("volume_change", 0.0) * 100,
+                        divergence_adjustment,
+                        pre_divergence_score,
+                        total_score,
+                    )
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug(
+                "divergence_detection_failed ticker=%s err=%s",
+                ticker or "N/A",
+                str(e.__class__.__name__),
+            )
+
+    # --- VWAP (VOLUME WEIGHTED AVERAGE PRICE) ANALYSIS ---
+    vwap_multiplier = 1.0
+    vwap_data = None
+
+    try:
+        from .vwap_calculator import calculate_vwap, get_vwap_multiplier
+
+        vwap_data = calculate_vwap(ticker)
+        if vwap_data:
+            vwap_multiplier = get_vwap_multiplier(vwap_data)
+
+            pre_vwap_score = total_score
+            total_score = total_score * vwap_multiplier
+
+            log.info(
+                "vwap_adjustment ticker=%s vwap=%.4f current_price=%.4f distance=%.2f%% "
+                "signal=%s multiplier=%.2f pre_score=%.3f post_score=%.3f",
+                ticker,
+                vwap_data.get("vwap", 0.0),
+                vwap_data.get("current_price", 0.0),
+                vwap_data.get("distance_from_vwap_pct", 0.0),
+                vwap_data.get("vwap_signal", "UNKNOWN"),
+                vwap_multiplier,
+                pre_vwap_score,
+                total_score,
+            )
+    except ImportError:
+        pass
+    except Exception as e:
+        log.debug(
+            "vwap_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
+        )
+
+    # Update the scored item's total_score
+    _set_attr(scored, "source_weight", total_score)
+
+    # Attach enrichment metadata
+    if rvol_data:
+        _set_attr(scored, "rvol", rvol_data.get("rvol"))
+        _set_attr(scored, "rvol_class", rvol_data.get("rvol_class"))
+        _set_attr(scored, "rvol_multiplier", rvol_data.get("multiplier"))
+        _set_attr(scored, "current_volume", rvol_data.get("current_volume"))
+        _set_attr(scored, "avg_volume_20d", rvol_data.get("avg_volume_20d"))
+
+    if float_data:
+        _set_attr(scored, "float_shares", float_data.get("float_shares"))
+        _set_attr(scored, "float_class", float_data.get("float_class"))
+        _set_attr(scored, "float_multiplier", float_data.get("multiplier"))
+        _set_attr(scored, "short_interest_pct", float_data.get("short_interest_pct"))
+
+    if divergence_data:
+        _set_attr(scored, "divergence_type", divergence_data.get("divergence_type"))
+        _set_attr(scored, "divergence_signal_strength", divergence_data.get("signal_strength"))
+        _set_attr(scored, "divergence_sentiment_adjustment", divergence_adjustment)
+        _set_attr(scored, "price_change_pct", divergence_data.get("price_change"))
+        _set_attr(scored, "volume_change_pct", divergence_data.get("volume_change"))
+        _set_attr(scored, "divergence_interpretation", divergence_data.get("interpretation"))
+
+    if vwap_data:
+        _set_attr(scored, "vwap", vwap_data.get("vwap"))
+        _set_attr(scored, "vwap_signal", vwap_data.get("vwap_signal"))
+        _set_attr(scored, "vwap_multiplier", vwap_multiplier)
+        _set_attr(scored, "vwap_distance_pct", vwap_data.get("distance_from_vwap_pct"))
+        _set_attr(scored, "is_above_vwap", vwap_data.get("is_above_vwap"))
+        _set_attr(scored, "vwap_current_price", vwap_data.get("current_price"))
+        _set_attr(scored, "vwap_cumulative_volume", vwap_data.get("cumulative_volume"))
+
+    # Mark as enriched
+    _set_attr(scored, "enriched", True)
+    _set_attr(scored, "enrichment_timestamp", time.time())
+
+    return scored
+
+
+def _get_score(scored) -> float:
+    """Extract numeric score from scored object or dict."""
+    for name in ("source_weight", "total_score", "score", "relevance"):
+        v = (
+            scored.get(name)
+            if isinstance(scored, dict)
+            else getattr(scored, name, None)
+        )
+        if v is not None:
+            try:
+                return float(v)
+            except Exception:
+                pass
+    return 0.0
+
+
+def is_substantive_news(title: str, text: str = "") -> bool:
+    """Filter non-substantive news articles.
+
+    Rejects articles that contain no actionable information:
+    - "Why [TICKER] Stock Is Down Today" summaries
+    - "Company not aware of any reason" press releases
+    - Generic trading updates with no content
+    - Earnings previews (not results)
+
+    Parameters
+    ----------
+    title : str
+        Article headline/title
+    text : str, optional
+        Article body/summary text
+
+    Returns
+    -------
+    bool
+        True if the article is substantive, False if it should be filtered
+    """
+    # Combine title and text for pattern matching
+    combined = f"{title} {text}".lower()
+
+    # --- Reject very short titles (< 20 chars) ---
+    if len(title) < 20:
+        return False
+
+    # --- Pattern 1: Summary-style articles with no substance ---
+    # "Why [TICKER] Shares Are Plunging Today"
+    # "Why [TICKER] Stock Is Down Today"
+    # "Why [TICKER] Stock Is Moving Today"
+    # Post-mortem patterns: "[Action] after [Event]" = explaining what already happened
+    # "Stock Plunges After Company Cuts Outlook"
+    # "Shares Drop After Missing Estimates"
+    # Note: Pattern matches ticker with optional parentheses/apostrophes (e.g., "Chegg (CHGG)" or "Denny's (DENN)")
+    summary_patterns = [
+        r"why\s+[\w'\s()]+\s+shares?\s+(are\s+)?(plunging|soaring|moving|rallying|dropping|falling|rising|climbing|surging|tumbling)",
+        r"why\s+[\w'\s()]+\s+stock\s+is\s+(up|down|moving|higher|lower)",
+        r"what\s+investors\s+need\s+to\s+know\s*$",  # Standalone "What Investors Need to Know"
+        r"why\s+[\w'\s()]+\s+shares?\s+(are\s+)?(up|down)\s+today",
+        r"^why\s+(is\s+)?[\w'\s()]+\s+(stock|shares?)\s+(rising|falling|moving)",
+        # Post-mortem patterns (stock moved, then news explains why)
+        r"(stock|shares?)\s+(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after",
+        r"(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after\s+[\w'\s]+\s+(cut|lower|reduce|miss|disappoint)",
+        r"[\w'\s()]+\s+(stock|shares?)\s+(tank|crater|nosedive)s?\s+after",
+    ]
+
+    for pattern in summary_patterns:
+        if re.search(pattern, combined):
+            return False
+
+    # --- Pattern 2: "We don't know" press releases ---
+    # "Company not aware of any reason for price movement"
+    # "Management has no explanation for trading activity"
+    no_explanation_patterns = [
+        r"not\s+aware\s+of\s+any\s+(material\s+)?(change|reason|explanation|information)",
+        r"(has\s+)?no\s+(knowledge|explanation|information)\s+(of|regarding|for)",
+        r"cannot\s+account\s+for",
+        r"no\s+undisclosed\s+(material\s+)?information",
+        r"no\s+material\s+changes?\s+to\s+business",
+        r"(has\s+)?no\s+pending\s+announcements?",
+        r"nothing\s+to\s+report\s+regarding",
+    ]
+
+    for pattern in no_explanation_patterns:
+        if re.search(pattern, combined):
+            return False
+
+    # --- Pattern 3: Generic trading updates ---
+    # "Trading Update" (too short/generic)
+    # "TOVX Trading Activity Notice"
+    # "Notice on price fluctuation"
+    generic_patterns = [
+        r"^trading\s+update\s*$",
+        r"trading\s+activity\s+notice",
+        r"notice\s+on\s+price\s+fluctuation",
+        r"wish(es)?\s+to\s+clarify\s+recent\s+trading",
+    ]
+
+    for pattern in generic_patterns:
+        if re.search(pattern, combined):
+            return False
+
+    # --- Pattern 4: Earnings previews (not results) ---
+    # "Earnings Preview: AAPL"
+    # "What to expect from XYZ earnings"
+    # Note: "Earnings Results" should NOT be filtered
+    earnings_preview_patterns = [
+        r"earnings\s+preview(?!.*results?)",  # Preview without results
+        r"what\s+to\s+expect\s+from\s+\w+\s+earnings",
+        r"(ahead\s+of|before)\s+earnings",
+    ]
+
+    for pattern in earnings_preview_patterns:
+        if re.search(pattern, combined):
+            return False
+
+    # If none of the filters matched, the article is substantive
+    return True
+
+
 def classify(
     item: NewsItem, keyword_weights: Optional[Dict[str, float]] = None
 ) -> ScoredItem:
     """Classify a news item and return a scored representation.
+
+    Combines sentiment, keyword-category hits (with analyzer-provided
+    dynamic weights when available), and source weighting.
+
+    WAVE 0.1: Includes earnings result detection and sentiment scoring.
+
+    This function now calls fast_classify() followed by enrich_scored_item()
+    to maintain backward compatibility while supporting the new fast/slow
+    separation architecture.
+    """
+    # Fast classification (keywords, sentiment, regime, source)
+    scored = fast_classify(item, keyword_weights=keyword_weights)
+
+    # Slow enrichment (RVOL, float, VWAP, divergence, insider)
+    scored = enrich_scored_item(scored, item)
+
+    return scored
+
+
+def classify_legacy(
+    item: NewsItem, keyword_weights: Optional[Dict[str, float]] = None
+) -> ScoredItem:
+    """LEGACY: Original classify() implementation before fast/slow separation.
+
+    This function is kept for reference and comparison during migration.
+    DO NOT USE - use classify() instead which calls fast_classify() + enrich_scored_item().
 
     Combines sentiment, keyword-category hits (with analyzer-provided
     dynamic weights when available), and source weighting.
@@ -787,9 +1676,6 @@ def classify(
 
                 # Apply confidence threshold filtering (reject if confidence < 0.5)
                 if multi_dim_sentiment.confidence < 0.5:
-                    import logging
-
-                    log = logging.getLogger(__name__)
                     log.debug(
                         "multi_dim_sentiment_rejected_low_confidence ticker=%s confidence=%.2f",
                         getattr(item, "ticker", "N/A"),
@@ -807,9 +1693,6 @@ def classify(
                     # Weighted blend: 70% original, 30% categorical
                     sentiment = 0.7 * sentiment + 0.3 * categorical_sentiment
 
-                    import logging
-
-                    log = logging.getLogger(__name__)
                     log.info(
                         "multi_dim_sentiment_applied ticker=%s "
                         "market_sentiment=%s urgency=%s risk=%s confidence=%.2f",
@@ -820,9 +1703,6 @@ def classify(
                         multi_dim_sentiment.confidence,
                     )
             except Exception as e:
-                import logging
-
-                log = logging.getLogger(__name__)
                 log.debug("multi_dim_sentiment_parse_failed err=%s", str(e))
 
     # Store breakdown in item for debugging/analysis
@@ -867,6 +1747,57 @@ def classify(
         if category in negative_keyword_categories:
             negative_keywords.append(category)
 
+    # --- OFFERING SENTIMENT CORRECTION ---
+    # Apply intelligent offering stage detection BEFORE marking as negative
+    # This distinguishes between:
+    # - Dilutive offerings (announcement/pricing/upsize) = negative
+    # - Debt/notes offerings = neutral/positive (no dilution)
+    # - Offering closings = slightly positive (completion, no more dilution)
+    # - Oversubscribed offerings = possibly positive (demand signal)
+    offering_stage = None
+    offering_corrected = False
+    is_offering_related = "offering_negative" in negative_keywords
+
+    if is_offering_related and OFFERING_SENTIMENT_AVAILABLE:
+        title = item.title or ""
+        summary = getattr(item, "summary", None) or ""
+
+        # Apply offering sentiment correction
+        corrected_sentiment, offering_stage, offering_corrected = (
+            apply_offering_sentiment_correction(
+                title=title,
+                text=summary,
+                current_sentiment=sentiment,
+                min_confidence=0.7,
+            )
+        )
+
+        if offering_corrected:
+            log.info(
+                "offering_sentiment_corrected ticker=%s stage=%s "
+                "prev_sentiment=%.3f new_sentiment=%.3f",
+                getattr(item, "ticker", "N/A"),
+                offering_stage,
+                sentiment,
+                corrected_sentiment,
+            )
+            # Override sentiment with corrected value
+            sentiment = corrected_sentiment
+
+            # If offering stage is "closing" or "debt", don't treat as negative alert
+            # Closing = completion of offering (anti-dilutive, slightly bullish)
+            # Debt = notes/bonds offering (no equity dilution, neutral/positive)
+            if offering_stage in ("closing", "debt"):
+                # Remove offering_negative from negative_keywords
+                negative_keywords = [
+                    kw for kw in negative_keywords if kw != "offering_negative"
+                ]
+                log.info(
+                    "offering_non_dilutive_detected ticker=%s stage=%s removed_from_negative_alerts=True",
+                    getattr(item, "ticker", "N/A"),
+                    offering_stage,
+                )
+
     # Apply negative alert logic if feature is enabled
     alert_type = "N/A"
     if negative_keywords and getattr(settings, "feature_negative_alerts", False):
@@ -875,9 +1806,6 @@ def classify(
         # This ensures negative catalysts are deprioritized or flagged for exit
         total_keyword_score = total_keyword_score * -2.0  # Double negative penalty
 
-        import logging
-
-        log = logging.getLogger(__name__)
         log.info(
             "negative_alert_detected ticker=%s negative_keywords=%s score_penalty_applied=True",
             getattr(item, "ticker", "N/A"),
@@ -901,9 +1829,6 @@ def classify(
 
         # Log when low-credibility sources are downweighted
         if credibility_tier == 3 and credibility_weight < 1.0:
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug(
                 "source_credibility_downweight url=%s tier=%d weight=%.2f",
                 source_url[:100] if source_url else "N/A",
@@ -933,18 +1858,12 @@ def classify(
                     keyphrase_ngram_range=(1, ngram_max),
                 )
 
-                import logging
-
-                log = logging.getLogger(__name__)
                 log.debug(
                     "semantic_keywords_extracted ticker=%s keywords=%s",
                     getattr(item, "ticker", "N/A"),
                     semantic_keywords,
                 )
         except Exception as e:
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug("semantic_keyword_extraction_failed err=%s", str(e))
 
     # Aggregate relevance (keep simple/deterministic)
@@ -1011,9 +1930,6 @@ def classify(
                     if si_tag not in hits:
                         hits.append(si_tag)
 
-                import logging
-
-                log = logging.getLogger(__name__)
                 log.info(
                     "fundamental_boost_applied ticker=%s boost=%.3f float_score=%.3f si_score=%.3f",
                     ticker,
@@ -1026,9 +1942,6 @@ def classify(
             pass
         except Exception as e:
             # Don't let fundamental scoring errors break classification
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug(
                 "fundamental_scoring_failed ticker=%s err=%s",
                 ticker,
@@ -1053,9 +1966,6 @@ def classify(
         # Apply regime adjustment to total_score
         total_score = total_score * regime_multiplier
 
-        import logging
-
-        log = logging.getLogger(__name__)
         log.info(
             "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
             "multiplier=%.2f pre_score=%.3f post_score=%.3f",
@@ -1071,9 +1981,6 @@ def classify(
         # market_regime module not available yet
         pass
     except Exception as e:
-        import logging
-
-        log = logging.getLogger(__name__)
         log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # --- RVOL (RELATIVE VOLUME) BOOST ---
@@ -1094,9 +2001,6 @@ def classify(
                 pre_rvol_score = total_score
                 total_score = total_score * rvol_multiplier
 
-                import logging
-
-                log = logging.getLogger(__name__)
                 log.info(
                     "rvol_adjustment ticker=%s rvol=%.2fx rvol_class=%s multiplier=%.2f "
                     "current_vol=%d avg_vol=%.0f pre_score=%.3f post_score=%.3f",
@@ -1113,9 +2017,6 @@ def classify(
             # rvol module not available (shouldn't happen)
             pass
         except Exception as e:
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug(
                 "rvol_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
             )
@@ -1137,9 +2038,6 @@ def classify(
             pre_float_score = total_score
             total_score = total_score * float_multiplier
 
-            import logging
-
-            log = logging.getLogger(__name__)
             log.info(
                 "float_adjustment_applied ticker=%s float_class=%s float_shares=%.2fM "
                 "multiplier=%.2f pre_score=%.3f post_score=%.3f",
@@ -1151,9 +2049,6 @@ def classify(
                 total_score,
             )
     except Exception as e:
-        import logging
-
-        log = logging.getLogger(__name__)
         log.warning("float_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # --- VOLUME-PRICE DIVERGENCE DETECTION ---
@@ -1193,9 +2088,6 @@ def classify(
                     pre_divergence_score = total_score
                     total_score = total_score + divergence_adjustment
 
-                    import logging
-
-                    log = logging.getLogger(__name__)
                     log.info(
                         "divergence_adjustment ticker=%s type=%s strength=%s "
                         "price_change=%.2f%% volume_change=%.2f%% adjustment=%.3f "
@@ -1213,9 +2105,6 @@ def classify(
             # volume_price_divergence module not available (shouldn't happen)
             pass
         except Exception as e:
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug(
                 "divergence_detection_failed ticker=%s err=%s",
                 ticker or "N/A",
@@ -1240,9 +2129,6 @@ def classify(
                 pre_vwap_score = total_score
                 total_score = total_score * vwap_multiplier
 
-                import logging
-
-                log = logging.getLogger(__name__)
                 log.info(
                     "vwap_adjustment ticker=%s vwap=%.4f current_price=%.4f distance=%.2f%% "
                     "signal=%s multiplier=%.2f pre_score=%.3f post_score=%.3f",
@@ -1259,9 +2145,6 @@ def classify(
             # vwap_calculator module not available (shouldn't happen)
             pass
         except Exception as e:
-            import logging
-
-            log = logging.getLogger(__name__)
             log.debug(
                 "vwap_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
             )

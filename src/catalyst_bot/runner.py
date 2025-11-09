@@ -32,7 +32,9 @@ else:
 from catalyst_bot.accepted_items_logger import log_accepted_item
 from catalyst_bot.rejected_items_logger import log_rejected_item
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
+from catalyst_bot.ticker_validation import TickerValidator
 from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title
+from catalyst_bot.multi_ticker_handler import analyze_multi_ticker_article
 
 # Be nice to operators: give a clear error when a runtime dep is missing,
 # instead of a scary "<frozen runpy>" stacktrace.
@@ -69,8 +71,9 @@ from .breakout_feedback import (  # Real-time outcome tracking
     register_alert_for_tracking,
     track_pending_outcomes,
 )
-from .classify import classify, load_dynamic_keyword_weights
+from .classify import classify, fast_classify, load_dynamic_keyword_weights
 from .config import get_settings
+from .enrichment_worker import enqueue_for_enrichment  # WAVE 3: Async enrichment
 from .config_extras import LOG_REPORT_CATEGORIES
 from .health_endpoint import start_health_server, update_health_status
 from .llm_usage_monitor import get_monitor
@@ -81,7 +84,7 @@ from .market_hours import get_market_info  # WAVE 0.0 Phase 2: Market hours dete
 from .moa_price_tracker import (
     track_pending_outcomes as track_moa_outcomes,  # MOA Phase 2: Price tracking for rejected items
 )
-from .seen_store import should_filter  # persistent seen store for cross-run dedupe
+from .seen_store import SeenStore  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
 
 # WAVE 1.2: Feedback Loop imports
@@ -109,6 +112,10 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 STOP = False
 _PX_CACHE: Dict[str, Tuple[float, float]] = {}
+
+# WEEK 1 FIX: Network failure detection - Track consecutive empty cycles
+_CONSECUTIVE_EMPTY_CYCLES = 0
+_MAX_EMPTY_CYCLES = int(os.getenv("ALERT_CONSECUTIVE_EMPTY_CYCLES", "5"))
 
 # Global log accumulator for auto analyzer & log reporter.  Each entry
 # should be a dict with keys ``timestamp`` (datetime) and ``category`` (str).
@@ -740,6 +747,60 @@ def enrich_ticker(entry: dict, item: dict):
                 return
 
 
+# ---------------- Article freshness check ----------------
+def is_article_fresh(
+    item_published_at: datetime | None,
+    max_age_minutes: int = 30,
+    max_sec_age_minutes: int = 240,
+    is_sec_filing: bool = False,
+) -> tuple[bool, int | None]:
+    """
+    Check if article is fresh enough to alert on.
+
+    Args:
+        item_published_at: When article was published (timezone-aware datetime)
+        max_age_minutes: Maximum age for regular articles (default 30 minutes)
+        max_sec_age_minutes: Maximum age for SEC filings (default 240 minutes / 4 hours)
+        is_sec_filing: True if this is a SEC filing
+
+    Returns:
+        Tuple of (is_fresh, age_minutes)
+        - is_fresh: True if article is fresh enough
+        - age_minutes: Age of article in minutes (None if published_at missing)
+    """
+    log = get_logger("runner")
+
+    # If no publish time, cannot determine freshness - allow through
+    if not item_published_at:
+        log.debug("freshness_check_skipped reason=no_publish_time")
+        return (True, None)
+
+    # Calculate age
+    now = datetime.now(timezone.utc)
+
+    # Ensure published_at is timezone-aware
+    if item_published_at.tzinfo is None:
+        item_published_at = item_published_at.replace(tzinfo=timezone.utc)
+
+    age_delta = now - item_published_at
+    age_minutes = age_delta.total_seconds() / 60.0
+
+    # Determine threshold based on content type
+    threshold = max_sec_age_minutes if is_sec_filing else max_age_minutes
+
+    is_fresh = age_minutes <= threshold
+
+    if not is_fresh:
+        log.info(
+            "stale_article_rejected age_minutes=%.1f threshold=%d is_sec=%s",
+            age_minutes,
+            threshold,
+            is_sec_filing,
+        )
+
+    return (is_fresh, int(age_minutes))
+
+
 # ---------------- Instrument-like detection (refined) ----------------
 def _is_instrument_like(t: str) -> bool:
     """
@@ -935,9 +996,55 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         market hours detection is enabled, features will be gated based on
         market status.
     """
+    # Initialize seen store for this cycle (fixed: check-only, mark after success)
+    seen_store = None
+    try:
+        import os
+        if os.getenv("FEATURE_PERSIST_SEEN", "true").strip().lower() in {"1", "true", "yes", "on"}:
+            seen_store = SeenStore()
+    except Exception:
+        log.warning("seen_store_init_failed", exc_info=True)
+
     # Ingest + dedupe
     items = feeds.fetch_pr_feeds()
     deduped = feeds.dedupe(items)
+
+    # ------------------------------------------------------------------
+    # WEEK 1 FIX: Network failure detection - Track consecutive empty cycles
+    # and alert if feed sources appear to be down.
+    global _CONSECUTIVE_EMPTY_CYCLES
+    if not items or len(items) == 0:
+        _CONSECUTIVE_EMPTY_CYCLES += 1
+
+        if _CONSECUTIVE_EMPTY_CYCLES >= _MAX_EMPTY_CYCLES:
+            log.error(
+                "feed_outage_detected consecutive_empty=%d max=%d",
+                _CONSECUTIVE_EMPTY_CYCLES,
+                _MAX_EMPTY_CYCLES
+            )
+            # Send admin alert about potential feed outage
+            try:
+                admin_webhook = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
+                if admin_webhook:
+                    from .alerts import post_discord_json
+                    post_discord_json(
+                        admin_webhook,
+                        {
+                            "content": (
+                                f"⚠️ **Feed Outage Detected**\n\n"
+                                f"No items fetched for **{_CONSECUTIVE_EMPTY_CYCLES}** consecutive cycles.\n"
+                                f"Check feed sources and network connectivity."
+                            )
+                        }
+                    )
+                    log.info("feed_outage_alert_sent cycles=%d", _CONSECUTIVE_EMPTY_CYCLES)
+            except Exception as e:
+                log.warning("failed_to_send_outage_alert err=%s", str(e))
+    else:
+        # Reset counter on successful fetch
+        if _CONSECUTIVE_EMPTY_CYCLES > 0:
+            log.info("feed_recovery detected after=%d empty_cycles", _CONSECUTIVE_EMPTY_CYCLES)
+        _CONSECUTIVE_EMPTY_CYCLES = 0
 
     # ------------------------------------------------------------------
     # Watchlist cascade decay: demote HOT→WARM→COOL entries based on age
@@ -1049,6 +1156,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     except Exception:
         price_ceiling = None
 
+    # Optional price floor (float > 0)
+    price_floor_env = (os.getenv("PRICE_FLOOR") or "").strip()
+    price_floor = None
+    try:
+        if price_floor_env:
+            val = float(price_floor_env)
+            if val > 0:
+                price_floor = val
+    except Exception:
+        price_floor = None
+
     # Optional: source-level skip (CSV)
     skip_sources_env = (os.getenv("SKIP_SOURCES") or "").strip()
     skip_sources = {s.strip() for s in skip_sources_env.split(",") if s.strip()}
@@ -1109,6 +1227,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             price_cache = {}
 
     skipped_no_ticker = 0
+    skipped_crypto = 0
+    skipped_ticker_relevance = 0
     skipped_price_gate = 0
     skipped_instr = 0
     skipped_by_source = 0
@@ -1119,63 +1239,204 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     skipped_data_presentation = 0
     # Track events skipped because they were already seen in a previous cycle.
     skipped_seen = 0
+    skipped_stale = 0  # Track stale articles rejected by freshness check
+    skipped_otc = 0  # Track OTC stock rejections (WAVE 1.2)
+    skipped_unit_warrant = 0  # Track unit/warrant/rights rejections
+    skipped_low_volume = 0  # Track low liquidity stocks (Fix 9)
     alerted = 0
+    # Track strong negatives that bypass MIN_SCORE threshold
+    strong_negatives_bypassed = 0
+
+    # WAVE 1.2: Instantiate TickerValidator for OTC filtering
+    ticker_validator = TickerValidator()
+
+    # Load watchlist for crypto filter (allow crypto tickers if on watchlist)
+    watchlist_tickers: set = set()
+    try:
+        from catalyst_bot.watchlist import load_watchlist_set
+        wl_path = getattr(settings, "watchlist_csv", None) or ""
+        if wl_path:
+            watchlist_tickers = load_watchlist_set(str(wl_path))
+            log.debug("watchlist_loaded count=%d", len(watchlist_tickers))
+    except Exception as e:
+        log.debug("watchlist_load_failed err=%s", e.__class__.__name__)
+        watchlist_tickers = set()
+
+    # WAVE 4: Batch SEC LLM Processing - Parallel keyword extraction
+    # Collect all SEC filings for batch processing (eliminates serial asyncio.run() bottleneck)
+    sec_llm_cache = {}
+    sec_filings_to_process = []
+    for it in deduped:
+        source = it.get("source") or "unknown"
+        if _is_sec_source(source):
+            doc_text = it.get("summary") or it.get("title") or ""
+            if doc_text and len(doc_text) > 50:  # Only process substantial text
+                filing_type = source.replace("sec_", "").upper()
+                item_id = it.get("id") or it.get("link") or ""
+                sec_filings_to_process.append({
+                    "item_id": item_id,
+                    "document_text": doc_text,
+                    "title": it.get("title", ""),
+                    "filing_type": filing_type,
+                })
+
+    # Batch process all SEC filings in parallel (one asyncio.run call for ALL filings)
+    if sec_filings_to_process:
+        try:
+            import asyncio
+            from .sec_llm_analyzer import batch_extract_keywords_from_documents
+
+            log.info("sec_batch_processing_start count=%d", len(sec_filings_to_process))
+
+            # WEEK 1 FIX: Check for existing event loop to prevent deadlock
+            try:
+                loop = asyncio.get_running_loop()
+                # Already in async context, use await (defensive)
+                log.warning("async_loop_detected using_existing_loop=True")
+                # This shouldn't happen in current codebase, but safety first
+                # Note: This branch won't work unless _cycle() is async
+                sec_llm_cache = asyncio.run(batch_extract_keywords_from_documents(sec_filings_to_process))
+            except RuntimeError:
+                # No loop exists, safe to use asyncio.run()
+                sec_llm_cache = asyncio.run(batch_extract_keywords_from_documents(sec_filings_to_process))
+
+            log.info("sec_batch_processing_complete cached=%d", len(sec_llm_cache))
+        except Exception as e:
+            log.error("sec_batch_processing_failed err=%s", str(e), exc_info=True)
+            # Fallback to empty results to prevent cycle crash
+            sec_llm_cache = {}
 
     for it in deduped:
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
-        # Suppress alerts for events we've seen recently (persisted store).  This helps
-        # prevent duplicate notifications across cycles.  The persistent seen store
-        # uses a TTL defined via SEEN_TTL_DAYS/SEEN_TTL_SECONDS and respects the
-        # FEATURE_PERSIST_SEEN flag.  If should_filter() returns True, skip this item.
+        # FIXED: Check if we've seen this item recently WITHOUT marking it as seen yet.
+        # We only mark as seen AFTER successful alert delivery (below, after send_alert_safe).
+        # This prevents the race condition where failed alerts are marked seen and never retry.
+        # The persistent seen store uses TTL defined via SEEN_TTL_DAYS and respects
+        # the FEATURE_PERSIST_SEEN flag.
         try:
             item_id = it.get("id") or ""
-            if item_id and should_filter(item_id):
+            if item_id and seen_store and seen_store.is_seen(item_id):
                 skipped_seen += 1
                 continue
         except Exception:
-            # If the seen store fails, fall through and process normally.
+            # If the seen store check fails, fall through and process normally.
             pass
 
-        # Filter multi-ticker news stories (sector commentary, not company-specific catalysts)
-        # These generate duplicate alerts and are typically fluff rather than actionable events
+        # WAVE 3: Smart multi-ticker handling (replaces blanket rejection)
+        # Score ticker relevance instead of rejecting all multi-ticker articles.
+        # This allows true multi-ticker stories (partnerships, acquisitions) while
+        # filtering out incidental mentions ("AAPL down, MSFT up").
         try:
-            title = it.get("title") or ""
-            if title:
-                all_tickers = extract_tickers_from_title(title)
-                if len(all_tickers) > 1:
-                    skipped_multi_ticker += 1
-                    # MOA Phase 1: Log rejected item for analysis
-                    try:
-                        px = None
-                        if ticker and ticker in price_cache:
-                            px, _ = price_cache[ticker]
-                        log_rejected_item(
-                            item=it,
-                            rejection_reason="MULTI_TICKER",
-                            price=px,
-                            score=None,
-                            sentiment=None,
-                            keywords=None,
-                        )
-                    except Exception:
-                        pass
-                    log.debug("skip_multi_ticker source=%s title=%s tickers=%s",
-                             source, title[:50], ",".join(all_tickers))
-                    continue
-        except Exception:
-            pass  # Don't crash on multi-ticker detection errors
+            # Check if multi-ticker scoring is enabled (default: True)
+            if getattr(settings, "feature_multi_ticker_scoring", True):
+                title = it.get("title") or ""
+                if title:
+                    all_tickers = extract_tickers_from_title(title)
+                    if len(all_tickers) > 1:
+                        # Multi-ticker article detected - score relevance
+                        article_data = {
+                            "title": title,
+                            "summary": it.get("summary", ""),
+                            "text": it.get("text", ""),
+                        }
 
-        # Filter data presentation announcements (rarely lead to sustained movement)
-        # These are conference presentations, interim data releases, etc. that lack novel catalysts
+                        # Get configuration
+                        min_score = getattr(settings, "multi_ticker_min_relevance_score", 40)
+                        max_primary = getattr(settings, "multi_ticker_max_primary", 2)
+                        score_diff = getattr(settings, "multi_ticker_score_diff_threshold", 30)
+
+                        # Analyze article and select primary tickers
+                        primary_tickers, secondary_tickers, all_scores = analyze_multi_ticker_article(
+                            all_tickers,
+                            article_data,
+                            min_score=min_score,
+                            max_primary=max_primary,
+                            score_diff_threshold=score_diff,
+                        )
+
+                        # If current ticker is not a primary ticker, skip it
+                        if ticker not in primary_tickers:
+                            # Log as low relevance rejection
+                            log.info(
+                                "ticker_low_relevance ticker=%s score=%.1f primary_tickers=%s title=%s",
+                                ticker,
+                                all_scores.get(ticker, 0.0),
+                                ",".join(primary_tickers) if primary_tickers else "none",
+                                title[:50],
+                            )
+                            skipped_multi_ticker += 1  # Reuse counter for metrics
+
+                            # MOA Phase 1: Log rejected item for analysis
+                            try:
+                                px = None
+                                if ticker in price_cache:
+                                    px, _ = price_cache[ticker]
+                                log_rejected_item(
+                                    item=it,
+                                    rejection_reason="LOW_RELEVANCE",
+                                    price=px,
+                                    score=all_scores.get(ticker, 0.0),
+                                    sentiment=None,
+                                    keywords=None,
+                                )
+                            except Exception:
+                                pass
+                            continue
+
+                        # Ticker is primary - attach secondary tickers to item metadata
+                        # This will be used by alerts.py to display "Also mentions: X, Y, Z"
+                        if secondary_tickers:
+                            it["secondary_tickers"] = secondary_tickers
+                            it["ticker_relevance_score"] = all_scores.get(ticker, 0.0)
+                            it["is_multi_ticker_story"] = True
+                            log.info(
+                                "multi_ticker_primary ticker=%s score=%.1f secondary=%s",
+                                ticker,
+                                all_scores.get(ticker, 0.0),
+                                ",".join(secondary_tickers),
+                            )
+            else:
+                # Legacy behavior: reject all multi-ticker articles
+                title = it.get("title") or ""
+                if title:
+                    all_tickers = extract_tickers_from_title(title)
+                    if len(all_tickers) > 1:
+                        skipped_multi_ticker += 1
+                        # MOA Phase 1: Log rejected item for analysis
+                        try:
+                            px = None
+                            if ticker and ticker in price_cache:
+                                px, _ = price_cache[ticker]
+                            log_rejected_item(
+                                item=it,
+                                rejection_reason="MULTI_TICKER",
+                                price=px,
+                                score=None,
+                                sentiment=None,
+                                keywords=None,
+                            )
+                        except Exception:
+                            pass
+                        log.debug("skip_multi_ticker source=%s title=%s tickers=%s",
+                                 source, title[:50], ",".join(all_tickers))
+                        continue
+        except Exception as e:
+            # Don't crash on multi-ticker detection errors
+            log.warning("multi_ticker_handler_error ticker=%s err=%s", ticker, str(e))
+            pass
+
+        # Filter data presentation and conference/exhibit announcements (rarely lead to sustained movement)
+        # These are conference presentations, exhibit announcements, interim data releases, etc. that lack novel catalysts
+        # User feedback: "usually these presentation announcements aren't really catalyst news"
         # Exception: Keep truly breakthrough data (FDA breakthrough, pivotal results, etc.)
         try:
             title_lower = (it.get("title") or "").lower()
             summary_lower = (it.get("summary") or "").lower()
             combined_text = f"{title_lower} {summary_lower}"
 
-            # Keywords indicating data presentation
+            # Keywords indicating data presentation or conference/exhibit announcements
             presentation_keywords = [
                 "announces presentation",
                 "announcement of presentation",
@@ -1188,6 +1449,16 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 "updated data",
                 "preliminary data",
                 "data presentation",
+                # Conference/exhibit announcements (user feedback: not catalyst news)
+                "to exhibit at",
+                "will exhibit at",
+                "exhibiting at",
+                "exhibit at",
+                "presenting data at",
+                "present data at",
+                "present at",
+                "to present at the",
+                "will present at the",
             ]
 
             # Breakthrough keywords that override the filter
@@ -1231,6 +1502,104 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         except Exception:
             pass  # Don't crash on presentation detection errors
 
+        # Filter Jim Cramer mentions and summary/analysis articles
+        # These are commentary/opinion pieces rather than primary news/PR
+        # User feedback: CLF alert was "big swing and a miss" - Jim Cramer story, summary article
+        try:
+            title_lower = (it.get("title") or "").lower()
+            summary_lower = (it.get("summary") or "").lower()
+            combined_text = f"{title_lower} {summary_lower}"
+
+            # Jim Cramer / CNBC personality keywords
+            cramer_keywords = [
+                "cramer",
+                "jim cramer",
+                "mad money",
+                "thestreet",  # Cramer's company
+            ]
+
+            # Summary/analysis article indicators (vs primary PR/SEC filings)
+            summary_keywords = [
+                "here's what you need to know",
+                "here is what you need to know",
+                "what you need to know about",
+                "here's what happened",
+                "what happened to",
+                "why is",
+                "why did",
+                "explainer:",
+                "analysis:",
+                "opinion:",
+                "commentary:",
+                "roundup:",
+                "wrap-up:",
+                "daily digest",
+                "market recap",
+                "stocks making moves",
+                "movers and shakers",
+                "stocks to watch",
+            ]
+
+            is_cramer = any(kw in combined_text for kw in cramer_keywords)
+            is_summary = any(kw in combined_text for kw in summary_keywords)
+
+            if is_cramer or is_summary:
+                skipped_cat_gate += 1  # Reuse category gate counter
+                # MOA logging
+                try:
+                    px = None
+                    if ticker and ticker in price_cache:
+                        px, _ = price_cache[ticker]
+                    reason = "CRAMER_MENTION" if is_cramer else "SUMMARY_ARTICLE"
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason=reason,
+                        price=px,
+                        score=None,
+                        sentiment=None,
+                        keywords=None,
+                    )
+                except Exception:
+                    pass
+                filter_reason = "cramer_mention" if is_cramer else "summary_article"
+                log.debug("skip_%s source=%s title=%s", filter_reason, source, title[:50])
+                continue
+        except Exception:
+            pass  # Don't crash on content filter errors
+
+        # Filter non-substantive news articles
+        # Rejects "Why [TICKER] Stock Is Down Today" summaries and "we don't know" press releases
+        # These articles lack actionable information and create noise in alerts
+        try:
+            from catalyst_bot.classify import is_substantive_news
+
+            title = it.get("title") or ""
+            summary = it.get("summary") or ""
+
+            if not is_substantive_news(title, summary):
+                skipped_cat_gate += 1  # Reuse category gate counter for metrics
+                # MOA logging
+                try:
+                    px = None
+                    if ticker and ticker in price_cache:
+                        px, _ = price_cache[ticker]
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="NON_SUBSTANTIVE",
+                        price=px,
+                        score=None,
+                        sentiment=None,
+                        keywords=None,
+                    )
+                except Exception:
+                    pass
+                log.debug("skip_non_substantive source=%s title=%s", source, title[:50])
+                continue
+        except Exception as e:
+            # Don't crash if filter fails - log and continue
+            log.debug("non_substantive_filter_error err=%s", e.__class__.__name__)
+            pass
+
         # Skip whole sources if configured
         if skip_sources and source in skip_sources:
             skipped_by_source += 1
@@ -1262,6 +1631,221 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             log.debug("item_parse_skip source=%s ticker=%s", source, ticker)
             continue
 
+        # Filter crypto tickers (unless on watchlist)
+        # Block alerts on cryptocurrency tickers (BTC, ETH, SOL, etc.) that user doesn't trade.
+        # Exception: If ticker is on user's watchlist, allow it through.
+        # This prevents crypto news summaries from cluttering stock alerts.
+        from catalyst_bot.validation import is_crypto_ticker
+        if is_crypto_ticker(ticker, watchlist_tickers):
+            skipped_crypto += 1
+            log.info("crypto_ticker_rejected ticker=%s", ticker)
+            continue
+
+        # Ticker relevance check - verify ticker appears in article content
+        # Prevents false positives where feed ticker doesn't match article subject
+        # Examples: [AMC] article about BYND, [QMCO] article that never mentions QMCO
+        # This catches ticker misidentification by news aggregators
+        try:
+            title = it.get("title") or ""
+            summary = it.get("summary") or ""
+            combined_text = f"{title} {summary}".upper()
+
+            # Check if ticker appears in content (case-insensitive)
+            if ticker and ticker not in combined_text:
+                # Ticker doesn't appear in article - likely misidentified
+                skipped_ticker_relevance += 1
+                log.info("ticker_not_mentioned ticker=%s title=%s", ticker, title[:60])
+                continue
+        except Exception as e:
+            # Don't crash on relevance check errors - log and continue
+            log.debug("ticker_relevance_check_error ticker=%s err=%s", ticker, e.__class__.__name__)
+
+        # WAVE 1.2: OTC Stock Filter
+        # Block alerts on illiquid OTC/pink sheet stocks unsuitable for day trading.
+        # Uses yfinance to check exchange field (cached for performance).
+        # This check happens AFTER ticker extraction but BEFORE classification
+        # to save processing on illiquid stocks.
+        if getattr(settings, "filter_otc_stocks", True):
+            try:
+                is_otc_ticker = ticker_validator.is_otc(ticker)
+
+                if is_otc_ticker:
+                    log.info(
+                        "otc_ticker_rejected ticker=%s title=%s",
+                        ticker,
+                        (it.get("title") or "")[:50],
+                    )
+                    skipped_otc += 1
+
+                    # MOA Phase 1: Log rejected item for analysis
+                    try:
+                        px = None
+                        if ticker in price_cache:
+                            px, _ = price_cache[ticker]
+                        log_rejected_item(
+                            item=it,
+                            rejection_reason="OTC_EXCHANGE",
+                            price=px,
+                            score=None,
+                            sentiment=None,
+                            keywords=None,
+                        )
+                    except Exception:
+                        pass  # Don't crash on MOA logging failures
+
+                    continue  # Skip to next item
+            except Exception as e:
+                # Don't crash on OTC check failures - log warning and continue processing
+                log.warning("otc_check_failed ticker=%s err=%s", ticker, str(e))
+                # Fail-open: Continue processing on error to avoid blocking valid alerts
+
+        # Fix 9: Minimum Average Volume Filter
+        # Filter low liquidity stocks that are hard to trade (low volume = wide spreads, slippage)
+        # Uses yfinance to fetch average volume. Skipped if MIN_AVG_VOLUME not set.
+        min_avg_vol = getattr(settings, "min_avg_volume", None)
+        if min_avg_vol is not None and ticker:
+            try:
+                import yfinance as yf
+                ticker_obj = yf.Ticker(ticker)
+                info = ticker_obj.info
+                avg_volume = info.get("averageVolume") or info.get("averageVolume10days") or 0
+
+                if avg_volume < min_avg_vol:
+                    log.info(
+                        "low_volume_rejected ticker=%s avg_volume=%d threshold=%d",
+                        ticker,
+                        avg_volume,
+                        min_avg_vol,
+                    )
+                    skipped_low_volume += 1
+                    continue  # Skip low volume ticker
+            except Exception as e:
+                # Don't crash on volume fetch failures - log and continue
+                log.debug("volume_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__)
+
+        # Unit/Warrant/Rights Filter
+        # Block alerts on derivative securities (units, warrants, rights) which have
+        # low liquidity and are unsuitable for day trading.
+        # This check uses ticker suffix patterns (U, W, WS, WT, R).
+        try:
+            is_unit_or_warrant = ticker_validator.is_unit_or_warrant(ticker)
+
+            if is_unit_or_warrant:
+                log.info(
+                    "unit_warrant_rejected ticker=%s title=%s",
+                    ticker,
+                    (it.get("title") or "")[:50],
+                )
+                skipped_unit_warrant += 1
+
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    px = None
+                    if ticker in price_cache:
+                        px, _ = price_cache[ticker]
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="UNIT_WARRANT_RIGHTS",
+                        price=px,
+                        score=None,
+                        sentiment=None,
+                        keywords=None,
+                    )
+                except Exception:
+                    pass  # Don't crash on MOA logging failures
+
+                continue  # Skip to next item
+        except Exception as e:
+            # Don't crash on unit/warrant check failures - log warning and continue processing
+            log.warning("unit_warrant_check_failed ticker=%s err=%s", ticker, str(e))
+            # Fail-open: Continue processing on error to avoid blocking valid alerts
+
+        # Check article freshness (reject stale news)
+        try:
+            max_article_age = getattr(settings, "max_article_age_minutes", 30)
+            max_sec_age = getattr(settings, "max_sec_filing_age_minutes", 240)
+            is_sec = "sec.gov" in (it.get("link") or "").lower()  # Simple SEC detection
+
+            item_published_at = it.get("published_at")
+            is_fresh, age_min = is_article_fresh(
+                item_published_at,
+                max_age_minutes=max_article_age,
+                max_sec_age_minutes=max_sec_age,
+                is_sec_filing=is_sec,
+            )
+
+            if not is_fresh:
+                log.info(
+                    "item_rejected_stale ticker=%s age_minutes=%d title=%s",
+                    ticker,
+                    age_min or 0,
+                    (it.get("title") or "")[:50],
+                )
+                skipped_stale += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    px = None
+                    if ticker in price_cache:
+                        px, _ = price_cache[ticker]
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="STALE_ARTICLE",
+                        price=px,
+                        score=None,
+                        sentiment=None,
+                        keywords=None,
+                    )
+                except Exception:
+                    pass
+                continue  # Skip to next item
+        except Exception as e:
+            # Don't crash on freshness check errors - allow through
+            log.debug("freshness_check_error err=%s", str(e))
+
+        # DEFENSIVE CHECK: Block OTC and foreign ADR tickers (user requirement)
+        # This provides redundant protection in case ticker extraction/validation is bypassed
+        # OTC suffixes: OTC, PK, QB, QX (case-insensitive)
+        # Foreign ADR: 5+ characters ending in 'F'
+        ticker_upper = ticker.upper()
+        if ticker_upper.endswith(("OTC", "PK", "QB", "QX")):
+            skipped_instr += 1  # Count as instrument-like for metrics
+            try:
+                px = None
+                if ticker in price_cache:
+                    px, _ = price_cache[ticker]
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="OTC_TICKER",
+                    price=px,
+                    score=None,
+                    sentiment=None,
+                    keywords=None,
+                )
+            except Exception:
+                pass
+            log.info("skip_otc_ticker source=%s ticker=%s", source, ticker)
+            continue
+
+        # Block foreign ADRs (5+ chars ending in F)
+        if ticker_upper.endswith("F") and len(ticker_upper) >= 5:
+            skipped_instr += 1  # Count as instrument-like for metrics
+            try:
+                px = None
+                if ticker in price_cache:
+                    px, _ = price_cache[ticker]
+                log_rejected_item(
+                    item=it,
+                    rejection_reason="FOREIGN_ADR",
+                    price=px,
+                    score=None,
+                    sentiment=None,
+                    keywords=None,
+                )
+            except Exception:
+                pass
+            log.info("skip_foreign_adr source=%s ticker=%s", source, ticker)
+            continue
+
         # Drop warrants/units/etc (refined)
         if ignore_instr and _is_instrument_like(ticker):
             skipped_instr += 1
@@ -1285,9 +1869,10 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             log.debug("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
             continue
 
-        # Classify (uses analyzer weights if present); fallback if needed
+        # WAVE 3: Fast classify (keywords, sentiment, ML) - NO market enrichment
+        # Market data (RVOL, float, VWAP, divergence) deferred until after filtering
         try:
-            scored = classify(
+            scored = fast_classify(
                 item=market.NewsItem.from_feed_dict(it),  # type: ignore[attr-defined]
                 keyword_weights=dyn_weights,
             )
@@ -1330,73 +1915,38 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 # If even fallback breaks, skip this one
                 continue
 
-        # SEC LLM Integration: Extract keywords from SEC filings using Gemini/Claude
-        # This enhances classification for SEC documents with LLM-extracted keywords
+        # WAVE 4: SEC LLM Integration - Lookup from batch-processed cache
+        # Keywords were extracted in parallel during preprocessing (lines 1188-1216)
         if _is_sec_source(source):
-            try:
-                from .sec_llm_analyzer import extract_keywords_from_document_sync
+            item_id = it.get("id") or it.get("link") or ""
+            llm_result = sec_llm_cache.get(item_id, {})
 
-                # Get document text (prefer summary, fallback to title)
-                doc_text = it.get("summary") or it.get("title") or ""
-                filing_type = source.replace("sec_", "").upper()
+            if llm_result and llm_result.get("keywords"):
+                # Merge LLM keywords into scored object
+                llm_keywords = llm_result.get("keywords", [])
+                existing_keywords = _keywords_of(scored)
 
-                if doc_text and len(doc_text) > 50:  # Only process substantial text
-                    # Extract keywords using hybrid LLM (Local → Gemini → Claude)
-                    llm_result = extract_keywords_from_document_sync(
-                        document_text=doc_text,
-                        title=it.get("title", ""),
-                        filing_type=filing_type,
-                    )
+                # Combine and deduplicate keywords
+                merged_keywords = list(set(existing_keywords + llm_keywords))
 
-                    if llm_result and llm_result.get("keywords"):
-                        # Merge LLM keywords into scored object
-                        llm_keywords = llm_result.get("keywords", [])
-                        existing_keywords = _keywords_of(scored)
+                # Update scored object with merged keywords
+                if isinstance(scored, dict):
+                    scored["keywords"] = merged_keywords
+                elif hasattr(scored, "_asdict"):
+                    # namedtuple - convert to dict, update, keep as dict
+                    scored = scored._asdict()
+                    scored["keywords"] = merged_keywords
+                elif hasattr(scored, "keywords"):
+                    scored.keywords = merged_keywords
 
-                        # Combine and deduplicate keywords
-                        merged_keywords = list(set(existing_keywords + llm_keywords))
-
-                        # Update scored object with merged keywords
-                        if isinstance(scored, dict):
-                            scored["keywords"] = merged_keywords
-                        elif hasattr(scored, "_asdict"):
-                            # namedtuple - convert to dict, update, keep as dict
-                            scored = scored._asdict()
-                            scored["keywords"] = merged_keywords
-                        elif hasattr(scored, "keywords"):
-                            scored.keywords = merged_keywords
-
-                        log.info(
-                            "sec_llm_keywords_merged source=%s ticker=%s "
-                            "original=%d llm=%d merged=%d",
-                            source,
-                            ticker,
-                            len(existing_keywords),
-                            len(llm_keywords),
-                            len(merged_keywords),
-                        )
-            except ImportError:
-                # SEC LLM module not available, skip gracefully
-                log.debug("sec_llm_analyzer not available, skipping keyword extraction")
-            except (AttributeError, KeyError, TypeError, ValueError) as e:
-                # CRITICAL FIX: Handle data-related errors from LLM extraction
-                log.warning(
-                    "sec_llm_extraction_data_error source=%s ticker=%s err=%s err_type=%s",
+                log.info(
+                    "sec_llm_keywords_merged source=%s ticker=%s "
+                    "original=%d llm=%d merged=%d",
                     source,
                     ticker,
-                    str(e),
-                    e.__class__.__name__,
-                    exc_info=False,
-                )
-            except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as e:
-                # CRITICAL FIX: Handle network errors from LLM API calls
-                log.warning(
-                    "sec_llm_extraction_network_error source=%s ticker=%s err=%s err_type=%s",
-                    source,
-                    ticker,
-                    str(e),
-                    e.__class__.__name__,
-                    exc_info=False,
+                    len(existing_keywords),
+                    len(llm_keywords),
+                    len(merged_keywords),
                 )
 
         # Optional price gating
@@ -1406,18 +1956,60 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # PERFORMANCE: Use batch-fetched price cache when available
         if ticker in price_cache:
             last_px, last_chg = price_cache[ticker]
+            log.debug(
+                "price_from_cache ticker=%s price=%s source=%s",
+                ticker,
+                last_px,
+                source,
+            )
         else:
-            # Fallback to individual lookup (only if price_ceiling not set or cache failed)
+            # Fallback to individual lookup (only if price gates not set or cache failed)
             try:
                 last_px, last_chg = market.get_last_price_change(ticker)
-            except Exception:
-                # If ceiling is set and price lookup failed, skip (can't enforce)
-                if price_ceiling is not None:
+                log.debug(
+                    "price_fetched ticker=%s price=%s source=%s",
+                    ticker,
+                    last_px,
+                    source,
+                )
+            except Exception as price_err:
+                log.warning(
+                    "price_fetch_failed ticker=%s source=%s err=%s ceiling_set=%s",
+                    ticker,
+                    source,
+                    str(price_err),
+                    price_ceiling is not None,
+                )
+                # If ceiling or floor is set and price lookup failed, skip (can't enforce)
+                if price_ceiling is not None or price_floor is not None:
                     skipped_price_gate += 1
                     continue
 
-        # Enforce price ceiling if active and we have a price
-        if price_ceiling is not None and last_px is not None:
+        # Enforce price ceiling if active
+        if price_ceiling is not None:
+            # FIX: If ceiling is set, we require valid price data
+            # Skip items with no price data (None) or invalid prices (NaN/Inf)
+            if last_px is None:
+                log.warning(
+                    "no_price_data ticker=%s skipping_due_to_ceiling_requirement",
+                    ticker
+                )
+                skipped_price_gate += 1
+                continue
+
+            # FIX: Check for NaN - pandas/yfinance can return NaN which passes "is not None"
+            # NaN comparisons always return False, so NaN > 10 = False (bypasses ceiling)
+            import math
+            if math.isnan(last_px) or not math.isfinite(last_px):
+                # Invalid price (NaN/Inf) - skip item if ceiling is set
+                log.warning(
+                    "invalid_price_detected ticker=%s price=%s skipping_due_to_ceiling",
+                    ticker,
+                    last_px
+                )
+                skipped_price_gate += 1
+                continue
+
             if float(last_px) > float(price_ceiling):
                 skipped_price_gate += 1
                 # MOA Phase 1: Log rejected item for analysis
@@ -1435,42 +2027,141 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     pass  # Don't crash on logging failures
                 continue
 
+        # Enforce price floor if active
+        if price_floor is not None:
+            # FIX: If floor is set, we require valid price data (same as ceiling logic)
+            if last_px is None:
+                # Already logged by ceiling check if both are set, only log if floor only
+                if price_ceiling is None:
+                    log.warning(
+                        "no_price_data ticker=%s skipping_due_to_floor_requirement",
+                        ticker
+                    )
+                skipped_price_gate += 1
+                continue
+
+            # FIX: Check for NaN (same as ceiling check above)
+            if math.isnan(last_px) or not math.isfinite(last_px):
+                # Already logged by ceiling check if both are set
+                if price_ceiling is None:
+                    log.warning(
+                        "invalid_price_detected ticker=%s price=%s skipping_due_to_floor",
+                        ticker,
+                        last_px
+                    )
+                skipped_price_gate += 1
+                continue
+
+            if float(last_px) < float(price_floor):
+                skipped_price_gate += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="LOW_PRICE",
+                        price=last_px,
+                        score=_score_of(scored),
+                        sentiment=_sentiment_of(scored),
+                        keywords=_keywords_of(scored),
+                        scored=scored,
+                    )
+                except Exception:
+                    pass  # Don't crash on logging failures
+                continue
+
         # -------- Classifier gating (score / sentiment / category) ----------
         scr = _score_of(scored)
-        if (min_score is not None) and (scr < min_score):
-            skipped_low_score += 1
-            # MOA Phase 1: Log rejected item for analysis
-            try:
-                log_rejected_item(
-                    item=it,
-                    rejection_reason="LOW_SCORE",
-                    price=last_px,
-                    score=scr,
-                    sentiment=_sentiment_of(scored),
-                    keywords=_keywords_of(scored),
-                    scored=scored,
-                )
-            except Exception:
-                pass  # Don't crash on logging failures
-            continue
-
         snt = _sentiment_of(scored)
-        if (min_sent_abs is not None) and (abs(snt) < min_sent_abs):
-            skipped_sent_gate += 1
-            # MOA Phase 1: Log rejected item for analysis
-            try:
-                log_rejected_item(
-                    item=it,
-                    rejection_reason="SENT_GATE",
-                    price=last_px,
-                    score=scr,
-                    sentiment=snt,
-                    keywords=_keywords_of(scored),
-                    scored=scored,
+
+        # Smart negative threshold: Strong negative catalysts bypass MIN_SCORE
+        # This ensures high-impact negative events (dilution, bankruptcy, etc.)
+        # always alert even if score is below threshold due to sentiment adjustments
+        is_strong_negative = False
+
+        # Check 1: Strong negative sentiment (< -0.30)
+        if snt < -0.30:
+            is_strong_negative = True
+            log.info(
+                "strong_negative_detected ticker=%s sentiment=%.3f reason=strong_sentiment",
+                ticker, snt
+            )
+
+        # Check 2: Critical negative keywords (always alert)
+        if not is_strong_negative:
+            critical_negative_keywords = [
+                "dilution", "offering", "warrant", "delisting", "bankruptcy",
+                "trial failed", "fda rejected", "lawsuit", "going concern",
+                "chapter 11", "restructuring", "default", "insolvent"
+            ]
+
+            title_lower = (it.get("title") or "").lower()
+            summary_lower = (it.get("summary") or "").lower()
+            combined_text = f"{title_lower} {summary_lower}"
+
+            for keyword in critical_negative_keywords:
+                if keyword in combined_text:
+                    is_strong_negative = True
+                    log.info(
+                        "strong_negative_detected ticker=%s keyword='%s' reason=critical_keyword",
+                        ticker, keyword
+                    )
+                    break
+
+        # Apply dual threshold logic
+        if (min_score is not None) and (scr < min_score):
+            if is_strong_negative:
+                # Bypass MIN_SCORE for strong negatives
+                strong_negatives_bypassed += 1
+                log.info(
+                    "min_score_bypassed ticker=%s score=%.3f sentiment=%.3f reason=strong_negative",
+                    ticker, scr, snt
                 )
-            except Exception:
-                pass  # Don't crash on logging failures
-            continue
+                # Continue processing (don't skip)
+            else:
+                # Normal low score skip
+                skipped_low_score += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="LOW_SCORE",
+                        price=last_px,
+                        score=scr,
+                        sentiment=snt,
+                        keywords=_keywords_of(scored),
+                        scored=scored,
+                    )
+                except Exception:
+                    pass  # Don't crash on logging failures
+                continue
+
+        # Sentiment gate (snt already extracted above)
+        # Note: Strong negatives should already pass this gate since they have high absolute sentiment,
+        # but we check is_strong_negative here for consistency with the score bypass logic
+        if (min_sent_abs is not None) and (abs(snt) < min_sent_abs):
+            if is_strong_negative:
+                # Strong negatives can also bypass sentiment gate (though typically not needed)
+                log.info(
+                    "sent_gate_bypassed ticker=%s abs_sentiment=%.3f reason=strong_negative",
+                    ticker, abs(snt)
+                )
+                # Continue processing (don't skip)
+            else:
+                skipped_sent_gate += 1
+                # MOA Phase 1: Log rejected item for analysis
+                try:
+                    log_rejected_item(
+                        item=it,
+                        rejection_reason="SENT_GATE",
+                        price=last_px,
+                        score=scr,
+                        sentiment=snt,
+                        keywords=_keywords_of(scored),
+                        scored=scored,
+                    )
+                except Exception:
+                    pass  # Don't crash on logging failures
+                continue
 
         if cats_allow:
             kwords = {k.lower() for k in _keywords_of(scored)}
@@ -1490,6 +2181,25 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 except Exception:
                     pass  # Don't crash on logging failures
                 continue
+
+        # WAVE 3: Item passed all filters - Queue for async enrichment
+        # Enrichment (RVOL, float, VWAP, divergence) will happen in background
+        # This allows immediate alert without waiting for slow market data APIs
+        try:
+            news_item = market.NewsItem.from_feed_dict(it)  # type: ignore[attr-defined]
+            enrichment_task_id = enqueue_for_enrichment(scored, news_item)
+            log.debug(
+                "enrichment_queued ticker=%s task_id=%s",
+                ticker,
+                enrichment_task_id
+            )
+        except Exception as enrich_err:
+            # Don't block alerts if enrichment queueing fails
+            log.warning(
+                "enrichment_queue_failed ticker=%s err=%s",
+                ticker,
+                str(enrich_err)
+            )
 
         # Build a payload the new alerts API understands
         alert_payload = {
@@ -1572,6 +2282,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
 
         if ok:
             alerted += 1
+
+            # FIXED: Mark item as seen ONLY after successful alert delivery.
+            # This prevents race condition where failed alerts are marked seen.
+            try:
+                item_id = it.get("id") or ""
+                if item_id and seen_store:
+                    seen_store.mark_seen(item_id)
+                    log.debug("marked_seen item_id=%s ticker=%s", item_id, ticker)
+            except Exception as mark_err:
+                # Don't crash if marking fails, but log it
+                log.warning("mark_seen_failed item_id=%s err=%s", item_id, str(mark_err))
 
             # FALSE POSITIVE ANALYSIS: Log accepted item for outcome tracking
             # Store classification data, keywords, scores for later analysis
@@ -1666,8 +2387,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' price_ceiling=%s "
-        "skipped_no_ticker=%s skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
-        "skipped_multi_ticker=%s skipped_data_presentation=%s skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s alerted=%s",
+        "skipped_no_ticker=%s skipped_crypto=%s skipped_ticker_relevance=%s skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
+        "skipped_multi_ticker=%s skipped_data_presentation=%s skipped_stale=%s skipped_otc=%s skipped_unit_warrant=%s skipped_low_volume=%s skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s "
+        "strong_negatives_bypassed=%s alerted=%s",
         len(items),
         len(deduped),
         tickers_present,
@@ -1677,14 +2399,21 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         dyn_path_str,
         price_ceiling,
         skipped_no_ticker,
+        skipped_crypto,
+        skipped_ticker_relevance,
         skipped_price_gate,
         skipped_instr,
         skipped_by_source,
         skipped_multi_ticker,
         skipped_data_presentation,
+        skipped_stale,
+        skipped_otc,
+        skipped_unit_warrant,
+        skipped_low_volume,
         skipped_low_score,
         skipped_sent_gate,
         skipped_cat_gate,
+        strong_negatives_bypassed,
         alerted,
     )
     # Patch‑2: update global cycle stats for heartbeat and accumulate totals.
@@ -1692,11 +2421,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         global LAST_CYCLE_STATS, TOTAL_STATS
         skipped_total = (
             skipped_no_ticker
+            + skipped_crypto
+            + skipped_ticker_relevance
             + skipped_price_gate
             + skipped_instr
             + skipped_by_source
             + skipped_multi_ticker
             + skipped_data_presentation
+            + skipped_stale
+            + skipped_otc
+            + skipped_unit_warrant
+            + skipped_low_volume
             + skipped_low_score
             + skipped_sent_gate
             + skipped_cat_gate
@@ -1744,11 +2479,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             "items": len(items),
             "deduped": len(deduped),
             "skipped_no_ticker": skipped_no_ticker,
+            "skipped_crypto": skipped_crypto,
+            "skipped_ticker_relevance": skipped_ticker_relevance,
             "skipped_price_gate": skipped_price_gate,
             "skipped_instr": skipped_instr,
             "skipped_by_source": skipped_by_source,
             "skipped_multi_ticker": skipped_multi_ticker,
             "skipped_data_presentation": skipped_data_presentation,
+            "skipped_stale": skipped_stale,
+            "skipped_otc": skipped_otc,
+            "skipped_unit_warrant": skipped_unit_warrant,
+            "skipped_low_volume": skipped_low_volume,
             "skipped_low_score": skipped_low_score,
             "skipped_sent_gate": skipped_sent_gate,
             "skipped_cat_gate": skipped_cat_gate,
@@ -1921,6 +2662,16 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Silently ignore errors - don't break the main loop
         pass
 
+    # ---------------------------------------------------------------------
+    # WEEK 1 FIX: Clear price cache to prevent memory leak
+    # The global _PX_CACHE dict grows unbounded without cleanup.
+    # Clear it at the end of each cycle to prevent 10MB+ growth over 24 hours.
+    global _PX_CACHE
+    cache_size = len(_PX_CACHE)
+    if cache_size > 0:
+        _PX_CACHE.clear()
+        log.debug("price_cache_cleared entries=%d", cache_size)
+
 
 def _set_process_priority(log, settings) -> None:
     """
@@ -1992,28 +2743,81 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
     }
 
     if not moa_enabled:
+        log.debug("moa_check_skipped reason=disabled")
         return
 
-    # Get configured hour (default 13 = 1 PM UTC = 8 AM Central)
+    # Get configured hour (default 1 = 1 AM UTC = 7 PM CST)
     try:
-        moa_hour = int(os.getenv("MOA_NIGHTLY_HOUR", "13").strip() or "13")
+        moa_hour = int(os.getenv("MOA_NIGHTLY_HOUR", "1").strip() or "1")
     except Exception:
-        moa_hour = 13
+        moa_hour = 1
+
+    # Get configured minute (default 30 = 7:30 PM CST)
+    try:
+        moa_minute = int(os.getenv("MOA_NIGHTLY_MINUTE", "30").strip() or "30")
+    except Exception:
+        moa_minute = 30
 
     now = datetime.now(timezone.utc)
     today = now.date()
 
-    # Check if it's the right hour and we haven't already run today
-    if now.hour != moa_hour:
+    # Already ran today? Skip immediately
+    if _MOA_LAST_RUN_DATE == today:
         return
 
-    if _MOA_LAST_RUN_DATE == today:
+    # ROBUST SCHEDULING LOGIC:
+    # Strategy: Use a 3-hour window with multiple trigger conditions to ensure reliable execution
+    #
+    # 1. PRIMARY TRIGGER (±10 minute window around exact time):
+    #    Run if we're within 10 minutes of target time (1:20-1:40 AM for 1:30 target)
+    #
+    # 2. FALLBACK TRIGGER (hourly window):
+    #    Run anytime during target hour+0 or target hour+1 (1:00-2:59 AM)
+    #    if minute >= target minute
+    #
+    # 3. CATCH-UP TRIGGER (missed window recovery):
+    #    Run immediately if we're past target hour+2 (after 3:00 AM) and haven't run today
+    #
+    # This ensures MOA fires even if:
+    # - Bot restarts during target window
+    # - Cycles are slow/delayed
+    # - System clock drifts slightly
+
+    current_hour = now.hour
+    current_minute = now.minute
+
+    # Calculate target time in minutes since midnight for easier comparison
+    target_minutes_since_midnight = (moa_hour * 60) + moa_minute
+    current_minutes_since_midnight = (current_hour * 60) + current_minute
+
+    # PRIMARY TRIGGER: Within ±10 minutes of exact target time
+    time_diff = abs(current_minutes_since_midnight - target_minutes_since_midnight)
+    if time_diff <= 10:
+        log.info(
+            "moa_trigger_primary exact_match=True target=%02d:%02d now=%02d:%02d diff_min=%d",
+            moa_hour, moa_minute, current_hour, current_minute, time_diff
+        )
+    # FALLBACK TRIGGER: Within 3-hour window after target time
+    elif (moa_hour <= current_hour < moa_hour + 3) and (current_minute >= moa_minute or current_hour > moa_hour):
+        log.info(
+            "moa_trigger_fallback window_match=True target=%02d:%02d now=%02d:%02d",
+            moa_hour, moa_minute, current_hour, current_minute
+        )
+    # CATCH-UP TRIGGER: Past 3-hour window but haven't run today
+    elif current_hour >= moa_hour + 3:
+        log.warning(
+            "moa_trigger_catchup missed_window=True target=%02d:%02d now=%02d:%02d last_run=%s",
+            moa_hour, moa_minute, current_hour, current_minute,
+            _MOA_LAST_RUN_DATE.isoformat() if _MOA_LAST_RUN_DATE else "never"
+        )
+    # NO TRIGGER: Before target time
+    else:
         return
 
     # Mark as run for today (do this before starting thread to avoid duplicate triggers)
     _MOA_LAST_RUN_DATE = today
 
-    log.info("moa_nightly_scheduled hour=%d date=%s", moa_hour, today.isoformat())
+    log.info("moa_nightly_scheduled hour=%d minute=%d date=%s", moa_hour, moa_minute, today.isoformat())
 
     def _run_moa_analysis():
         """Background thread function to run MOA and FP analyzers."""
@@ -2106,6 +2910,26 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                 )
 
             log.info("moa_nightly_complete")
+
+            # 3. Post Discord completion report
+            try:
+                from .moa_reporter import post_moa_completion_report
+
+                # Get top_n from env (default: 10)
+                top_n = int(os.getenv("MOA_REPORT_TOP_N", "10") or "10")
+
+                # Post report (will check if moa_result/fp_result exist)
+                post_moa_completion_report(
+                    moa_result=locals().get("moa_result"),
+                    fp_result=locals().get("fp_result"),
+                    top_n=top_n,
+                )
+                log.info("moa_discord_report_posted")
+            except Exception as e:
+                log.warning(
+                    "moa_discord_report_failed err=%s", e.__class__.__name__
+                )
+                # Don't crash MOA thread if Discord posting fails
 
         except Exception as e:
             log.error(

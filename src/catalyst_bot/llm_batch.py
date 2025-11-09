@@ -359,3 +359,201 @@ def submit_llm_request(
     """
     processor = get_batch_processor()
     return processor.submit(prompt, system, priority, callback=callback)
+
+
+# ============================================================================
+# Agent 3: Batch Classification Manager
+# ============================================================================
+
+
+class BatchClassificationManager:
+    """
+    Groups classification items into batches for efficient LLM processing.
+
+    Agent 3 enhancement: Instead of calling LLM once per item (5-10 items = 5-10 API calls),
+    group items into batches and process with single API call (5-10x cost reduction).
+
+    Features:
+    - Automatic batching with configurable batch size (5-10 items)
+    - Timeout-based flushing (2s max wait to fill batch)
+    - Parallel batch processing
+    - Structured prompt templates for batch requests
+    """
+
+    def __init__(self, batch_size: int = 5, batch_timeout: float = 2.0):
+        """
+        Initialize batch classification manager.
+
+        Parameters
+        ----------
+        batch_size : int
+            Number of items per batch (default: 5)
+        batch_timeout : float
+            Max seconds to wait for batch to fill (default: 2.0)
+        """
+        self.batch_size = batch_size
+        self.batch_timeout = batch_timeout
+
+        self.pending_items: List[Dict[str, Any]] = []
+        self.last_flush_time = time.time()
+
+        # Thread lock for batch operations
+        self._lock = threading.Lock()
+
+        log.info(
+            "batch_classification_manager_initialized batch_size=%d timeout=%.1fs",
+            batch_size,
+            batch_timeout,
+        )
+
+    def add_item(self, item_data: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        """
+        Add item to batch queue.
+
+        Returns batch if full, otherwise None (caller should wait for timeout flush).
+
+        Parameters
+        ----------
+        item_data : dict
+            Item to classify with keys: title, description, source, etc.
+
+        Returns
+        -------
+        list or None
+            Batch of items if batch is full, None otherwise
+        """
+        with self._lock:
+            self.pending_items.append(item_data)
+
+            # Check if batch is full
+            if len(self.pending_items) >= self.batch_size:
+                batch = self.pending_items[: self.batch_size]
+                self.pending_items = self.pending_items[self.batch_size :]
+                self.last_flush_time = time.time()
+                return batch
+
+            # Check if timeout elapsed
+            now = time.time()
+            if now - self.last_flush_time >= self.batch_timeout and self.pending_items:
+                batch = self.pending_items.copy()
+                self.pending_items.clear()
+                self.last_flush_time = now
+                return batch
+
+            return None
+
+    def flush(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Flush pending items regardless of batch size.
+
+        Returns
+        -------
+        list or None
+            Pending items, or None if empty
+        """
+        with self._lock:
+            if not self.pending_items:
+                return None
+
+            batch = self.pending_items.copy()
+            self.pending_items.clear()
+            self.last_flush_time = time.time()
+            return batch
+
+
+def group_items_for_batch(items: List[Dict[str, Any]], batch_size: int = 5) -> List[List[Dict[str, Any]]]:
+    """
+    Group items into batches for classification.
+
+    Agent 3: Helper function to split items into batch-sized groups.
+
+    Parameters
+    ----------
+    items : list of dict
+        Items to group
+    batch_size : int
+        Size of each batch (default: 5)
+
+    Returns
+    -------
+    list of list of dict
+        Batches of items
+
+    Example
+    -------
+    >>> items = [{'title': f'News {i}'} for i in range(12)]
+    >>> batches = group_items_for_batch(items, batch_size=5)
+    >>> len(batches)
+    3
+    >>> [len(b) for b in batches]
+    [5, 5, 2]
+    """
+    batches = []
+    for i in range(0, len(items), batch_size):
+        batch = items[i : i + batch_size]
+        batches.append(batch)
+    return batches
+
+
+# Batch classification prompt templates
+BATCH_CLASSIFICATION_PROMPT_TEMPLATE = """You are a financial news classifier. Classify the following {count} news items.
+
+For each item, determine:
+1. Sentiment (-1.0 to +1.0)
+2. Relevance (0.0 to 1.0)
+3. Primary catalyst type (e.g., 'earnings', 'fda', 'acquisition', 'dilution')
+4. Brief rationale (1 sentence)
+
+Items:
+{items_json}
+
+Respond with JSON array matching the input order:
+[
+  {{"sentiment": 0.5, "relevance": 0.8, "catalyst": "earnings", "rationale": "..."}},
+  ...
+]
+
+Respond ONLY with valid JSON array. No additional text."""
+
+
+def create_batch_classification_prompt(items: List[Dict[str, Any]]) -> str:
+    """
+    Create batch classification prompt from items.
+
+    Agent 3: Formats multiple items into single LLM prompt for batch processing.
+
+    Parameters
+    ----------
+    items : list of dict
+        Items to classify (each with 'title', 'description', etc.)
+
+    Returns
+    -------
+    str
+        Formatted prompt for LLM
+
+    Example
+    -------
+    >>> items = [{'title': 'Apple beats earnings', 'description': '...'}]
+    >>> prompt = create_batch_classification_prompt(items)
+    >>> 'Apple beats earnings' in prompt
+    True
+    """
+    import json
+
+    # Simplify items for prompt (only essential fields)
+    simplified_items = []
+    for i, item in enumerate(items):
+        simplified_items.append({
+            'id': i,
+            'title': item.get('title', ''),
+            'description': item.get('description', '')[:200],  # Truncate to 200 chars
+            'source': item.get('source', ''),
+        })
+
+    items_json = json.dumps(simplified_items, indent=2)
+
+    return BATCH_CLASSIFICATION_PROMPT_TEMPLATE.format(
+        count=len(items),
+        items_json=items_json,
+    )

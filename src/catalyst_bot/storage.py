@@ -23,6 +23,61 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+def init_optimized_connection(db_path: str, timeout: int = 30) -> sqlite3.Connection:
+    """
+    Initialize SQLite connection with performance optimizations.
+
+    Week 1 Optimization: Enable WAL mode and optimal pragmas for better
+    concurrency and performance.
+
+    Parameters
+    ----------
+    db_path : str
+        Path to SQLite database file
+    timeout : int, optional
+        Connection timeout in seconds (default: 30)
+
+    Returns
+    -------
+    sqlite3.Connection
+        Optimized SQLite connection
+
+    Environment Variables
+    --------------------
+    SQLITE_WAL_MODE : str
+        Enable Write-Ahead Logging (1=on, 0=off, default: 1)
+    SQLITE_SYNCHRONOUS : str
+        Synchronous mode (FULL=safest, NORMAL=balanced, OFF=fastest, default: NORMAL)
+    SQLITE_CACHE_SIZE : str
+        Cache size in pages (default: 10000 pages ~40MB)
+    SQLITE_MMAP_SIZE : str
+        Memory-mapped I/O size in bytes (default: 30GB)
+    """
+    _ensure_dir(db_path)
+    conn = sqlite3.connect(db_path, timeout=timeout)
+
+    # Enable WAL mode for better concurrency (configurable)
+    if os.getenv("SQLITE_WAL_MODE", "1") == "1":
+        conn.execute("PRAGMA journal_mode=WAL")
+
+    # Balance between safety and speed
+    synchronous_mode = os.getenv("SQLITE_SYNCHRONOUS", "NORMAL")
+    conn.execute(f"PRAGMA synchronous={synchronous_mode}")
+
+    # Increase cache size (negative = KB, positive = pages)
+    cache_size = int(os.getenv("SQLITE_CACHE_SIZE", "10000"))
+    conn.execute(f"PRAGMA cache_size={cache_size}")
+
+    # Enable memory-mapped I/O (30GB default)
+    mmap_size = int(os.getenv("SQLITE_MMAP_SIZE", "30000000000"))
+    conn.execute(f"PRAGMA mmap_size={mmap_size}")
+
+    # Use memory for temporary tables
+    conn.execute("PRAGMA temp_store=MEMORY")
+
+    return conn
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     """Create tables and indexes for the market database if missing.
 

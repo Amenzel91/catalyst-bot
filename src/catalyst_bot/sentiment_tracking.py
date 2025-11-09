@@ -58,6 +58,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .logging_utils import get_logger
+from .storage import init_optimized_connection
 
 log = get_logger("sentiment_tracking")
 
@@ -117,7 +118,7 @@ class SentimentTracker:
 
     def _init_database(self):
         """Create sentiment_history table if it doesn't exist."""
-        with sqlite3.connect(self.db_path) as conn:
+        with init_optimized_connection(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Create table
@@ -176,7 +177,7 @@ class SentimentTracker:
         metadata_json = json.dumps(metadata) if metadata else None
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
@@ -229,7 +230,7 @@ class SentimentTracker:
         now_ts = int(now.timestamp())
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get historical data points for different time windows
@@ -515,7 +516,7 @@ class SentimentTracker:
         )
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "DELETE FROM sentiment_history WHERE timestamp < ?",

@@ -28,6 +28,9 @@ Identify material events related to:
 - **Partnerships, collaborations**: Keywords: partnership, collaboration, agreement, joint_venture, strategic_alliance  # noqa: E501
 - **Uplisting, exchange changes**: Keywords: uplisting, nasdaq, nyse, exchange, listing
 - **Dilution events**: Keywords: dilution, offering, warrant, conversion, public_offering, registered_direct, atm  # noqa: E501
+- **Delisting compliance (CONTEXT CRITICAL)**:
+  - POSITIVE (Relief): compliance_extension, delisting_relief, compliance_restored, extension_granted
+  - NEGATIVE (Warning): delisting_notice, listing_rule_violation, going_concern
 - **Going concern warnings**: Keywords: going_concern, bankruptcy, liquidation, wind_down
 - **Earnings**: Keywords: earnings, revenue, eps, guidance, beat, miss
 - **Institutional investment**: Keywords: institutional, insider_buying, 13d, 13g
@@ -168,21 +171,30 @@ ANALYSIS TASK:
      * Tier 2: Mid-size established companies
      * Tier 3: Small/unknown companies
 
-2. **Extract Deal Terms**:
-   - Upfront payment amount
-   - Total milestone payments
-   - Equity component (dilution risk)
+2. **Extract Deal Terms** (CRITICAL - ALWAYS EXTRACT THESE):
+   - Upfront payment amount (e.g., "$50M upfront", "$10M payment")
+   - Total milestone payments (e.g., "$200M milestones", "$100M potential")
+   - Equity component (dilution risk, e.g., "5% equity stake")
 
-3. **Calculate Sentiment**:
+3. **Create key_stats Array** (REQUIRED - TRADERS NEED THIS):
+   Extract bullet-point stats in this format:
+   - "$50M upfront payment" or "$10M deal"
+   - "$200M milestone potential" (if applicable)
+   - "Tier 1 partner: [partner name]" (if tier 1)
+   - "5% equity dilution" (if applicable)
+
+   If stats are not found, use ["Partnership announced, financial details pending"]
+
+4. **Calculate Sentiment**:
    - Tier 1 partner + large deal = +0.7 to +1.0
    - Tier 2 partner + moderate deal = +0.4 to +0.6
    - Tier 3 partner or small deal = +0.1 to +0.3
    - Deal with heavy dilution = -0.3 to +0.2
 
-4. **Identify Catalysts**:
+5. **Identify Catalysts**:
    - partnership, collaboration, tier_1_partner, agreement, strategic_alliance
 
-5. **Risk Assessment**:
+6. **Risk Assessment**:
    - Low: Tier 1 partner, no dilution, large upfront payment
    - Medium: Tier 2 partner or moderate terms
    - High: Tier 3 partner or significant dilution
@@ -193,11 +205,12 @@ Return JSON matching this schema:
   "confidence": <float 0 to 1>,
   "partner_name": "<partner name>" or null,
   "partner_tier": <"tier_1"|"tier_2"|"tier_3"|"unknown">,
-  "deal_value_upfront": "<amount>" or null,
-  "deal_value_milestones": "<amount>" or null,
+  "deal_value_upfront": "<amount with unit, e.g., '$50M' or '$10 million'>" or null,
+  "deal_value_milestones": "<amount with unit, e.g., '$200M milestones'>" or null,
   "dilution_risk": <true|false>,
+  "key_stats": [<array of concise stats like "$50M upfront", "$200M milestones", "Tier 1: Pfizer">],
   "catalysts": [<list of catalyst keywords>],
-  "summary": "<brief summary>",
+  "summary": "<1 sentence max, focus on partner tier and dollar amounts>",
   "risk_level": <"low"|"medium"|"high">
 }}"""
 
@@ -214,24 +227,34 @@ ANALYSIS TASK:
    - ATM (at-the-market) → Sentiment: -0.3 to -0.5
    - PIPE → Sentiment: -0.5 to -0.7
 
-2. **Extract Deal Terms**:
-   - Gross proceeds
-   - Number of shares
-   - Price per share
-   - Discount to market price (%)
-   - Warrant coverage (%)
-   - Estimated dilution (%)
+2. **Extract Deal Terms** (CRITICAL - ALWAYS EXTRACT THESE):
+   - Gross proceeds (e.g., "$5.2M", "$100M")
+   - Number of shares (e.g., "10M shares", "5.2M shares")
+   - Price per share (e.g., "$0.50/share", "$2.00/share")
+   - Discount to market price (e.g., "15% discount", "at-market")
+   - Warrant coverage (e.g., "100% warrant coverage", "no warrants")
+   - Estimated dilution (e.g., "15% dilution", "8% dilution")
 
-3. **Calculate Sentiment**:
+3. **Create key_stats Array** (REQUIRED - TRADERS NEED THIS):
+   Extract bullet-point stats in this format:
+   - "$5.2M offering" or "$100M registered direct"
+   - "100% warrant coverage" (if applicable)
+   - "15% dilution" (if calculable)
+   - "20% discount to market" (if applicable)
+   - "$0.50/share pricing" (if specified)
+
+   If stats are not found, use ["No financial details available"]
+
+4. **Calculate Sentiment**:
    - Large discount (>20%) = more bearish
    - Warrant coverage (100%+) = more bearish
    - Small ATM = less bearish (-0.3 to -0.4)
    - Large public offering = very bearish (-0.8 to -1.0)
 
-4. **Identify Catalysts**:
+5. **Identify Catalysts**:
    - dilution, offering, warrant, public_offering, registered_direct, atm, pipe
 
-5. **Risk Assessment**:
+6. **Risk Assessment**:
    - Low: Small ATM with proceeds for growth
    - Medium: Moderate offering with reasonable terms
    - High: Large offering with heavy discount and warrants
@@ -241,14 +264,15 @@ Return JSON matching this schema:
   "sentiment": <float -1 to +1>,
   "confidence": <float 0 to 1>,
   "offering_type": <"public_offering"|"registered_direct"|"atm"|"pipe"|"unknown">,
-  "gross_proceeds": "<amount>" or null,
-  "shares_offered": "<number>" or null,
-  "price_per_share": "<amount>" or null,
+  "gross_proceeds": "<amount with unit, e.g., '$5.2M' or '$100 million'>" or null,
+  "shares_offered": "<number with unit, e.g., '10M shares'>" or null,
+  "price_per_share": "<amount, e.g., '$0.50'>" or null,
   "discount_to_market": <float percentage> or null,
-  "warrant_coverage": "<percentage>" or null,
+  "warrant_coverage": "<percentage, e.g., '100%'>" or null,
   "dilution_pct": <float percentage> or null,
+  "key_stats": [<array of concise stats like "$5.2M offering", "100% warrants", "15% dilution">],
   "catalysts": [<list of catalyst keywords>],
-  "summary": "<brief summary>",
+  "summary": "<1 sentence max, focus on dollar amount and dilution impact>",
   "risk_level": <"low"|"medium"|"high">
 }}"""
 
@@ -266,20 +290,51 @@ ANALYSIS TASK:
    - Item 5.02: Officer changes → Sentiment: -0.2 to +0.2
    - Item 8.01: Other events → Sentiment varies widely
 
-2. **Extract Key Information**:
-   - Deal size (if applicable)
-   - Dilution percentage (if applicable)
-   - Warrants/convertibles mentioned
+2. **Extract Key Information** (CRITICAL - ALWAYS EXTRACT THESE):
+   - Deal size (e.g., "$100M acquisition", "$50M buyback", "$25M contract")
+   - Dilution percentage (e.g., "15% dilution")
+   - Warrants/convertibles (e.g., "100% warrant coverage", "convertible notes")
+   - Acquisition price (e.g., "$10M cash + stock")
+   - Buyback size (e.g., "$50M share repurchase")
 
-3. **Identify Catalysts**:
-   - Categorize event type: material_agreement, acquisition, management_change, etc.
+3. **Create key_stats Array** (REQUIRED - TRADERS NEED THIS):
+   Extract bullet-point stats in this format:
+   - "$100M acquisition" or "$50M buyback" or "$25M contract"
+   - "15% dilution" (if applicable)
+   - "100% warrant coverage" (if applicable)
+   - "Acquisition of [company/business name]" (if applicable)
+   - "Extension granted until [date]" (for compliance)
 
-4. **Calculate Sentiment**:
-   - Positive catalysts: acquisitions, strategic agreements, major contracts
-   - Negative catalysts: terminations, going concern, bankruptcy
+   If stats are not found, use ["Routine filing, no financial details disclosed"]
+
+4. **CRITICAL: Delisting Compliance Events**:
+   CONTEXT MATTERS - Distinguish between warnings and relief:
+
+   **POSITIVE (Relief Rally Keywords)**:
+   - "extension granted" / "extension received" → Sentiment: +0.5 to +0.7
+   - "regained compliance" / "compliance achieved" → Sentiment: +0.6 to +0.8
+   - "notice withdrawn" / "deficiency cured" → Sentiment: +0.7 to +0.9
+   - Keywords: compliance_extension, delisting_relief, compliance_restored
+   - WHY POSITIVE: Immediate delisting threat removed, shorts cover, relief buying
+
+   **NEGATIVE (Distress Signal Keywords)**:
+   - "received notice" / "deficiency letter" → Sentiment: -0.6 to -0.8
+   - "non-compliant" / "failing to meet" → Sentiment: -0.7 to -0.9
+   - "delisting determination" / "staff determination" → Sentiment: -0.8 to -1.0
+   - Keywords: delisting_notice, listing_rule_violation, going_concern
+   - WHY NEGATIVE: Company failing requirements, delisting risk increases
+
+5. **Identify Catalysts**:
+   - Categorize event type: material_agreement, acquisition, management_change,
+     compliance_extension, delisting_relief, delisting_notice, etc.
+
+6. **Calculate Sentiment**:
+   - Positive catalysts: acquisitions, strategic agreements, major contracts,
+     compliance extensions/relief
+   - Negative catalysts: terminations, going concern, bankruptcy, delisting warnings
    - Neutral: routine filings, minor updates
 
-5. **Risk Assessment**:
+7. **Risk Assessment**:
    - Low: Positive catalyst with clear value
    - Medium: Mixed or unclear impact
    - High: Negative catalyst or significant uncertainty
@@ -288,12 +343,17 @@ Return JSON matching this schema:
 {{
   "sentiment": <float -1 to +1>,
   "confidence": <float 0 to 1>,
-  "deal_size": "<amount>" or null,
+  "deal_size": "<amount with unit, e.g., '$100M' or '$50 million'>" or null,
   "dilution_pct": <float> or null,
   "has_warrants": <true|false>,
+  "key_stats": [<array of concise stats like "$100M acquisition", "$50M buyback", "15% dilution">],
   "catalysts": [<list of catalyst keywords>],
-  "summary": "<brief summary>",
-  "risk_level": <"low"|"medium"|"high">
+  "summary": "<1 sentence max, focus on event type and dollar amounts>",
+  "risk_level": <"low"|"medium"|"high">,
+  "reasoning": "<2-3 sentence explanation of why you classified this way>",
+  "event_context": "<For delisting: 'extension_granted' | 'notice_received' | 'compliance_achieved' | 'warning_issued', otherwise null>",
+  "trading_thesis": "<1 sentence: why traders would buy/sell on this news>",
+  "expected_price_action": "<'relief_rally' | 'momentum_breakout' | 'selloff' | 'volatility_spike' | 'neutral'>"
 }}"""
 
 

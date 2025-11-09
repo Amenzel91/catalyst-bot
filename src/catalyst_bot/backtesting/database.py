@@ -47,8 +47,10 @@ class BacktestDatabase:
         self._init_schema()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection with row factory."""
-        conn = sqlite3.connect(self.db_path)
+        """Get database connection with row factory and optimized pragmas."""
+        from ..storage import init_optimized_connection
+
+        conn = init_optimized_connection(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 

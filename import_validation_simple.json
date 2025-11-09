@@ -1,0 +1,28 @@
+{
+  "results": {
+    "catalyst_bot.config": "PASS",
+    "catalyst_bot.runner": "PASS",
+    "catalyst_bot.classify": "PASS",
+    "catalyst_bot.alerts": "PASS",
+    "catalyst_bot.charts_advanced": "PASS",
+    "catalyst_bot.feeds": "PASS",
+    "catalyst_bot.float_data": "PASS",
+    "catalyst_bot.ticker_validation": "PASS",
+    "catalyst_bot.dedupe": "PASS",
+    "catalyst_bot.catalyst_badges": "PASS",
+    "catalyst_bot.multi_ticker_handler": "PASS",
+    "catalyst_bot.offering_sentiment": "PASS",
+    "catalyst_bot.sentiment_gauge": "PASS",
+    "catalyst_bot.discord_interactions": "PASS",
+    "catalyst_bot.llm_hybrid": "PASS",
+    "catalyst_bot.moa_historical_analyzer": "PASS",
+    "catalyst_bot.sentiment_tracking": "PASS",
+    "catalyst_bot.trade_plan": "PASS"
+  },
+  "missing_packages": [
+    "discord",
+    "pandas_ta",
+    "openai"
+  ],
+  "health_score": 100
+}

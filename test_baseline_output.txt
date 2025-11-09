@@ -1,0 +1,45 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-8.4.2, pluggy-1.6.0 -- C:\Python313\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot
+configfile: pyproject.toml
+plugins: anyio-4.11.0, asyncio-1.2.0, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 14 items
+
+tests/test_wave_fixes_11_5_2025.py::TestRetrospectiveFilter::test_retrospective_detection_coverage SKIPPED [  7%]
+tests/test_wave_fixes_11_5_2025.py::TestRetrospectiveFilter::test_individual_retrospective_patterns SKIPPED [ 14%]
+tests/test_wave_fixes_11_5_2025.py::TestGoodAlertPreservation::test_good_alerts_pass_through SKIPPED [ 21%]
+tests/test_wave_fixes_11_5_2025.py::TestGoodAlertPreservation::test_false_positive_rate SKIPPED [ 28%]
+tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_env_settings_changed FAILED [ 35%]
+tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_rvol_multiplier_disabled PASSED [ 42%]
+tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_cycle_times_reduced FAILED [ 50%]
+tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_freshness_window_expanded FAILED [ 57%]
+tests/test_wave_fixes_11_5_2025.py::TestIntegration::test_end_to_end_pipeline SKIPPED [ 64%]
+tests/test_wave_fixes_11_5_2025.py::TestIntegration::test_scoring_without_rvol FAILED [ 71%]
+tests/test_wave_fixes_11_5_2025.py::TestSecFilingFormat::test_metadata_removed SKIPPED [ 78%]
+tests/test_wave_fixes_11_5_2025.py::TestSecFilingFormat::test_bullet_formatting SKIPPED [ 85%]
+tests/test_wave_fixes_11_5_2025.py::TestSecFilingFormat::test_no_parsing_errors SKIPPED [ 92%]
+tests/test_wave_fixes_11_5_2025.py::TestMetricsReporting::test_generate_metrics_report PASSED [100%]
+
+================================== FAILURES ===================================
+C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_wave_fixes_11_5_2025.py:449: AssertionError: Not all .env settings are correct
+C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_wave_fixes_11_5_2025.py:465: AssertionError: SCAN_INTERVAL too high
+C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_wave_fixes_11_5_2025.py:475: AssertionError: Expected 12 hours, got 0
+C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\src\catalyst_bot\models.py:31: TypeError: NewsItem requires 'ts_utc' or 'ts' argument
+============================== warnings summary ===============================
+tests\test_wave_fixes_11_5_2025.py:485
+  C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_wave_fixes_11_5_2025.py:485: PytestUnknownMarkWarning: Unknown pytest.mark.integration - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.integration
+
+tests\test_wave_fixes_11_5_2025.py:550
+  C:\Users\menza\OneDrive\Desktop\Catalyst-Bot\catalyst-bot\tests\test_wave_fixes_11_5_2025.py:550: PytestUnknownMarkWarning: Unknown pytest.mark.integration - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.integration
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_env_settings_changed
+FAILED tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_cycle_times_reduced
+FAILED tests/test_wave_fixes_11_5_2025.py::TestEnvironmentConfiguration::test_freshness_window_expanded
+FAILED tests/test_wave_fixes_11_5_2025.py::TestIntegration::test_scoring_without_rvol
+============= 4 failed, 2 passed, 8 skipped, 2 warnings in 6.17s ==============

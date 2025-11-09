@@ -113,6 +113,10 @@ PRICING = {
             "input": 0.000_000_15,  # $0.15 per 1M tokens
             "output": 0.000_000_60,  # $0.60 per 1M tokens
         },
+        "gemini-2.0-flash-lite": {  # Agent 2: Add Flash-Lite pricing
+            "input": 0.000_000_02,  # $0.02 per 1M tokens
+            "output": 0.000_000_10,  # $0.10 per 1M tokens
+        },
         "gemini-1.5-flash": {
             "input": 0.000_000_075,  # $0.075 per 1M tokens
             "output": 0.000_000_30,  # $0.30 per 1M tokens
@@ -146,6 +150,8 @@ class LLMUsageMonitor:
         """
         Initialize usage monitor.
 
+        Agent 4: Enhanced with real-time cost tracking and model availability flags.
+
         Args:
             log_path: Path to JSONL log file. If None, uses data/logs/llm_usage.jsonl
         """
@@ -170,6 +176,18 @@ class LLMUsageMonitor:
         # Alert thresholds (USD)
         self.daily_alert_threshold = float(os.getenv("LLM_COST_ALERT_DAILY", "5.00"))
         self.monthly_alert_threshold = float(os.getenv("LLM_COST_ALERT_MONTHLY", "50.00"))
+
+        # Agent 4: Real-time cost accumulator (resets daily)
+        self.realtime_cost_today = 0.0
+        self.last_reset_day: Optional[str] = None
+
+        # Agent 4: Model availability flags (for cost control)
+        self.model_availability = {
+            "gemini-2.0-flash-lite": True,
+            "gemini-2.5-flash": True,
+            "gemini-2.5-pro": True,
+            "anthropic": True,
+        }
 
         _logger.info(
             "llm_usage_monitor_initialized log_path=%s daily_alert=$%.2f monthly_alert=$%.2f",
@@ -251,10 +269,118 @@ class LLMUsageMonitor:
             success,
         )
 
+        # Agent 4: Update real-time cost accumulator
+        self._update_realtime_cost(total_cost)
+
         # Check for cost alerts
         self._check_alerts()
 
         return event
+
+    def _update_realtime_cost(self, cost: float) -> None:
+        """
+        Update real-time cost accumulator.
+
+        Agent 4: Tracks costs in-memory for instant threshold checks.
+        Resets daily at midnight UTC.
+        """
+        from datetime import datetime, timezone
+
+        # Get current day (YYYY-MM-DD)
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+
+        # Check if new day (reset accumulator)
+        if self.last_reset_day != today:
+            self.realtime_cost_today = 0.0
+            self.last_reset_day = today
+            _logger.info("llm_cost_accumulator_reset date=%s", today)
+
+        # Add cost to accumulator
+        self.realtime_cost_today += cost
+
+    def check_cost_threshold(self, threshold_name: str = "warn") -> bool:
+        """
+        Check if real-time cost has exceeded a threshold.
+
+        Agent 4: Instant threshold check without reading log file.
+
+        Parameters
+        ----------
+        threshold_name : str
+            Threshold to check: "warn", "crit", or "emergency"
+
+        Returns
+        -------
+        bool
+            True if threshold exceeded
+        """
+        from .config import get_settings
+        settings = get_settings()
+
+        thresholds = {
+            "warn": getattr(settings, "llm_cost_alert_warn", 5.0),
+            "crit": getattr(settings, "llm_cost_alert_crit", 10.0),
+            "emergency": getattr(settings, "llm_cost_alert_emergency", 20.0),
+        }
+
+        threshold_value = thresholds.get(threshold_name, 5.0)
+        return self.realtime_cost_today >= threshold_value
+
+    def disable_model(self, model_name: str) -> None:
+        """
+        Disable a model to prevent further usage.
+
+        Agent 4: Cost control mechanism - prevents expensive model usage
+        when thresholds are exceeded.
+
+        Parameters
+        ----------
+        model_name : str
+            Model to disable (e.g., "gemini-2.5-pro", "anthropic")
+        """
+        if model_name in self.model_availability:
+            self.model_availability[model_name] = False
+            _logger.warning(
+                "llm_model_disabled model=%s reason=cost_threshold",
+                model_name,
+            )
+
+    def enable_model(self, model_name: str) -> None:
+        """
+        Re-enable a previously disabled model.
+
+        Agent 4: Manual override to re-enable models after cost review.
+
+        Parameters
+        ----------
+        model_name : str
+            Model to enable (e.g., "gemini-2.5-pro", "anthropic")
+        """
+        if model_name in self.model_availability:
+            self.model_availability[model_name] = True
+            _logger.info(
+                "llm_model_enabled model=%s",
+                model_name,
+            )
+
+    def is_model_available(self, model_name: str) -> bool:
+        """
+        Check if a model is available for use.
+
+        Agent 4: Used by llm_hybrid.py to honor cost-based disabling.
+
+        Parameters
+        ----------
+        model_name : str
+            Model to check
+
+        Returns
+        -------
+        bool
+            True if model is available
+        """
+        return self.model_availability.get(model_name, True)
 
     def get_stats(
         self,
@@ -372,18 +498,54 @@ class LLMUsageMonitor:
         return self.get_stats(since=since, until=now)
 
     def _check_alerts(self) -> None:
-        """Check if usage has exceeded alert thresholds."""
+        """
+        Check if usage has exceeded alert thresholds.
+
+        Agent 4: Multi-tier cost monitoring with automatic model disabling.
+        """
         # Check daily threshold
         daily_stats = self.get_daily_stats()
-        if daily_stats.total_cost >= self.daily_alert_threshold:
+
+        # Agent 4: Multi-tier alerting (warn/crit/emergency)
+        from .config import get_settings
+        settings = get_settings()
+
+        warn_threshold = getattr(settings, "llm_cost_alert_warn", 5.0)
+        crit_threshold = getattr(settings, "llm_cost_alert_crit", 10.0)
+        emergency_threshold = getattr(settings, "llm_cost_alert_emergency", 20.0)
+
+        daily_cost = daily_stats.total_cost
+
+        if daily_cost >= emergency_threshold:
+            _logger.critical(
+                "llm_cost_alert_EMERGENCY cost=$%.2f threshold=$%.2f providers=%s - DISABLING EXPENSIVE MODELS",
+                daily_cost,
+                emergency_threshold,
+                {k: f"${v:.2f}" for k, v in daily_stats.cost_by_provider.items()},
+            )
+            # Agent 4: Disable Pro and Anthropic models
+            self.disable_model("gemini-2.5-pro")
+            self.disable_model("anthropic")
+
+        elif daily_cost >= crit_threshold:
+            _logger.error(
+                "llm_cost_alert_CRITICAL cost=$%.2f threshold=$%.2f providers=%s - DISABLING PRO MODEL",
+                daily_cost,
+                crit_threshold,
+                {k: f"${v:.2f}" for k, v in daily_stats.cost_by_provider.items()},
+            )
+            # Agent 4: Disable Pro model only
+            self.disable_model("gemini-2.5-pro")
+
+        elif daily_cost >= warn_threshold:
             _logger.warning(
-                "llm_daily_cost_alert cost=$%.2f threshold=$%.2f providers=%s",
-                daily_stats.total_cost,
-                self.daily_alert_threshold,
+                "llm_cost_alert_WARN cost=$%.2f threshold=$%.2f providers=%s",
+                daily_cost,
+                warn_threshold,
                 {k: f"${v:.2f}" for k, v in daily_stats.cost_by_provider.items()},
             )
 
-        # Check monthly threshold
+        # Check monthly threshold (legacy compatibility)
         monthly_stats = self.get_monthly_stats()
         if monthly_stats.total_cost >= self.monthly_alert_threshold:
             _logger.warning(

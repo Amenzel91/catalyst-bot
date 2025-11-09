@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .logging_utils import get_logger
+from .storage import init_optimized_connection
 
 log = get_logger("news_velocity")
 
@@ -86,7 +87,9 @@ class NewsVelocityTracker:
 
     def _init_database(self):
         """Create article_history table if it doesn't exist."""
-        with sqlite3.connect(self.db_path) as conn:
+        from .storage import init_optimized_connection
+
+        with init_optimized_connection(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Create table
@@ -164,7 +167,7 @@ class NewsVelocityTracker:
         title_hash = self._title_similarity_hash(title)
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Check for duplicate within last 24 hours
@@ -237,7 +240,7 @@ class NewsVelocityTracker:
         now_ts = int(now.timestamp())
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Get article counts for different time windows
@@ -367,7 +370,7 @@ class NewsVelocityTracker:
         )
 
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "DELETE FROM article_history WHERE timestamp < ?",
@@ -392,7 +395,7 @@ class NewsVelocityTracker:
             Statistics including total articles, tickers tracked, etc.
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with init_optimized_connection(self.db_path) as conn:
                 cursor = conn.cursor()
 
                 # Total articles

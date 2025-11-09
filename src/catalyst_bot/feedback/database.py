@@ -31,9 +31,11 @@ def _get_db_path() -> Path:
 
 
 def _get_connection() -> sqlite3.Connection:
-    """Get a database connection with row factory."""
+    """Get a database connection with row factory and optimized pragmas."""
+    from ..storage import init_optimized_connection
+
     db_path = _get_db_path()
-    conn = sqlite3.connect(str(db_path))
+    conn = init_optimized_connection(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
 

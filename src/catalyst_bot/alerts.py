@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import requests
 
 from .alerts_rate_limit import limiter_allow, limiter_key_from_payload
+from .catalyst_badges import extract_catalyst_badges
 from .charts import CHARTS_OK, get_quickchart_url, render_intraday_chart
 from .config import get_settings
 from .discord_upload import post_embed_with_attachment
@@ -336,10 +337,13 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
 
 def _post_discord_with_backoff(
     url: str, payload: dict, session=None
-) -> Tuple[bool, int | None]:
+) -> Tuple[bool, int | None, str | None]:
     """
     Synchronous post with soft pre-wait, header-aware backoff, and one retry.
-    Return (ok, status_code).
+    Return (ok, status_code, error_details).
+
+    The error_details will contain Discord's response text for 4xx errors,
+    making it possible to diagnose validation failures.
     """
     # 0) pre-wait if a previous call asked us to
     wait = _rl_should_wait(url)
@@ -353,7 +357,7 @@ def _post_discord_with_backoff(
 
     resp = _do_post()
     if 200 <= resp.status_code < 300:
-        return True, resp.status_code
+        return True, resp.status_code, None
     if resp.status_code == 429:
         # sleep based on headers then retry once
         wait = float(
@@ -366,8 +370,12 @@ def _post_discord_with_backoff(
             wait = wait / 1000.0
         time.sleep(min(max(wait, 0.5), 5.0))
         resp2 = _do_post()
-        return (200 <= resp2.status_code < 300), resp2.status_code
-    return False, getattr(resp, "status_code", None)
+        ok = 200 <= resp2.status_code < 300
+        error_text = None if ok else resp2.text[:500]  # Limit error text to 500 chars
+        return ok, resp2.status_code, error_text
+    # Capture error details for 4xx errors
+    error_text = resp.text[:500] if 400 <= resp.status_code < 500 else None
+    return False, getattr(resp, "status_code", None), error_text
 
 
 def _fmt_change(change: Optional[float]) -> str:
@@ -404,6 +412,47 @@ def _deping(text: Any) -> str:
         # break bare @User (but leave emails like foo@bar.com alone)
         s = re.sub(r"(?<!\w)@(?=[A-Za-z])", "@\u200b", s)
     return s
+
+
+def _format_time_ago(published_at: str) -> str:
+    """
+    Convert timestamp to '2min ago' format for clean display.
+
+    Args:
+        published_at: ISO timestamp string
+
+    Returns:
+        Human-readable time ago string (e.g., "2min ago", "3h ago")
+    """
+    try:
+        from dateutil import parser as date_parser
+
+        # Parse the timestamp
+        if isinstance(published_at, str):
+            pub_time = date_parser.isoparse(published_at)
+        else:
+            pub_time = published_at
+
+        # Ensure timezone aware
+        if pub_time.tzinfo is None:
+            pub_time = pub_time.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        diff = (now - pub_time).total_seconds()
+
+        if diff < 60:
+            return "just now"
+        elif diff < 3600:
+            mins = int(diff / 60)
+            return f"{mins}min ago"
+        elif diff < 86400:
+            hours = int(diff / 3600)
+            return f"{hours}h ago"
+        else:
+            days = int(diff / 86400)
+            return f"{days}d ago"
+    except Exception:
+        return "recently"
 
 
 # ---------------- Admin summary + indicators helpers ------------------------
@@ -666,8 +715,9 @@ def post_discord_json(
     if not url:
         return False
     status: int | None = None
+    error_details: str | None = None
     for attempt in range(1, max_retries + 1):
-        ok, status = _post_discord_with_backoff(url, payload)
+        ok, status, error_details = _post_discord_with_backoff(url, payload)
         if ok:
             return True
         # Retry on rate-limit or transient 5xx; small exponential backoff.
@@ -675,9 +725,15 @@ def post_discord_json(
             time.sleep(min(0.5 * attempt, 3.0))
             continue
         # Non-retryable error (4xx other than 429)
-        log.warning("alert_error http_status=%s", status)
+        if error_details:
+            log.warning("alert_error http_status=%s discord_error=%s", status, error_details)
+        else:
+            log.warning("alert_error http_status=%s", status)
         return False
-    log.warning("alert_error http_status=%s retries_exhausted", status)
+    if error_details:
+        log.warning("alert_error http_status=%s retries_exhausted discord_error=%s", status, error_details)
+    else:
+        log.warning("alert_error http_status=%s retries_exhausted", status)
     return False
 
 
@@ -831,7 +887,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
             "on",
         )
         # Only attempt when we already built a rich embed (same condition as legacy)
-        if use_post and "embeds" in payload and payload["embeds"] and ticker:
+        if use_post and charts_enabled and "embeds" in payload and payload["embeds"] and ticker:
             # Try to render and save a PNG locally
             img_path = get_quickchart_png_path(
                 ticker,
@@ -848,6 +904,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     if ok_file:
                         return True
                 # If multipart failed, fall through to legacy JSON poster
+        elif use_post and not charts_enabled:
+            log.debug("quickchart_skipped ticker=%s reason=charts_disabled", ticker)
     except Exception as e:
         log.warning("quickchart_post_failed ticker=%s err=%s", ticker, str(e))
 
@@ -860,6 +918,21 @@ def send_alert_safe(*args, **kwargs) -> bool:
             "yes",
             "on",
         )
+        # Respect market hours chart gating
+        use_gauge = use_gauge and charts_enabled
+
+        log.debug(
+            "sentiment_gauge_check use_gauge=%s has_advanced=%s "
+            "embeds_in_payload=%s payload_embeds=%s scored=%s ticker=%s charts_enabled=%s",
+            use_gauge,
+            HAS_ADVANCED_CHARTS,
+            "embeds" in payload,
+            bool(payload.get("embeds")),
+            bool(scored),
+            ticker,
+            charts_enabled,
+        )
+
         if (
             use_gauge
             and HAS_ADVANCED_CHARTS
@@ -937,6 +1010,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
 
         if (
             use_advanced
+            and charts_enabled
             and HAS_ADVANCED_CHARTS
             and "embeds" in payload
             and payload["embeds"]
@@ -949,11 +1023,12 @@ def send_alert_safe(*args, **kwargs) -> bool:
             # Try cache first
             cache = get_cache()
             chart_path = cache.get_cached_chart(ticker, default_tf)
-            log.debug(
-                "cache_result ticker=%s tf=%s path=%s", ticker, default_tf, chart_path
-            )
+            log.info("CHART_DEBUG cache_check ticker=%s tf=%s cached_path=%s from_cache=%s",
+                     ticker, default_tf, chart_path, chart_path is not None)
 
             if chart_path is None:
+                log.info("CHART_DEBUG cache_miss ticker=%s tf=%s generating_new_chart=True",
+                         ticker, default_tf)
                 # Generate new multi-panel chart
                 log.info(
                     "generating_advanced_chart ticker=%s tf=%s", ticker, default_tf
@@ -1019,6 +1094,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 except Exception as e:
                     log.debug("trade_plan_calculation_failed ticker=%s err=%s", ticker, str(e))
 
+                log.info("CHART_DEBUG generating chart ticker=%s tf=%s", ticker, default_tf)
                 chart_path = generate_multi_panel_chart(
                     ticker,
                     timeframe=default_tf,
@@ -1026,7 +1102,20 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     catalyst_event=catalyst_event,
                     trade_plan=trade_plan_data,
                 )
-                log.debug("chart_generated ticker=%s path=%s", ticker, chart_path)
+
+                # Enhanced chart generation logging
+                if chart_path:
+                    log.info("CHART_DEBUG chart_generated ticker=%s path=%s exists=%s",
+                             ticker, chart_path, chart_path.exists())
+                    if chart_path.exists():
+                        file_stat = chart_path.stat()
+                        log.info("CHART_DEBUG chart_file_stats ticker=%s size=%d modified=%s absolute_path=%s",
+                                 ticker, file_stat.st_size, file_stat.st_mtime, chart_path.absolute())
+                    else:
+                        log.error("CHART_ERROR chart_path_does_not_exist ticker=%s path=%s",
+                                  ticker, chart_path)
+                else:
+                    log.error("CHART_ERROR chart_generation_returned_none ticker=%s", ticker)
 
                 if chart_path:
                     cache.cache_chart(ticker, default_tf, chart_path)
@@ -1038,9 +1127,20 @@ def send_alert_safe(*args, **kwargs) -> bool:
             )
             if chart_path and chart_path.exists():
                 # Update embed to reference the chart by filename
+                log.info("CHART_DEBUG attaching_chart_to_embed ticker=%s chart_filename=%s",
+                         ticker, chart_path.name)
+
                 embed0 = payload["embeds"][0]
+
+                # Log embed BEFORE modification
+                log.info("EMBED_DEBUG before_modification ticker=%s embed_has_image=%s embed_has_thumbnail=%s",
+                         ticker, "image" in embed0, "thumbnail" in embed0)
+
                 embed0["image"] = {"url": f"attachment://{chart_path.name}"}
 
+                # Log embed AFTER modification
+                log.info("EMBED_DEBUG after_modification ticker=%s image_url=%s",
+                         ticker, embed0.get("image", {}).get("url"))
                 log.info("EMBED_DEBUG chart_path=%s image_url=%s",
                          chart_path.name, embed0.get("image", {}).get("url"))
                 log.info("EMBED_DEBUG embed_keys=%s", list(embed0.keys()))
@@ -1056,14 +1156,16 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     "text"
                 ] = f"Chart: {default_tf} | Click buttons to switch timeframes"
 
+                log.info("PRE_COMPONENTS ticker=%s about to call add_components_to_payload", ticker)
                 # Add interactive timeframe buttons
                 payload = add_components_to_payload(
                     payload, ticker, current_timeframe=default_tf
                 )
+                log.info("POST_COMPONENTS ticker=%s payload_keys=%s", ticker, list(payload.keys()))
 
                 # Extract components from payload
                 components = payload.get("components")
-                log.debug(
+                log.info(
                     "components_extracted ticker=%s count=%d webhook_url=%s",
                     ticker,
                     len(components) if components else 0,
@@ -1071,12 +1173,24 @@ def send_alert_safe(*args, **kwargs) -> bool:
                 )
 
                 if webhook_url:
-                    log.debug("calling_post_embed_with_attachment ticker=%s", ticker)
+                    # Enhanced debugging before posting
+                    log.info("CHART_DEBUG calling_post_embed_with_attachment ticker=%s", ticker)
+                    log.info("CHART_DEBUG pre_post ticker=%s chart_path=%s chart_exists=%s chart_size=%d",
+                             ticker, chart_path, chart_path.exists(),
+                             chart_path.stat().st_size if chart_path.exists() else 0)
+                    log.info("CHART_DEBUG pre_post ticker=%s embed_image=%s embed_thumbnail=%s",
+                             ticker, embed0.get("image", {}).get("url"), embed0.get("thumbnail", {}).get("url"))
+
                     # Post with multipart attachment (includes components if bot token configured)
                     # Include gauge as additional file if available
                     additional_files = (
                         [gauge_path] if gauge_path and gauge_path.exists() else None
                     )
+
+                    if additional_files:
+                        log.info("CHART_DEBUG additional_files_count=%d gauge_path=%s gauge_exists=%s",
+                                 len(additional_files), gauge_path, gauge_path.exists())
+
                     ok_file = post_embed_with_attachment(
                         webhook_url,
                         embed0,
@@ -1084,7 +1198,12 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         components=components,
                         additional_files=additional_files,
                     )
-                    log.debug("post_embed_result ticker=%s success=%s", ticker, ok_file)
+
+                    # Enhanced debugging after posting
+                    log.info("CHART_DEBUG post_embed_result ticker=%s success=%s", ticker, ok_file)
+                    if not ok_file:
+                        log.error("CHART_ERROR post_embed_failed ticker=%s chart_path=%s webhook_url_present=%s",
+                                  ticker, chart_path, bool(webhook_url))
                     if ok_file:
                         log.info(
                             "alert_sent_advanced_chart ticker=%s tf=%s",
@@ -1093,8 +1212,10 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         )
                         return True
                     # If multipart failed, fall through
+                else:
+                    log.warning("NO_WEBHOOK_URL ticker=%s cannot upload chart", ticker)
     except Exception as e:
-        log.warning("advanced_chart_failed ticker=%s err=%s", ticker, str(e))
+        log.warning("advanced_chart_failed ticker=%s err=%s", ticker, str(e), exc_info=True)
 
     # Clean up attachment references before JSON-only fallback
     # Discord returns 400 if embed references attachments that aren't included
@@ -1449,7 +1570,28 @@ def _build_discord_embed(
 
     # Score / sentiment (best‑effort).  Use classifier scores and, when
     # available, FMP sentiment and local fallback.
-    sc = (scored or {}) if isinstance(scored, dict) else {}
+    # Convert ScoredItem dataclass to dict if needed
+    if scored is None:
+        sc = {}
+    elif isinstance(scored, dict):
+        sc = scored
+    else:
+        # Handle ScoredItem dataclass - convert to dict
+        try:
+            from dataclasses import asdict, is_dataclass
+            if is_dataclass(scored):
+                sc = asdict(scored)
+            else:
+                # Fallback: try to access as object attributes
+                sc = {
+                    "relevance": getattr(scored, "relevance", None),
+                    "sentiment": getattr(scored, "sentiment", None),
+                    "tags": getattr(scored, "tags", []) or getattr(scored, "keywords", []),
+                    "keywords": getattr(scored, "keyword_hits", []) or getattr(scored, "keywords", []),
+                    "score": getattr(scored, "total", None) or getattr(scored, "relevance", None),
+                }
+        except Exception:
+            sc = {}
     # Local sentiment: prioritise the discrete label from local sentiment fallback.
     # We look first for `sentiment_local_label` on the item or scored dict.
     local_label: str | None = None
@@ -1470,7 +1612,7 @@ def _build_discord_embed(
             pass
     # Fallback: derive discrete label from the sentiment score if present.
     if not local_label:
-        local_sent_raw = sc.get("sentiment") or sc.get("sent")
+        local_sent_raw = sc.get("score") or sc.get("sentiment") or sc.get("sent")
         if local_sent_raw is not None and local_sent_raw != "n/a":
             try:
                 # Attempt to convert to float
@@ -1540,9 +1682,9 @@ def _build_discord_embed(
     # with sign and two decimal places.  This helps troubleshoot when
     # sentiments appear blank in embeds.
     score_values: List[str] = []
-    # Local sentiment score
+    # Local sentiment score (try multiple keys: score, sentiment, sent)
     try:
-        local_sent_raw = sc.get("sentiment") or sc.get("sent") or None
+        local_sent_raw = sc.get("score") or sc.get("sentiment") or sc.get("sent") or None
         if local_sent_raw is not None and local_sent_raw != "n/a":
             ls_val = float(local_sent_raw)
             score_values.append(f"{ls_val:+.2f}")
@@ -1597,21 +1739,35 @@ def _build_discord_embed(
     except Exception:
         pass
 
-    # Color: green for up, red for down; fallback to Discord blurple.  When
-    # momentum indicators are available, override colour to reflect the
-    # EMA/MACD crossover direction: bullish → green, bearish → red.
-    # NEGATIVE ALERTS: Always use red/orange regardless of price movement
-    color = 0x5865F2
+    # Color logic priority (Fix 6: Sentiment-based border colors):
+    # 1. NEGATIVE ALERTS (offerings, dilution) → always RED
+    # 2. Sentiment analysis (Bullish/Bearish/Neutral) → green/red/yellow
+    # 3. Fallback to price movement → green if up, red if down
+    # 4. Momentum indicators can override (applied later)
+    color = 0x5865F2  # Discord blurple default
+
     if is_negative_alert:
-        # Use bright red for negative catalysts (exit signals)
+        # Use bright red for negative catalysts (offerings, dilution, distress)
         color = 0xFF0000
     else:
-        try:
-            v = str(chg_str).replace("%", "").replace("+", "").strip()
-            if v:
-                color = 0x2ECC71 if float(v) >= 0 else 0xE74C3C
-        except Exception:
-            pass
+        # Prioritize sentiment label over price movement
+        sentiment_color_set = False
+        if local_label and local_label.lower() not in ["n/a", "neutral"]:
+            if "bull" in local_label.lower() or "positive" in local_label.lower():
+                color = 0x2ECC71  # Green for bullish sentiment
+                sentiment_color_set = True
+            elif "bear" in local_label.lower() or "negative" in local_label.lower():
+                color = 0xE74C3C  # Red for bearish sentiment
+                sentiment_color_set = True
+
+        # Fallback to price movement if sentiment is neutral or unavailable
+        if not sentiment_color_set:
+            try:
+                v = str(chg_str).replace("%", "").replace("+", "").strip()
+                if v:
+                    color = 0x2ECC71 if float(v) >= 0 else 0xE74C3C
+            except Exception:
+                pass
 
     tval = ", ".join(tickers) if tickers else (primary or "-")
     tval = _deping(tval)
@@ -1645,8 +1801,9 @@ def _build_discord_embed(
         momentum = {}
 
     # If momentum signals exist, override colour when a cross is detected.
+    # EXCEPTION: Do NOT override color for negative alerts - they must stay red
     try:
-        if momentum:
+        if momentum and not is_negative_alert:
             # EMA cross: +1 bullish, -1 bearish
             ec = momentum.get("ema_cross")
             mc = momentum.get("macd_cross")
@@ -1805,51 +1962,319 @@ def _build_discord_embed(
     except Exception:
         pass
 
-    # Override color based on trade plan R/R ratio (takes precedence when available)
+    # Override color based on trade plan R/R ratio (only when favorable)
+    # Don't override price-based color with poor R/R - that would turn
+    # positive price movement red just because the trade setup isn't ideal
     try:
         if trade_plan and HAS_ADVANCED_CHARTS:
             rr_ratio = trade_plan.get("rr_ratio", 0)
-            color = get_embed_color_from_rr(rr_ratio)
+            # Only override if R/R is favorable (>= 1.0)
+            # This preserves green for positive news even with poor trade setups
+            if rr_ratio >= 1.0:
+                color = get_embed_color_from_rr(rr_ratio)
     except Exception:
         pass
 
-    # Build the list of fields.  Combine price and change for a concise layout.
+    # ========================================================================
+    # WAVE 2: EMBED FIELD RESTRUCTURE - Cleaner, More Scannable Layout
+    # ========================================================================
+    # This section consolidates related metrics into fewer, more meaningful
+    # fields to reduce visual clutter and improve information hierarchy.
+    #
+    # Field Structure:
+    # 1. Trading Metrics (full-width) - Price, Volume, Float
+    # 2. Momentum Indicators (2-column) - RSI/MACD + Support/Resistance
+    # 3. Sentiment Section (full-width) - Reserved for Agent 2.4 gauge
+    # 4. Catalyst Section (full-width) - Reserved for Agent 2.2 badges
+    # 5. Additional Context (conditional) - Trade Plan, Earnings, SEC
+    # ========================================================================
+
     fields = []
-    price_change_val = f"{price_str} / {chg_str}"
-    fields.append({"name": "Price / Change", "value": price_change_val, "inline": True})
-    fields.append({"name": "Sentiment", "value": sent, "inline": True})
-    fields.append({"name": "Score", "value": score_str, "inline": True})
-    # Append composite indicator and ML confidence when available
+
+    # ========================================================================
+    # WAVE 3: MULTI-TICKER CONTEXT (Conditional)
+    # ========================================================================
+    # Display secondary tickers when this article mentions multiple tickers
+    # This helps users understand the full context and avoid confusion about
+    # why they received an alert for a ticker that's not the primary focus
+    try:
+        secondary_tickers = item_dict.get("secondary_tickers", [])
+        ticker_relevance_score = item_dict.get("ticker_relevance_score")
+        is_multi_ticker = item_dict.get("is_multi_ticker_story", False)
+
+        if secondary_tickers and is_multi_ticker:
+            # Format secondary tickers as comma-separated list
+            secondary_str = ", ".join(secondary_tickers)
+
+            # Build value with optional relevance score
+            value_parts = [f"Also mentions: **{secondary_str}**"]
+            if ticker_relevance_score:
+                value_parts.append(f"Relevance score: {ticker_relevance_score:.0f}/100")
+
+            fields.append(
+                {
+                    "name": "📊 Multi-Ticker Article",
+                    "value": "\n".join(value_parts),
+                    "inline": False,  # Full width for visibility
+                }
+            )
+    except Exception:
+        # Don't break the embed if multi-ticker display fails
+        pass
+
+    # ========================================================================
+    # SECTION 1: PRIMARY TRADING METRICS (Full-Width)
+    # ========================================================================
+    # Consolidate Price, Float, Volume, and % of Float into single field
+    # This provides traders with the most critical entry data at a glance
+
+    trading_metrics_parts = []
+
+    # Price with change
+    trading_metrics_parts.append(f"**Price:** {price_str} ({chg_str})")
+
+    # Float (from existing float logic around line 2411-2455)
+    try:
+        float_shares = None
+        if hasattr(scored, "float_shares"):
+            float_shares = getattr(scored, "float_shares", None)
+        elif hasattr(scored, "shares_outstanding"):
+            float_shares = getattr(scored, "shares_outstanding", None)
+        elif isinstance(scored, dict):
+            float_shares = scored.get("float_shares") or scored.get("shares_outstanding")
+
+        if float_shares is not None and float_shares > 0:
+            float_millions = float_shares / 1_000_000
+            trading_metrics_parts.append(f"**Float:** {float_millions:.1f}M")
+    except Exception:
+        pass
+
+    # Volume and RVol (from existing RVol logic around line 2364-2409)
+    try:
+        rvol = None
+        current_volume = None
+        avg_volume_20d = None
+
+        if hasattr(scored, "rvol"):
+            rvol = getattr(scored, "rvol", None)
+            current_volume = getattr(scored, "current_volume", None)
+            avg_volume_20d = getattr(scored, "avg_volume_20d", None)
+        elif isinstance(scored, dict):
+            rvol = scored.get("rvol")
+            current_volume = scored.get("current_volume")
+            avg_volume_20d = scored.get("avg_volume_20d")
+
+        if current_volume:
+            vol_millions = current_volume / 1_000_000
+            trading_metrics_parts.append(f"**Volume:** {vol_millions:.1f}M")
+
+            if float_shares and float_shares > 0:
+                pct_of_float = (current_volume / float_shares) * 100
+                trading_metrics_parts.append(f"**% of Float:** {pct_of_float:.1f}%")
+    except Exception:
+        pass
+
+    if trading_metrics_parts:
+        fields.append({
+            "name": "📊 Trading Metrics",
+            "value": " | ".join(trading_metrics_parts),
+            "inline": False
+        })
+
+    # ========================================================================
+    # SECTION 2: TECHNICAL INDICATORS (Two-Column Layout)
+    # ========================================================================
+    # Left column: Momentum (RSI, MACD)
+    # Right column: Key Levels (Support, Resistance, VWAP)
+
+    # LEFT COLUMN: Momentum Indicators
+    momentum_parts = []
+
+    # RSI from momentum data
+    if momentum:
+        rsi_val = momentum.get("rsi14")
+        if isinstance(rsi_val, (int, float)):
+            rsi_label = ""
+            if rsi_val >= 70:
+                rsi_label = " (Overbought)"
+            elif rsi_val <= 30:
+                rsi_label = " (Oversold)"
+            momentum_parts.append(f"**RSI:** {rsi_val:.0f}{rsi_label}")
+
+        # MACD
+        macd_val = momentum.get("macd")
+        macd_sig = momentum.get("macd_signal")
+        macd_cross = momentum.get("macd_cross")
+        if isinstance(macd_val, (int, float)) and isinstance(macd_sig, (int, float)):
+            macd_direction = ""
+            if isinstance(macd_cross, int):
+                if macd_cross > 0:
+                    macd_direction = " (Bullish)"
+                elif macd_cross < 0:
+                    macd_direction = " (Bearish)"
+            momentum_parts.append(f"**MACD:** {macd_val:+.2f}{macd_direction}")
+
+    if momentum_parts:
+        fields.append({
+            "name": "📈 Momentum",
+            "value": "\n".join(momentum_parts),
+            "inline": True
+        })
+
+    # RIGHT COLUMN: Key Levels
+    levels_parts = []
+
+    # VWAP (from existing VWAP logic around line 2645-2692)
+    try:
+        vwap = None
+        vwap_distance_pct = None
+
+        if hasattr(scored, "vwap"):
+            vwap = getattr(scored, "vwap", None)
+            vwap_distance_pct = getattr(scored, "vwap_distance_pct", None)
+        elif isinstance(scored, dict):
+            vwap = scored.get("vwap")
+            vwap_distance_pct = scored.get("vwap_distance_pct")
+
+        if vwap is not None:
+            vwap_str = f"**VWAP:** ${vwap:.2f}"
+            if vwap_distance_pct is not None:
+                sign = "+" if vwap_distance_pct >= 0 else ""
+                vwap_str += f" ({sign}{vwap_distance_pct:.1f}%)"
+            levels_parts.append(vwap_str)
+    except Exception:
+        pass
+
+    # Support/Resistance from trade plan
+    if trade_plan:
+        try:
+            support = trade_plan.get("stop")
+            resistance = trade_plan.get("target_1")
+            if support and resistance:
+                levels_parts.append(f"**Support:** ${support:.2f}")
+                levels_parts.append(f"**Resistance:** ${resistance:.2f}")
+        except Exception:
+            pass
+
+    if levels_parts:
+        fields.append({
+            "name": "🎯 Levels",
+            "value": "\n".join(levels_parts),
+            "inline": True
+        })
+
+    # ========================================================================
+    # SECTION 3: SENTIMENT GAUGE (Full-Width)
+    # ========================================================================
+    # INTEGRATION POINT FOR AGENT 2.4: Sentiment Gauge Enhancement
+    # This section will be expanded by Agent 2.4 to include:
+    # - Larger sentiment gauge visual
+    # - Multi-dimensional sentiment breakdown
+    # - Confidence intervals
+    #
+    # Current implementation: Basic sentiment display as placeholder
+    # ========================================================================
+
+    sentiment_parts = []
+    sentiment_parts.append(f"**Overall:** {sent}")
+    sentiment_parts.append(f"**Score:** {score_str}")
+
+    # Add bullishness gauge if available (from existing logic around line 2162-2169)
+    try:
+        if s and getattr(s, "feature_bullishness_gauge", False):
+            # This block is handled later in the original code
+            # We'll keep a placeholder here for Agent 2.4
+            pass
+    except Exception:
+        pass
+
+    fields.append({
+        "name": "💭 Sentiment Analysis",
+        "value": " | ".join(sentiment_parts),
+        "inline": False
+    })
+
+    # ========================================================================
+    # SECTION 4: CATALYST INDICATORS (Full-Width)
+    # ========================================================================
+    # WAVE 2 - AGENT 2.2: Catalyst Badge System
+    # Visual badges for key catalysts to make important triggers instantly
+    # recognizable in Discord alerts.
+    #
+    # Badge Types: FDA, Earnings, M&A, Offerings, Guidance, Analyst,
+    #              SEC Filings, Contracts, Partnerships, Products,
+    #              Clinical, Regulatory
+    # Priority: FDA > Earnings > M&A > Others (max 3 badges)
+    # ========================================================================
+
+    # Extract catalyst badges from classification and text
+    try:
+        badges = extract_catalyst_badges(
+            classification=scored,
+            title=title,
+            text=item_dict.get("summary", ""),
+            max_badges=3
+        )
+
+        # Format badges for display (space-separated on single line)
+        badge_display = "  ".join(badges)
+
+        fields.append({
+            "name": "🎯 Key Catalysts",
+            "value": badge_display,
+            "inline": False
+        })
+
+        log.debug(
+            "catalyst_badges_extracted ticker=%s badges=%s",
+            (item_dict.get("ticker") or "").upper(),
+            badges
+        )
+    except Exception as e:
+        # Fallback to basic keyword display on error
+        log.warning("catalyst_badge_extraction_failed err=%s", str(e))
+        catalyst_text = ""
+        if reason:
+            catalyst_text = reason[:200]
+        else:
+            kw = item_dict.get("keywords")
+            if isinstance(kw, (list, tuple)) and kw:
+                catalyst_text = ", ".join([str(x) for x in kw[:5]])
+
+        if catalyst_text:
+            fields.append({
+                "name": "🔥 Catalysts",
+                "value": catalyst_text,
+                "inline": False
+            })
+
+    # ========================================================================
+    # CONDITIONAL SECTIONS: Additional Context
+    # ========================================================================
+    # These sections only appear when relevant data is available
+
+    # Composite Score and ML Confidence (for high-confidence alerts)
+    advanced_metrics_parts = []
     try:
         if composite_score is not None:
-            fields.append(
-                {
-                    "name": "Composite Score",
-                    "value": f"{float(composite_score):.2f}",
-                    "inline": True,
-                }
-            )
+            advanced_metrics_parts.append(f"**Composite:** {float(composite_score):.2f}")
     except Exception:
         pass
+
     try:
         if ml_score is not None:
-            fields.append(
-                {
-                    "name": "Confidence",
-                    "value": f"{float(ml_score):.2f}",
-                    "inline": True,
-                }
-            )
+            advanced_metrics_parts.append(f"**ML Confidence:** {float(ml_score):.2f}")
             if alert_tier:
-                fields.append(
-                    {
-                        "name": "Tier",
-                        "value": str(alert_tier),
-                        "inline": True,
-                    }
-                )
+                advanced_metrics_parts.append(f"**Tier:** {alert_tier}")
     except Exception:
         pass
+
+    if advanced_metrics_parts:
+        fields.append({
+            "name": "🤖 Advanced Metrics",
+            "value": " | ".join(advanced_metrics_parts),
+            "inline": False
+        })
 
     # -----------------------------------------------------------------
     # Patch‑Wave‑1: Bullishness gauge
@@ -2072,14 +2497,38 @@ def _build_discord_embed(
                 except Exception:
                     bullish_label = "Neutral"
             # Add the Bullishness field to the embed when a score was computed
+            # WAVE 2 AGENT 2.4: Enhanced Sentiment Gauge Visualization
             if bullish_score is not None:
-                fields.append(
-                    {
-                        "name": "Bullishness",
-                        "value": f"{bullish_score:+.2f} • {bullish_label}",
-                        "inline": True,
-                    }
-                )
+                # Convert -1 to +1 score to 0-100 range for enhanced gauge
+                gauge_score = (bullish_score + 1.0) * 50.0  # Maps -1..+1 to 0..100
+
+                try:
+                    # Import and use enhanced sentiment gauge
+                    from .sentiment_gauge import create_enhanced_sentiment_gauge
+                    gauge = create_enhanced_sentiment_gauge(gauge_score)
+
+                    # Create visually enhanced sentiment field (full width for impact)
+                    fields.append(
+                        {
+                            "name": f"{gauge['emoji']} Sentiment Analysis: {gauge['label']}",
+                            "value": (
+                                f"{gauge['bar']}\n"
+                                f"*{gauge['description']}*\n"
+                                f"Score: {bullish_score:+.2f}"
+                            ),
+                            "inline": False,  # Full width for maximum visibility
+                        }
+                    )
+                except Exception as gauge_err:
+                    # Fallback to original display if enhanced gauge fails
+                    log.debug("enhanced_gauge_failed err=%s", str(gauge_err))
+                    fields.append(
+                        {
+                            "name": "Bullishness",
+                            "value": f"{bullish_score:+.2f} • {bullish_label}",
+                            "inline": True,
+                        }
+                    )
             # Append sector and session fields when enabled.  Insert near the
             # end of the sentiment section so that price, sentiment and score
             # remain at the top of the embed.  The sector field shows the
@@ -2272,89 +2721,16 @@ def _build_discord_embed(
         # Don't break the embed if regime data is missing
         pass
 
-    # Add float information field
-    try:
-        float_class = None
-        float_shares = None
+    # ========================================================================
+    # WAVE 2: RVol and Float fields DISABLED
+    # ========================================================================
+    # These metrics are now consolidated into "Trading Metrics" section above
+    # (See Section 1 around line 1920)
+    # This avoids duplicate fields and reduces visual clutter
+    # ========================================================================
 
-        # Extract float data from scored item
-        if hasattr(scored, "float_class"):
-            float_class = getattr(scored, "float_class", None)
-            float_shares = getattr(scored, "float_shares", None)
-        elif isinstance(scored, dict):
-            float_class = scored.get("float_class")
-            float_shares = scored.get("float_shares")
-
-        if float_class and float_shares:
-            float_emojis = {
-                "MICRO_FLOAT": "🔥",
-                "LOW_FLOAT": "⚡",
-                "MEDIUM_FLOAT": "📊",
-                "HIGH_FLOAT": "📈",
-                "UNKNOWN": "❓",
-            }
-            emoji = float_emojis.get(float_class, "❓")
-
-            # Format float class display name
-            float_display = float_class.replace("_", " ").title()
-
-            fields.append(
-                {
-                    "name": "Float",
-                    "value": f"{emoji} {float_display} ({float_shares/1_000_000:.2f}M)",
-                    "inline": True,
-                }
-            )
-    except Exception:
-        # Don't break the embed if float data is missing
-        pass
-
-    # Add RVol (Relative Volume) information field
-    try:
-        rvol = None
-        rvol_class = None
-        current_volume = None
-        avg_volume_20d = None
-
-        # Extract RVol data from scored item
-        if hasattr(scored, "rvol"):
-            rvol = getattr(scored, "rvol", None)
-            rvol_class = getattr(scored, "rvol_class", None)
-            current_volume = getattr(scored, "current_volume", None)
-            avg_volume_20d = getattr(scored, "avg_volume_20d", None)
-        elif isinstance(scored, dict):
-            rvol = scored.get("rvol")
-            rvol_class = scored.get("rvol_class")
-            current_volume = scored.get("current_volume")
-            avg_volume_20d = scored.get("avg_volume_20d")
-
-        if rvol is not None and rvol_class:
-            rvol_emojis = {
-                "EXTREME_RVOL": "🚀",
-                "HIGH_RVOL": "🔥",
-                "ELEVATED_RVOL": "📈",
-                "NORMAL_RVOL": "➡️",
-                "LOW_RVOL": "📉",
-            }
-            emoji = rvol_emojis.get(rvol_class, "❓")
-
-            # Format RVol class display name
-            rvol_display = rvol_class.replace("_RVOL", "").replace("_", " ").title()
-
-            # Build value string with RVol and volume info
-            value_parts = [f"{emoji} {rvol_display} ({rvol:.2f}x)"]
-            if current_volume and avg_volume_20d:
-                # Show current volume vs average in millions
-                curr_vol_m = current_volume / 1_000_000
-                avg_vol_m = avg_volume_20d / 1_000_000
-                value_parts.append(f"Vol: {curr_vol_m:.1f}M / Avg: {avg_vol_m:.1f}M")
-
-            fields.append(
-                {"name": "RVol", "value": "\n".join(value_parts), "inline": True}
-            )
-    except Exception:
-        # Don't break the embed if RVol data is missing
-        pass
+    # OLD CODE DISABLED: RVol field - now in Trading Metrics
+    # OLD CODE DISABLED: Float field - now in Trading Metrics
 
     # Add Squeeze Metrics (combines Short Interest + Days to Cover)
     try:
@@ -2415,6 +2791,9 @@ def _build_discord_embed(
                     dtc_class = "Low"
 
                 value_parts.append(f"DTC: {dtc_emoji} {dtc_class} ({days_to_cover:.1f}d)")
+            else:
+                # Show data unavailable message when we can't calculate DTC
+                value_parts.append("Days to Cover: n/a (float data unavailable)")
 
             fields.append(
                 {
@@ -2425,6 +2804,102 @@ def _build_discord_embed(
             )
     except Exception:
         # Don't break the embed if squeeze metrics fail
+        pass
+
+    # Add SEC Filing Details for 8-K and other material filings
+    try:
+        form_type = item_dict.get("form_type")
+        classification = item_dict.get("classification")
+        sec_link = item_dict.get("link")
+
+        if form_type and classification:
+            value_parts = []
+
+            # Form type and classification
+            value_parts.append(f"**{form_type}** - {classification.title()}")
+
+            # Item numbers for 8-K filings (if available)
+            items = item_dict.get("items", [])
+            if items:
+                items_str = ", ".join(f"Item {item}" for item in items)
+                value_parts.append(f"Items: {items_str}")
+
+            # Direct link to filing
+            if sec_link:
+                value_parts.append(f"[View Filing →]({sec_link})")
+
+            fields.append(
+                {
+                    "name": "📄 SEC Filing",
+                    "value": "\n".join(value_parts),
+                    "inline": True,
+                }
+            )
+    except Exception:
+        # Don't break the embed if SEC details fail
+        pass
+
+    # Add LLM Analysis field (trading thesis and reasoning)
+    try:
+        # Check if LLM analysis is available
+        llm_reasoning = item_dict.get("llm_reasoning")
+        trading_thesis = item_dict.get("trading_thesis")
+        event_context = item_dict.get("event_context")
+        expected_action = item_dict.get("expected_price_action")
+        key_stats = item_dict.get("key_stats")  # NEW: Extract key stats
+
+        # Only add if we have meaningful LLM output
+        if trading_thesis or llm_reasoning or key_stats:
+            value_parts = []
+
+            # KEY STATS - Most important, show first (Fix 8)
+            if key_stats and isinstance(key_stats, list) and len(key_stats) > 0:
+                # Filter out placeholder messages
+                real_stats = [s for s in key_stats if s and not any(
+                    phrase in s.lower() for phrase in [
+                        "no financial details",
+                        "details pending",
+                        "routine filing"
+                    ]
+                )]
+                if real_stats:
+                    stats_str = " • ".join(real_stats[:3])  # Limit to 3 stats for brevity
+                    value_parts.append(f"💰 **Stats:** {stats_str}")
+
+            # Event context (for delisting scenarios)
+            if event_context and event_context not in ("null", "None", ""):
+                context_emoji = {
+                    "extension_granted": "🟢",
+                    "compliance_achieved": "✅",
+                    "notice_received": "🔴",
+                    "warning_issued": "⚠️",
+                }.get(event_context, "📊")
+                value_parts.append(f"{context_emoji} {event_context.replace('_', ' ').title()}")
+
+            # Trading thesis (1 sentence explanation)
+            if trading_thesis:
+                value_parts.append(f"**Thesis:** {trading_thesis}")
+
+            # Expected price action
+            if expected_action and expected_action != "neutral":
+                action_emoji = {
+                    "relief_rally": "📈",
+                    "momentum_breakout": "🚀",
+                    "selloff": "📉",
+                    "volatility_spike": "⚡",
+                }.get(expected_action, "📊")
+                value_parts.append(f"{action_emoji} Expected: {expected_action.replace('_', ' ').title()}")
+
+            if value_parts:
+                fields.append(
+                    {
+                        "name": "🤖 AI Analysis",
+                        "value": "\n".join(value_parts),
+                        "inline": False,  # Full width for readability
+                    }
+                )
+    except Exception:
+        # Don't break the embed if LLM analysis fails
         pass
 
     # Add Trade Plan field (Entry/Stop/Target/R:R)
@@ -2460,91 +2935,16 @@ def _build_discord_embed(
         # Don't break the embed if trade plan fails
         pass
 
-    # Add VWAP (Volume Weighted Average Price) information field
-    try:
-        vwap = None
-        vwap_signal = None
-        vwap_distance_pct = None
+    # ========================================================================
+    # WAVE 2: VWAP and Momentum Indicators fields DISABLED
+    # ========================================================================
+    # VWAP is now in "Levels" section (Section 2, right column)
+    # Momentum indicators (RSI, MACD) are in "Momentum" section (Section 2, left column)
+    # This avoids duplicate fields
+    # ========================================================================
 
-        # Extract VWAP data from scored item
-        if hasattr(scored, "vwap"):
-            vwap = getattr(scored, "vwap", None)
-            vwap_signal = getattr(scored, "vwap_signal", None)
-            vwap_distance_pct = getattr(scored, "vwap_distance_pct", None)
-            getattr(scored, "is_above_vwap", None)
-        elif isinstance(scored, dict):
-            vwap = scored.get("vwap")
-            vwap_signal = scored.get("vwap_signal")
-            vwap_distance_pct = scored.get("vwap_distance_pct")
-            scored.get("is_above_vwap")
-
-        if vwap is not None and vwap_signal:
-            vwap_emojis = {
-                "STRONG_BULLISH": "🚀",  # >2% above VWAP
-                "BULLISH": "📈",  # 0.5-2% above VWAP
-                "NEUTRAL": "➡️",  # Within ±0.5% of VWAP
-                "BEARISH": "📉",  # 0.5-2% below VWAP
-                "STRONG_BEARISH": "⚠️",  # >2% below VWAP (VWAP break)
-            }
-            emoji = vwap_emojis.get(vwap_signal, "❓")
-
-            # Format VWAP signal display name
-            vwap_display = vwap_signal.replace("_", " ").title()
-
-            # Build value string with VWAP price and distance
-            value_parts = [f"{emoji} {vwap_display}"]
-            if vwap_distance_pct is not None:
-                sign = "+" if vwap_distance_pct >= 0 else ""
-                value_parts.append(f"Distance: {sign}{vwap_distance_pct:.2f}%")
-            value_parts.append(f"VWAP: ${vwap:.4f}")
-
-            # Add VWAP break warning if detected
-            if vwap_signal == "STRONG_BEARISH":
-                value_parts.append("⚠️ VWAP Break Detected (91% accuracy)")
-
-            fields.append(
-                {"name": "📊 VWAP", "value": "\n".join(value_parts), "inline": True}
-            )
-    except Exception:
-        # Don't break the embed if VWAP data is missing
-        pass
-
-    # Summarise momentum indicators when available
-    if momentum:
-        parts: list[str] = []
-        rsi_val = momentum.get("rsi14")
-        if isinstance(rsi_val, (int, float)):
-            # Mark overbought/oversold thresholds
-            tag = ""
-            try:
-                if rsi_val >= 70:
-                    tag = " – Overbought"
-                elif rsi_val <= 30:
-                    tag = " – Oversold"
-            except Exception:
-                tag = ""
-            parts.append(f"RSI14: {rsi_val:.1f}{tag}")
-        # MACD
-        macd_val = momentum.get("macd")
-        macd_sig = momentum.get("macd_signal")
-        macd_cross = momentum.get("macd_cross")
-        if isinstance(macd_val, (int, float)) and isinstance(macd_sig, (int, float)):
-            macd_val - macd_sig
-            cross_note = ""
-            try:
-                if isinstance(macd_cross, int):
-                    if macd_cross > 0:
-                        cross_note = " (Bullish)"
-                    elif macd_cross < 0:
-                        cross_note = " (Bearish)"
-            except Exception:
-                cross_note = ""
-            parts.append(f"MACD: {macd_val:+.2f} vs {macd_sig:+.2f}{cross_note}")
-        # EMA cross
-        ema_cross = momentum.get("ema_cross")
-        if isinstance(ema_cross, int) and ema_cross != 0:
-            ema_str = "Bullish" if ema_cross > 0 else "Bearish"
-            parts.append(f"EMA9/21: {ema_str}")
+    # OLD CODE DISABLED: VWAP field - now in Levels section
+    # OLD CODE DISABLED: Momentum indicators - now in Momentum section
     # Earnings information: attach next earnings date and surprise metrics when
     # the earnings alerts feature is enabled.  When FEATURE_EARNINGS_ALERTS=0
     # the earnings field is suppressed entirely.  Missing data or parsing
@@ -2736,14 +3136,250 @@ def _build_discord_embed(
             },
         )
 
+        # FIX 10: Add educational footer for offering alerts
+        # Detect offering stage from title/summary and provide context
+        if any(cat in ["offering_negative", "dilution_negative"] for cat in negative_keywords):
+            title_lower = title.lower() if title else ""
+            summary_lower = str(item_dict.get("summary", "")).lower()
+            combined = f"{title_lower} {summary_lower}"
+
+            # Detect offering stage
+            offering_education = None
+            if "announced" in combined or "announces" in combined:
+                offering_education = (
+                    "📚 **Offering Stage: Announced**\n"
+                    "Company has announced intent to raise capital but hasn't priced the offering yet. "
+                    "Price may drop as market anticipates dilution. Wait for pricing details."
+                )
+            elif "priced" in combined or "pricing" in combined:
+                offering_education = (
+                    "📚 **Offering Stage: Priced**\n"
+                    "Offering has been priced. Typically 5-15% discount to market. "
+                    "Short-term bearish as new shares hit market. Price often bottoms at offering price."
+                )
+            elif "closing" in combined or "closed" in combined or "closes" in combined:
+                offering_education = (
+                    "📚 **Offering Stage: Closed**\n"
+                    "Offering has completed. Capital is now in company's bank. "
+                    "Initial selling pressure over. If stock held offering price, may signal strength. "
+                    "Watch for post-offering bounce if fundamentals improve."
+                )
+            elif "exercise" in combined and "warrant" in combined:
+                offering_education = (
+                    "📚 **Warrant Exercise**\n"
+                    "Warrants exercised = new shares created at strike price. "
+                    "Dilutive but generates cash for company. Impact depends on % of float."
+                )
+            else:
+                # Generic offering education
+                offering_education = (
+                    "📚 **About Offerings**\n"
+                    "Offerings raise capital but dilute existing shareholders. "
+                    "Announced → Priced (discount set) → Closed (shares hit market). "
+                    "Price typically bottoms near offering price, then may recover if use-of-proceeds is strong."
+                )
+
+            if offering_education:
+                fields.append({
+                    "name": "📖 Educational Context",
+                    "value": offering_education,
+                    "inline": False,
+                })
+
     # Include reason when available
     if reason:
         fields.append({"name": "Reason", "value": reason[:1024], "inline": False})
 
+    # --- SEC FILING ENHANCEMENTS (Wave 3) ---
+    # When source starts with "sec_", enhance alert with SEC-specific data
+    # This provides metrics, guidance, and SEC sentiment while maintaining
+    # all standard alert fields (price, float, short interest, etc.)
+    is_sec_source = src.startswith("sec_") if isinstance(src, str) else False
+    if is_sec_source:
+        try:
+            # Import SEC-specific modules on-demand to avoid circular imports
+            from .sec_filing_alerts import PRIORITY_CONFIG
+
+            # Extract SEC-specific data from item_dict (attached by sec_feed_adapter)
+            sec_metrics = item_dict.get("sec_metrics")  # NumericMetrics object
+            sec_guidance = item_dict.get("sec_guidance")  # GuidanceAnalysis object
+            sec_sentiment = item_dict.get("sec_sentiment")  # SECSentimentOutput object
+            sec_priority = item_dict.get("sec_priority")  # PriorityScore object
+            filing_type = item_dict.get("filing_type")  # e.g., "8-K", "10-Q"
+            item_code = item_dict.get("item_code")  # e.g., "2.02" for 8-K
+
+            # Add filing type badge to make it clear this is an SEC filing
+            if filing_type:
+                filing_badge = filing_type
+                if item_code and filing_type == "8-K":
+                    filing_badge += f" Item {item_code}"
+                fields.insert(0, {
+                    "name": "📄 SEC Filing Type",
+                    "value": filing_badge,
+                    "inline": True
+                })
+
+            # Add priority tier with color coding (DISPLAY ONLY - does not bypass filters)
+            if sec_priority:
+                tier = getattr(sec_priority, "tier", "medium")
+                priority_cfg = PRIORITY_CONFIG.get(tier, PRIORITY_CONFIG["medium"])
+                priority_emoji = priority_cfg["emoji"]
+                priority_label = priority_cfg["label"]
+                priority_total = getattr(sec_priority, "total", 0)
+
+                priority_value = f"{priority_emoji} **{priority_label}** ({priority_total:.2f})"
+
+                # Add top reason if available
+                reasons = getattr(sec_priority, "reasons", [])
+                if reasons:
+                    # Show first reason only (truncated)
+                    priority_value += f"\n{reasons[0][:80]}"
+
+                fields.insert(0, {
+                    "name": "🎯 Priority",
+                    "value": priority_value,
+                    "inline": True
+                })
+
+                # Override embed color based on priority tier
+                # EXCEPTION: Do NOT override color for negative alerts - they must stay red
+                if not is_negative_alert:
+                    if tier == "critical":
+                        color = PRIORITY_CONFIG["critical"]["color"]
+                    elif tier == "high":
+                        color = PRIORITY_CONFIG["high"]["color"]
+                    elif tier == "medium":
+                        color = PRIORITY_CONFIG["medium"]["color"]
+
+            # Add key financial metrics (revenue, EPS, margins)
+            if sec_metrics:
+                metrics_parts = []
+
+                # Revenue with YoY change
+                if hasattr(sec_metrics, "revenue") and sec_metrics.revenue:
+                    rev = sec_metrics.revenue
+                    if hasattr(rev, "value") and rev.value:
+                        metrics_parts.append(f"**Revenue:** ${rev.value:,.0f}M")
+                        if hasattr(rev, "yoy_change") and rev.yoy_change:
+                            change_emoji = "📈" if rev.yoy_change > 0 else "📉"
+                            metrics_parts[-1] += f" ({change_emoji} {rev.yoy_change:+.1f}%)"
+
+                # EPS with YoY change
+                if hasattr(sec_metrics, "eps") and sec_metrics.eps:
+                    eps = sec_metrics.eps
+                    if hasattr(eps, "value") and eps.value:
+                        metrics_parts.append(f"**EPS:** ${eps.value:.2f}")
+                        if hasattr(eps, "yoy_change") and eps.yoy_change:
+                            change_emoji = "📈" if eps.yoy_change > 0 else "📉"
+                            metrics_parts[-1] += f" ({change_emoji} {eps.yoy_change:+.1f}%)"
+
+                # Margins
+                if hasattr(sec_metrics, "margins") and sec_metrics.margins:
+                    margins = sec_metrics.margins
+                    if hasattr(margins, "gross_margin") and margins.gross_margin:
+                        metrics_parts.append(f"**Gross Margin:** {margins.gross_margin:.1f}%")
+                    if hasattr(margins, "operating_margin") and margins.operating_margin:
+                        metrics_parts.append(f"**Operating Margin:** {margins.operating_margin:.1f}%")
+
+                if metrics_parts:
+                    fields.append({
+                        "name": "💰 Key Metrics",
+                        "value": "\n".join(metrics_parts),
+                        "inline": False
+                    })
+
+            # Add forward guidance (raised/lowered/maintained)
+            if sec_guidance and hasattr(sec_guidance, "has_guidance") and sec_guidance.has_guidance:
+                guidance_parts = []
+
+                for item in getattr(sec_guidance, "guidance_items", []):
+                    # Determine emoji based on change direction
+                    change_dir = getattr(item, "change_direction", "new")
+                    if change_dir == "raised":
+                        emoji = "✅"
+                        label = "Raised"
+                    elif change_dir == "lowered":
+                        emoji = "❌"
+                        label = "Lowered"
+                    elif change_dir == "maintained":
+                        emoji = "⚖️"
+                        label = "Maintained"
+                    else:
+                        emoji = "🆕"
+                        label = "New"
+
+                    # Format guidance item
+                    guidance_type = getattr(item, "guidance_type", "guidance")
+                    guidance_str = f"{emoji} **{label}** {guidance_type.replace('_', ' ').title()}"
+
+                    # Add target range if available
+                    target_low = getattr(item, "target_low", None)
+                    target_high = getattr(item, "target_high", None)
+                    if target_low or target_high:
+                        targets = []
+                        if target_low:
+                            targets.append(f"${target_low:,.0f}M")
+                        if target_high:
+                            targets.append(f"${target_high:,.0f}M")
+                        guidance_str += f": {' - '.join(targets)}"
+
+                    # Add confidence level
+                    confidence = getattr(item, "confidence_level", "unknown")
+                    if confidence != "unknown":
+                        guidance_str += f" ({confidence})"
+
+                    guidance_parts.append(guidance_str)
+
+                if guidance_parts:
+                    fields.append({
+                        "name": "📈 Forward Guidance",
+                        "value": "\n".join(guidance_parts[:3]),  # Limit to 3 items
+                        "inline": False
+                    })
+
+            # Add SEC sentiment breakdown (different from standard sentiment)
+            if sec_sentiment:
+                sec_score = getattr(sec_sentiment, "score", 0)
+                sec_weighted = getattr(sec_sentiment, "weighted_score", sec_score)
+                sec_justification = getattr(sec_sentiment, "justification", "")
+
+                # Determine sentiment emoji and label
+                if sec_score >= 0.3:
+                    sec_emoji = "🟢"
+                    sec_label = "Bullish"
+                elif sec_score <= -0.3:
+                    sec_emoji = "🔴"
+                    sec_label = "Bearish"
+                else:
+                    sec_emoji = "⚪"
+                    sec_label = "Neutral"
+
+                sec_sentiment_value = f"{sec_emoji} **{sec_label}** ({sec_score:+.2f})"
+
+                # Add weighted score if different
+                if abs(sec_weighted - sec_score) > 0.05:
+                    sec_sentiment_value += f"\nWeighted: {sec_weighted:+.2f}"
+
+                # Add justification (truncated)
+                if sec_justification:
+                    just_text = sec_justification[:150]
+                    sec_sentiment_value += f"\n*{just_text}...*"
+
+                fields.append({
+                    "name": "🎯 SEC Sentiment",
+                    "value": sec_sentiment_value,
+                    "inline": False
+                })
+        except Exception as e:
+            # Don't break the alert if SEC enhancements fail
+            # Log error for debugging but continue with standard alert
+            log.warning("sec_alert_enhancement_failed ticker=%s err=%s", primary, str(e))
+
     # --- NEGATIVE ALERT TITLE FORMATTING ---
     # Add warning emoji and label for negative catalyst alerts
+    # Use red square (🟥) + warning triangle (⚠️) for maximum visibility
     if is_negative_alert:
-        alert_title = _deping(f"⚠️ NEGATIVE CATALYST - [{primary or '?'}] {title}")[:256]
+        alert_title = _deping(f"🟥 ⚠️ NEGATIVE CATALYST - [{primary or '?'}] {title}")[:256]
     else:
         alert_title = _deping(f"[{primary or '?'}] {title}")[:256]
 
@@ -2761,30 +3397,49 @@ def _build_discord_embed(
     except Exception:
         summary_text = ""
 
-    # Build footer text with source and timestamp
-    footer_parts = []
-    if src:
-        footer_parts.append(f"Source: {src}")
+    # --- WAVE 2: FOOTER REDESIGN ---
+    # Build consolidated footer with source and timeframe
+    # Get chart timeframe from environment (used if chart is attached)
+    chart_timeframe = os.getenv("CHART_DEFAULT_TIMEFRAME", "1D").upper()
+
+    # Footer text: Source name only (clean and simple)
+    footer_text = src if src else "Catalyst-Bot"
+
+    # Build consolidated details field (placed at bottom)
+    details_parts = []
     if ts:
-        try:
-            from dateutil import parser as date_parser
-            # Parse timestamp and format as readable time
-            if isinstance(ts, str):
-                ts_dt = date_parser.isoparse(ts)
-            else:
-                ts_dt = ts
-            # Format as HH:MM AM/PM
-            time_str = ts_dt.strftime("%I:%M %p")
-            footer_parts.append(f"Alert Time: {time_str}")
-        except Exception:
-            pass
-    footer_text = " | ".join(footer_parts) if footer_parts else "Catalyst-Bot"
+        time_ago = _format_time_ago(ts)
+        details_parts.append(f"Published: {time_ago}")
+    if src:
+        details_parts.append(f"Source: {src}")
+    # Check if chart will be attached (based on settings and ticker presence)
+    try:
+        s = get_settings()
+        has_ticker = bool((item_dict.get("ticker") or "").strip())
+        chart_enabled = (
+            getattr(s, "feature_rich_alerts", False) or
+            getattr(s, "feature_quickchart", False) or
+            getattr(s, "feature_finviz_chart", False)
+        )
+        if has_ticker and chart_enabled:
+            details_parts.append(f"Chart: {chart_timeframe}")
+    except Exception:
+        pass
+
+    # Add consolidated details field to bottom of embed
+    if details_parts:
+        details_value = " | ".join(details_parts)
+        fields.append({
+            "name": "ℹ️ Details",
+            "value": details_value,
+            "inline": False
+        })
 
     embed = {
         "title": alert_title,
         "url": link,
         "color": color,
-        "timestamp": ts,
+        "timestamp": ts,  # Discord will show this as relative time
         "fields": fields,
         "footer": {"text": footer_text},
     }

@@ -1,0 +1,4 @@
+edit 0a777b9 feat: Phase 1+2 ticker extraction + project organization
+pick e10b7c4 feat: Complete MOA integration with runner fixes and comprehensive tests
+pick 47a665a feat: Add 3 sentiment enhancements + MOA schedule change
+pick 55f5cab security: Remove exposed secrets from documentation

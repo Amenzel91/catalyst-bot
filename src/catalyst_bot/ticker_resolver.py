@@ -75,11 +75,11 @@ class TickerResolver:
         self._conn = self._connect()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        from .storage import init_optimized_connection
+
+        conn = init_optimized_connection(self.db_path)
         conn.row_factory = sqlite3.Row
-        # small perf bump / consistency
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
+        # Note: check_same_thread is not passed as it's not needed with WAL mode
         return conn
 
     # --------------------------

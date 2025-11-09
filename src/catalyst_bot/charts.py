@@ -70,6 +70,20 @@ INDICATOR_COLORS = {
     "bb_middle": "#9C27B0",
     "support": "#4CAF50",
     "resistance": "#F44336",
+    "fibonacci": "#FFD700",  # Gold color for Fib levels
+    "volume_profile": "#26C6DA",  # Light Cyan (regular volume bars)
+    "volume_profile_hvn": "#4CAF50",  # Green (High Volume Nodes)
+    "volume_profile_lvn": "#F44336",  # Red (Low Volume Nodes)
+    "volume_profile_poc": "#FF9800",  # Orange (Point of Control)
+    "volume_profile_vah": "#9C27B0",  # Purple (Value Area High)
+    "volume_profile_val": "#9C27B0",  # Purple (Value Area Low)
+    "triangle_ascending": "#00FF00",      # Bright Green (bullish)
+    "triangle_descending": "#FF0000",     # Bright Red (bearish)
+    "triangle_symmetrical": "#FFA500",    # Orange (neutral)
+    "hs_pattern": "#FF1493",              # Deep Pink (reversal)
+    "hs_neckline": "#FFD700",             # Gold (key level)
+    "double_top": "#DC143C",              # Crimson (bearish reversal)
+    "double_bottom": "#32CD32",           # Lime Green (bullish reversal)
 }
 
 # Detect packages without importing them up-front
@@ -362,6 +376,969 @@ def add_indicator_panels(df, indicators: Optional[List[str]] = None):
     return apds
 
 
+def add_poc_vah_val_lines(ax, df, ticker):
+    """Add POC/VAH/VAL horizontal lines to price chart.
+
+    POC = Point of Control (highest volume price)
+    VAH/VAL = Value Area bounds (70% of volume)
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Price panel axis to add lines to
+    df : pandas.DataFrame
+        OHLCV data with Close and Volume columns
+    ticker : str
+        Ticker symbol for logging
+
+    Notes
+    -----
+    Lines are drawn using ax.axhline() with different styles:
+    - POC: Solid line, width=3, most prominent
+    - VAH/VAL: Dashed lines, width=2, value area bounds
+    """
+    try:
+        from .indicators.volume_profile import render_volume_profile_data
+
+        # Validate Volume column
+        if 'Volume' not in df.columns or df['Volume'].sum() == 0:
+            log.warning("volume_profile_no_volume ticker=%s", ticker)
+            return
+
+        # Calculate volume profile
+        prices = df['Close'].values.tolist()
+        volumes = df['Volume'].values.tolist()
+        vp_data = render_volume_profile_data(prices, volumes, bins=20)
+
+        poc = vp_data.get('poc')
+        vah = vp_data.get('vah')
+        val = vp_data.get('val')
+
+        # Draw POC line (most important - thickest)
+        if poc:
+            ax.axhline(y=poc, color=INDICATOR_COLORS['volume_profile_poc'],
+                       linestyle='-', linewidth=3, alpha=0.9, label=f'POC ${poc:.2f}')
+            log.debug("poc_line_added ticker=%s price=%.2f", ticker, poc)
+
+        # Draw VAH/VAL lines (value area bounds - dashed)
+        if vah:
+            ax.axhline(y=vah, color=INDICATOR_COLORS['volume_profile_vah'],
+                       linestyle='--', linewidth=2, alpha=0.7, label=f'VAH ${vah:.2f}')
+            log.debug("vah_line_added ticker=%s price=%.2f", ticker, vah)
+
+        if val:
+            ax.axhline(y=val, color=INDICATOR_COLORS['volume_profile_val'],
+                       linestyle='--', linewidth=2, alpha=0.7, label=f'VAL ${val:.2f}')
+            log.debug("val_line_added ticker=%s price=%.2f", ticker, val)
+
+        if poc and vah and val:
+            log.info("volume_profile_lines_added ticker=%s poc=%.2f vah=%.2f val=%.2f",
+                     ticker, poc, vah, val)
+
+    except Exception as err:
+        log.warning("poc_vah_val_calc_failed ticker=%s err=%s", ticker, str(err))
+
+
+def add_volume_profile_bars(ax, df, ticker, bins=20):
+    """Add horizontal volume profile bars to right side of price chart.
+
+    Creates WeBull-style volume profile visualization with horizontal bars
+    showing volume distribution across price levels. High Volume Nodes (HVN)
+    are colored green, Low Volume Nodes (LVN) are red, and regular bars are cyan.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Price panel axis to add volume bars to
+    df : pandas.DataFrame
+        OHLCV data with Close and Volume columns
+    ticker : str
+        Ticker symbol for logging
+    bins : int, optional
+        Number of price bins for volume profile calculation, by default 20
+
+    Notes
+    -----
+    - Uses inset_axes to create a 15% wide panel on the right side
+    - Bars are colored based on HVN/LVN classification
+    - Transparent background to avoid obscuring price action
+    - Bars are horizontally oriented (barh) spanning price levels
+
+    Examples
+    --------
+    >>> fig, axes = mpf.plot(df, returnfig=True)
+    >>> add_volume_profile_bars(axes[0], df, 'AAPL', bins=20)
+    """
+    try:
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        from .indicators.volume_profile import render_volume_profile_data
+
+        # Validate Volume column
+        if 'Volume' not in df.columns or df['Volume'].sum() == 0:
+            log.warning("volume_profile_bars_no_volume ticker=%s", ticker)
+            return
+
+        # Calculate volume profile
+        prices = df['Close'].values.tolist()
+        volumes = df['Volume'].values.tolist()
+        vp_data = render_volume_profile_data(prices, volumes, bins=bins)
+
+        if not vp_data['horizontal_bars']:
+            log.warning("volume_profile_no_bars ticker=%s", ticker)
+            return
+
+        # Extract bar data
+        bar_prices = [bar['price'] for bar in vp_data['horizontal_bars']]
+        bar_volumes = [bar['normalized_volume'] for bar in vp_data['horizontal_bars']]
+
+        # Get HVN/LVN for coloring
+        hvn_prices = {node['price'] for node in vp_data['hvn']}
+        lvn_prices = {node['price'] for node in vp_data['lvn']}
+
+        # Color bars based on HVN/LVN
+        colors = []
+        for price in bar_prices:
+            if price in hvn_prices:
+                colors.append(INDICATOR_COLORS['volume_profile_hvn'])
+            elif price in lvn_prices:
+                colors.append(INDICATOR_COLORS['volume_profile_lvn'])
+            else:
+                colors.append(INDICATOR_COLORS['volume_profile'])
+
+        # Calculate bar height (distance between price levels)
+        if len(bar_prices) > 1:
+            bar_height = bar_prices[1] - bar_prices[0]
+        else:
+            bar_height = 1
+
+        # Create inset axis on right side (15% of chart width)
+        vp_ax = inset_axes(
+            ax,
+            width="15%",
+            height="100%",
+            loc='center right',
+            bbox_to_anchor=(0.05, 0, 1, 1),
+            bbox_transform=ax.transAxes,
+            borderpad=0
+        )
+
+        # Draw horizontal bars
+        vp_ax.barh(
+            bar_prices,
+            bar_volumes,
+            height=bar_height * 0.95,  # Slight gap between bars
+            color=colors,
+            alpha=0.6,
+            edgecolor='none'
+        )
+
+        # Hide VP axis labels and ticks
+        vp_ax.set_xticks([])
+        vp_ax.set_yticks([])
+        vp_ax.set_facecolor('none')
+        vp_ax.patch.set_alpha(0)
+
+        # Remove axis spines
+        for spine in vp_ax.spines.values():
+            spine.set_visible(False)
+
+        # Match price panel y-limits
+        vp_ax.set_ylim(ax.get_ylim())
+
+        log.info(
+            "volume_profile_bars_added ticker=%s bars=%d hvn=%d lvn=%d",
+            ticker, len(bar_prices), len(hvn_prices), len(lvn_prices)
+        )
+
+    except Exception as err:
+        log.warning("volume_profile_bars_failed ticker=%s err=%s", ticker, str(err))
+
+
+def add_triangle_patterns(ax, df, ticker):
+    """
+    Detect and overlay triangle patterns on price chart.
+
+    Draws trendlines for detected triangles with pattern-specific colors.
+    Adds text annotations showing pattern type and breakout direction.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Price panel axis to add patterns to
+    df : pandas.DataFrame
+        OHLCV data with Close, High, and Low columns
+    ticker : str
+        Ticker symbol for logging
+
+    Notes
+    -----
+    Triangle patterns include:
+    - Ascending: Flat resistance, rising support (bullish)
+    - Descending: Falling resistance, flat support (bearish)
+    - Symmetrical: Converging lines (neutral until breakout)
+
+    Each pattern includes:
+    - Upper trendline (resistance)
+    - Lower trendline (support)
+    - Text annotation with pattern name and confidence
+    """
+    try:
+        from .indicators.patterns import detect_triangles
+
+        # Validate required columns
+        if not all(col in df.columns for col in ['Close', 'High', 'Low']):
+            log.warning("triangle_patterns_missing_columns ticker=%s", ticker)
+            return
+
+        # Extract price data as lists
+        prices = df['Close'].values.tolist()
+        highs = df['High'].values.tolist()
+        lows = df['Low'].values.tolist()
+
+        # Detect patterns
+        patterns = detect_triangles(prices, highs, lows, min_touches=3, lookback=20)
+
+        if not patterns:
+            log.debug("triangle_patterns_none_detected ticker=%s", ticker)
+            return
+
+        # Get x-axis indices for plotting
+        x_values = list(range(len(df)))
+
+        # Draw each detected pattern
+        for pattern in patterns:
+            pattern_type = pattern.get('type', 'unknown')
+            start_idx = pattern.get('start_idx', 0)
+            end_idx = pattern.get('end_idx', len(df) - 1)
+            confidence = pattern.get('confidence', 0.0)
+            key_levels = pattern.get('key_levels', {})
+
+            # Select color based on pattern type
+            if pattern_type == 'ascending_triangle':
+                color = INDICATOR_COLORS['triangle_ascending']
+                label = f'Ascending Triangle ({confidence:.0%})'
+            elif pattern_type == 'descending_triangle':
+                color = INDICATOR_COLORS['triangle_descending']
+                label = f'Descending Triangle ({confidence:.0%})'
+            elif pattern_type == 'symmetrical_triangle':
+                color = INDICATOR_COLORS['triangle_symmetrical']
+                label = f'Symmetrical Triangle ({confidence:.0%})'
+            else:
+                color = '#FFFFFF'
+                label = f'Triangle Pattern ({confidence:.0%})'
+
+            # Calculate trendlines
+            pattern_x = x_values[start_idx:end_idx + 1]
+
+            # For ascending triangle: flat resistance, rising support
+            if pattern_type == 'ascending_triangle':
+                resistance = key_levels.get('resistance', 0)
+                support_slope = key_levels.get('support_slope', 0)
+
+                # Draw flat resistance line
+                ax.hlines(
+                    y=resistance,
+                    xmin=start_idx,
+                    xmax=end_idx,
+                    colors=color,
+                    linestyles='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Draw rising support line (use linear approximation)
+                # Start from first low in pattern area
+                support_start = lows[start_idx]
+                support_end = support_start + support_slope * (end_idx - start_idx)
+                ax.plot(
+                    [start_idx, end_idx],
+                    [support_start, support_end],
+                    color=color,
+                    linestyle='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Add annotation at midpoint
+                mid_idx = (start_idx + end_idx) // 2
+                mid_price = (resistance + support_start + support_slope * (mid_idx - start_idx)) / 2
+                ax.text(
+                    mid_idx,
+                    mid_price,
+                    label,
+                    fontsize=9,
+                    color=color,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                    ha='center'
+                )
+
+            # For descending triangle: falling resistance, flat support
+            elif pattern_type == 'descending_triangle':
+                support = key_levels.get('support', 0)
+                resistance_slope = key_levels.get('resistance_slope', 0)
+
+                # Draw flat support line
+                ax.hlines(
+                    y=support,
+                    xmin=start_idx,
+                    xmax=end_idx,
+                    colors=color,
+                    linestyles='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Draw falling resistance line
+                resistance_start = highs[start_idx]
+                resistance_end = resistance_start + resistance_slope * (end_idx - start_idx)
+                ax.plot(
+                    [start_idx, end_idx],
+                    [resistance_start, resistance_end],
+                    color=color,
+                    linestyle='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Add annotation at midpoint
+                mid_idx = (start_idx + end_idx) // 2
+                mid_price = (support + resistance_start + resistance_slope * (mid_idx - start_idx)) / 2
+                ax.text(
+                    mid_idx,
+                    mid_price,
+                    label,
+                    fontsize=9,
+                    color=color,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                    ha='center'
+                )
+
+            # For symmetrical triangle: converging lines
+            elif pattern_type == 'symmetrical_triangle':
+                high_slope = key_levels.get('high_slope', 0)
+                low_slope = key_levels.get('low_slope', 0)
+
+                # Draw upper trendline (falling)
+                upper_start = highs[start_idx]
+                upper_end = upper_start + high_slope * (end_idx - start_idx)
+                ax.plot(
+                    [start_idx, end_idx],
+                    [upper_start, upper_end],
+                    color=color,
+                    linestyle='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Draw lower trendline (rising)
+                lower_start = lows[start_idx]
+                lower_end = lower_start + low_slope * (end_idx - start_idx)
+                ax.plot(
+                    [start_idx, end_idx],
+                    [lower_start, lower_end],
+                    color=color,
+                    linestyle='--',
+                    linewidth=2,
+                    alpha=0.8
+                )
+
+                # Add annotation at midpoint
+                mid_idx = (start_idx + end_idx) // 2
+                mid_upper = upper_start + high_slope * (mid_idx - start_idx)
+                mid_lower = lower_start + low_slope * (mid_idx - start_idx)
+                mid_price = (mid_upper + mid_lower) / 2
+                ax.text(
+                    mid_idx,
+                    mid_price,
+                    label,
+                    fontsize=9,
+                    color=color,
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                    ha='center'
+                )
+
+        log.info("triangle_patterns_added ticker=%s count=%d", ticker, len(patterns))
+
+    except Exception as err:
+        log.warning("triangle_patterns_failed ticker=%s err=%s", ticker, str(err))
+
+
+def add_hs_patterns(ax, df, ticker):
+    """
+    Detect and overlay Head & Shoulders patterns on price chart.
+
+    Marks:
+    - Left shoulder, head, right shoulder (circle markers)
+    - Neckline (horizontal line)
+    - Breakout projection (dashed line)
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Price panel axis to add patterns to
+    df : pandas.DataFrame
+        OHLCV data with Close column
+    ticker : str
+        Ticker symbol for logging
+
+    Notes
+    -----
+    Head & Shoulders patterns include:
+    - Classic H&S: Bearish reversal pattern (three peaks, middle highest)
+    - Inverse H&S: Bullish reversal pattern (three troughs, middle lowest)
+
+    Each pattern includes:
+    - Shoulder and head markers (circles)
+    - Neckline (horizontal gold line)
+    - Text annotation with pattern name and confidence
+    - Price target projection
+    """
+    try:
+        from .indicators.patterns import detect_head_shoulders
+
+        # Validate required columns
+        if 'Close' not in df.columns:
+            log.warning("hs_patterns_missing_columns ticker=%s", ticker)
+            return
+
+        # Extract price data as list
+        prices = df['Close'].values.tolist()
+
+        # Detect patterns
+        patterns = detect_head_shoulders(prices, min_confidence=0.6, lookback=30)
+
+        if not patterns:
+            log.debug("hs_patterns_none_detected ticker=%s", ticker)
+            return
+
+        # Get x-axis indices for plotting
+        x_values = list(range(len(df)))
+
+        # Draw each detected pattern
+        for pattern in patterns:
+            pattern_type = pattern.get('type', 'unknown')
+            confidence = pattern.get('confidence', 0.0)
+            key_levels = pattern.get('key_levels', {})
+            target = pattern.get('target', None)
+
+            # Extract shoulder and head positions
+            ls_idx, ls_price = key_levels.get('left_shoulder', (0, 0))
+            head_idx, head_price = key_levels.get('head', (0, 0))
+            rs_idx, rs_price = key_levels.get('right_shoulder', (0, 0))
+            neckline = key_levels.get('neckline', 0)
+
+            # Select color based on pattern type
+            if pattern_type == 'head_shoulders':
+                color = INDICATOR_COLORS['hs_pattern']
+                label = f'H&S ({confidence:.0%})'
+            elif pattern_type == 'inverse_head_shoulders':
+                color = INDICATOR_COLORS['hs_pattern']
+                label = f'Inverse H&S ({confidence:.0%})'
+            else:
+                color = '#FFFFFF'
+                label = f'H&S Pattern ({confidence:.0%})'
+
+            # Mark left shoulder
+            ax.scatter(
+                ls_idx,
+                ls_price,
+                color=color,
+                s=100,
+                alpha=0.8,
+                marker='o',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Mark head
+            ax.scatter(
+                head_idx,
+                head_price,
+                color=color,
+                s=150,
+                alpha=0.8,
+                marker='o',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Mark right shoulder
+            ax.scatter(
+                rs_idx,
+                rs_price,
+                color=color,
+                s=100,
+                alpha=0.8,
+                marker='o',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Draw neckline
+            ax.hlines(
+                y=neckline,
+                xmin=ls_idx,
+                xmax=rs_idx,
+                colors=INDICATOR_COLORS['hs_neckline'],
+                linestyles='-',
+                linewidth=2.5,
+                alpha=0.8,
+                zorder=4
+            )
+
+            # Draw projected target if available
+            if target:
+                ax.hlines(
+                    y=target,
+                    xmin=rs_idx,
+                    xmax=min(rs_idx + (rs_idx - ls_idx), len(df) - 1),
+                    colors=color,
+                    linestyles='--',
+                    linewidth=2,
+                    alpha=0.6,
+                    zorder=3
+                )
+
+            # Add annotation at head position
+            ax.text(
+                head_idx,
+                head_price + (head_price * 0.02),  # Slightly above head
+                label,
+                fontsize=9,
+                color=color,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                ha='center'
+            )
+
+        log.info("hs_patterns_added ticker=%s count=%d", ticker, len(patterns))
+
+    except Exception as err:
+        log.warning("hs_patterns_failed ticker=%s err=%s", ticker, str(err))
+
+
+def add_double_patterns(ax, df, ticker):
+    """
+    Detect and overlay Double Top/Bottom patterns on price chart.
+
+    Marks:
+    - Two peaks/troughs (circles)
+    - Support/resistance line between them
+    - Breakout projection
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Price panel axis to add patterns to
+    df : pandas.DataFrame
+        OHLCV data with Close column
+    ticker : str
+        Ticker symbol for logging
+
+    Notes
+    -----
+    Double patterns include:
+    - Double Top: Bearish reversal (two peaks at similar levels)
+    - Double Bottom: Bullish reversal (two troughs at similar levels)
+
+    Each pattern includes:
+    - Peak/trough markers (circles)
+    - Support/resistance line
+    - Text annotation with pattern name and confidence
+    - Price target projection
+    """
+    try:
+        from .indicators.patterns import detect_double_tops_bottoms
+
+        # Validate required columns
+        if 'Close' not in df.columns:
+            log.warning("double_patterns_missing_columns ticker=%s", ticker)
+            return
+
+        # Extract price data as list
+        prices = df['Close'].values.tolist()
+
+        # Detect patterns
+        all_patterns = detect_double_tops_bottoms(
+            prices,
+            tolerance=0.02,
+            min_spacing=5,
+            lookback=30
+        )
+
+        if not all_patterns:
+            log.debug("double_patterns_none_detected ticker=%s", ticker)
+            return
+
+        # Separate tops and bottoms
+        tops = [p for p in all_patterns if p.get('type') == 'double_top']
+        bottoms = [p for p in all_patterns if p.get('type') == 'double_bottom']
+
+        # Draw double tops in red
+        for pattern in tops:
+            confidence = pattern.get('confidence', 0.0)
+            key_levels = pattern.get('key_levels', {})
+            target = pattern.get('target', None)
+
+            # Extract peak positions
+            peak1_idx, peak1_price = key_levels.get('peak1', (0, 0))
+            peak2_idx, peak2_price = key_levels.get('peak2', (0, 0))
+            trough_idx, trough_price = key_levels.get('trough', (0, 0))
+
+            color = INDICATOR_COLORS['double_top']
+            label = f'Double Top ({confidence:.0%})'
+
+            # Mark first peak
+            ax.scatter(
+                peak1_idx,
+                peak1_price,
+                color=color,
+                s=120,
+                alpha=0.8,
+                marker='v',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Mark second peak
+            ax.scatter(
+                peak2_idx,
+                peak2_price,
+                color=color,
+                s=120,
+                alpha=0.8,
+                marker='v',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Draw resistance line between peaks
+            ax.hlines(
+                y=(peak1_price + peak2_price) / 2,
+                xmin=peak1_idx,
+                xmax=peak2_idx,
+                colors=color,
+                linestyles='-',
+                linewidth=2.5,
+                alpha=0.7,
+                zorder=4
+            )
+
+            # Draw support line at trough
+            ax.hlines(
+                y=trough_price,
+                xmin=peak1_idx,
+                xmax=peak2_idx,
+                colors=color,
+                linestyles='--',
+                linewidth=2,
+                alpha=0.5,
+                zorder=3
+            )
+
+            # Draw projected target if available
+            if target:
+                ax.hlines(
+                    y=target,
+                    xmin=peak2_idx,
+                    xmax=min(peak2_idx + (peak2_idx - peak1_idx), len(df) - 1),
+                    colors=color,
+                    linestyles='--',
+                    linewidth=2,
+                    alpha=0.6,
+                    zorder=3
+                )
+
+            # Add annotation at midpoint
+            mid_idx = (peak1_idx + peak2_idx) // 2
+            mid_price = (peak1_price + peak2_price) / 2
+            ax.text(
+                mid_idx,
+                mid_price + (mid_price * 0.02),
+                label,
+                fontsize=9,
+                color=color,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                ha='center'
+            )
+
+        # Draw double bottoms in green
+        for pattern in bottoms:
+            confidence = pattern.get('confidence', 0.0)
+            key_levels = pattern.get('key_levels', {})
+            target = pattern.get('target', None)
+
+            # Extract trough positions
+            trough1_idx, trough1_price = key_levels.get('trough1', (0, 0))
+            trough2_idx, trough2_price = key_levels.get('trough2', (0, 0))
+            peak_idx, peak_price = key_levels.get('peak', (0, 0))
+
+            color = INDICATOR_COLORS['double_bottom']
+            label = f'Double Bottom ({confidence:.0%})'
+
+            # Mark first trough
+            ax.scatter(
+                trough1_idx,
+                trough1_price,
+                color=color,
+                s=120,
+                alpha=0.8,
+                marker='^',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Mark second trough
+            ax.scatter(
+                trough2_idx,
+                trough2_price,
+                color=color,
+                s=120,
+                alpha=0.8,
+                marker='^',
+                edgecolors='white',
+                linewidths=1.5,
+                zorder=5
+            )
+
+            # Draw support line between troughs
+            ax.hlines(
+                y=(trough1_price + trough2_price) / 2,
+                xmin=trough1_idx,
+                xmax=trough2_idx,
+                colors=color,
+                linestyles='-',
+                linewidth=2.5,
+                alpha=0.7,
+                zorder=4
+            )
+
+            # Draw resistance line at peak
+            ax.hlines(
+                y=peak_price,
+                xmin=trough1_idx,
+                xmax=trough2_idx,
+                colors=color,
+                linestyles='--',
+                linewidth=2,
+                alpha=0.5,
+                zorder=3
+            )
+
+            # Draw projected target if available
+            if target:
+                ax.hlines(
+                    y=target,
+                    xmin=trough2_idx,
+                    xmax=min(trough2_idx + (trough2_idx - trough1_idx), len(df) - 1),
+                    colors=color,
+                    linestyles='--',
+                    linewidth=2,
+                    alpha=0.6,
+                    zorder=3
+                )
+
+            # Add annotation at midpoint
+            mid_idx = (trough1_idx + trough2_idx) // 2
+            mid_price = (trough1_price + trough2_price) / 2
+            ax.text(
+                mid_idx,
+                mid_price - (mid_price * 0.02),  # Slightly below for bottoms
+                label,
+                fontsize=9,
+                color=color,
+                bbox=dict(boxstyle='round,pad=0.5', facecolor='black', alpha=0.7),
+                ha='center'
+            )
+
+        log.info(
+            "double_patterns_added ticker=%s tops=%d bottoms=%d",
+            ticker,
+            len(tops),
+            len(bottoms)
+        )
+
+    except Exception as err:
+        log.warning("double_patterns_failed ticker=%s err=%s", ticker, str(err))
+
+
+def detect_gaps(df, expected_interval_minutes=15):
+    """Detect time gaps in DataFrame index (missing candles).
+
+    Identifies periods where data is missing based on expected time intervals.
+    Distinguishes between market closed periods (weekends, holidays) and
+    data gaps during trading hours that should be filled.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        OHLCV data with DatetimeIndex
+    expected_interval_minutes : int, optional
+        Expected time interval between candles in minutes, by default 15
+
+    Returns
+    -------
+    List[Tuple[pd.Timestamp, pd.Timestamp, float]]
+        List of gaps as (start_time, end_time, duration_minutes) tuples
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({'Close': [100, 101, 102]},
+    ...                   index=pd.to_datetime(['2024-01-01 09:30', '2024-01-01 09:45', '2024-01-01 10:15']))
+    >>> gaps = detect_gaps(df, expected_interval_minutes=15)
+    >>> len(gaps)
+    1
+    """
+    try:
+        import pandas as pd
+
+        gaps = []
+        if df is None or df.empty or len(df) < 2:
+            return gaps
+
+        # Allow 50% tolerance for interval detection (e.g., 15min → 22.5min max)
+        max_gap_minutes = expected_interval_minutes * 1.5
+
+        for i in range(1, len(df)):
+            time_diff_seconds = (df.index[i] - df.index[i - 1]).total_seconds()
+            time_diff_minutes = time_diff_seconds / 60
+
+            if time_diff_minutes > max_gap_minutes:
+                gaps.append((df.index[i - 1], df.index[i], time_diff_minutes))
+                log.debug(
+                    "gap_detected start=%s end=%s duration_min=%.1f",
+                    df.index[i - 1],
+                    df.index[i],
+                    time_diff_minutes,
+                )
+
+        return gaps
+    except Exception as err:
+        log.warning("gap_detection_failed err=%s", str(err))
+        return []
+
+
+def fill_gaps(df, method="forward_fill", expected_interval_minutes=15):
+    """Fill gaps in OHLCV data with appropriate values.
+
+    Fills missing time periods in the data to create smooth visualizations
+    without confusing gaps. Uses forward fill (last known price) by default,
+    with volume set to 0 for filled periods.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        OHLCV data with DatetimeIndex (must have Open, High, Low, Close, Volume columns)
+    method : str, optional
+        Fill method: "forward_fill", "interpolate", or "flat_line", by default "forward_fill"
+    expected_interval_minutes : int, optional
+        Expected time interval between candles in minutes, by default 15
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with gaps filled, includes new 'filled' boolean column marking filled rows
+
+    Notes
+    -----
+    - Forward fill: Uses last known OHLC prices, sets volume to 0
+    - Interpolate: Linear interpolation for prices (experimental, use with caution)
+    - Flat line: Same as forward fill but can be styled differently
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({'Open': [100, 102], 'High': [101, 103], 'Low': [99, 101],
+    ...                    'Close': [100, 102], 'Volume': [1000, 1500]},
+    ...                   index=pd.to_datetime(['2024-01-01 09:30', '2024-01-01 10:15']))
+    >>> filled = fill_gaps(df, method='forward_fill', expected_interval_minutes=15)
+    >>> len(filled) > len(df)
+    True
+    """
+    try:
+        import pandas as pd
+
+        if df is None or df.empty:
+            return df
+
+        # Detect gaps first
+        gaps = detect_gaps(df, expected_interval_minutes)
+
+        if not gaps:
+            # No gaps, add 'filled' column as False for all rows
+            df["filled"] = False
+            return df
+
+        log.info(
+            "filling_gaps count=%d method=%s interval_min=%d",
+            len(gaps),
+            method,
+            expected_interval_minutes,
+        )
+
+        # Create complete date range with expected frequency
+        freq_str = f"{expected_interval_minutes}min"
+        full_range = pd.date_range(
+            start=df.index.min(), end=df.index.max(), freq=freq_str
+        )
+
+        # Reindex to full range
+        df_filled = df.reindex(full_range)
+
+        # Mark originally filled vs new rows
+        df_filled["filled"] = df_filled["Close"].isna()
+
+        if method == "forward_fill":
+            # Forward fill OHLC prices (use last known price)
+            df_filled[["Open", "High", "Low", "Close"]] = df_filled[
+                ["Open", "High", "Low", "Close"]
+            ].ffill()
+
+            # Set volume to 0 for filled periods (don't fabricate volume)
+            df_filled.loc[df_filled["filled"], "Volume"] = 0.0
+
+        elif method == "interpolate":
+            # Linear interpolation for price (experimental)
+            df_filled["Close"] = df_filled["Close"].interpolate(method="linear")
+            df_filled["Open"] = df_filled["Open"].interpolate(method="linear")
+            df_filled["High"] = df_filled["High"].interpolate(method="linear")
+            df_filled["Low"] = df_filled["Low"].interpolate(method="linear")
+
+            # Set volume to 0 for filled periods
+            df_filled.loc[df_filled["filled"], "Volume"] = 0.0
+
+        elif method == "flat_line":
+            # Same as forward_fill (can be styled differently in visualization)
+            df_filled[["Open", "High", "Low", "Close"]] = df_filled[
+                ["Open", "High", "Low", "Close"]
+            ].ffill()
+            df_filled.loc[df_filled["filled"], "Volume"] = 0.0
+
+        # Fill any remaining NaNs (edge cases)
+        df_filled = df_filled.ffill().bfill()
+
+        log.info(
+            "gaps_filled original_rows=%d filled_rows=%d new_rows=%d",
+            len(df),
+            len(df_filled),
+            len(df_filled) - len(df),
+        )
+
+        return df_filled
+
+    except Exception as err:
+        log.warning("gap_filling_failed err=%s", str(err))
+        # Return original df with filled column set to False
+        df["filled"] = False
+        return df
+
+
 def optimize_for_mobile(fig, axes):
     """Optimize chart for mobile display (320px minimum width).
 
@@ -401,6 +1378,7 @@ def render_chart_with_panels(
     indicators: Optional[List[str]] = None,
     support_levels: Optional[List[Dict]] = None,
     resistance_levels: Optional[List[Dict]] = None,
+    fib_levels: Optional[Dict[str, float]] = None,
     out_dir: Path | str = "out/charts",
 ) -> Optional[Path]:
     """Render multi-panel chart with WeBull styling and indicators.
@@ -412,11 +1390,13 @@ def render_chart_with_panels(
     df : pandas.DataFrame
         OHLCV data with DatetimeIndex
     indicators : Optional[List[str]]
-        Indicators to display: ['vwap', 'rsi', 'macd', 'bollinger']
+        Indicators to display: ['vwap', 'rsi', 'macd', 'bollinger', 'fibonacci']
     support_levels : Optional[List[Dict]]
         Support levels from detect_support_resistance()
     resistance_levels : Optional[List[Dict]]
         Resistance levels from detect_support_resistance()
+    fib_levels : Optional[Dict[str, float]]
+        Fibonacci retracement levels from calculate_fibonacci_levels()
     out_dir : Path | str
         Output directory for chart PNG
 
@@ -458,11 +1438,29 @@ def render_chart_with_panels(
     indicators = indicators or []
     support_levels = support_levels or []
     resistance_levels = resistance_levels or []
+    fib_levels = fib_levels or {}
 
     try:
         # Validate DataFrame
         if df is None or getattr(df, "empty", False):
             raise ValueError("no_data")
+
+        # Apply gap filling if enabled
+        fill_enabled = os.getenv("CHART_FILL_EXTENDED_HOURS", "1") == "1"
+        if fill_enabled and len(df) > 1:
+            fill_method = os.getenv("CHART_FILL_METHOD", "forward_fill")
+            # Determine interval from index (5min, 15min, etc.)
+            try:
+                import pandas as pd
+                if len(df) >= 2:
+                    time_diff = (df.index[1] - df.index[0]).total_seconds() / 60
+                    expected_interval = int(time_diff)
+                    df = fill_gaps(df, method=fill_method, expected_interval_minutes=expected_interval)
+                    log.debug("gap_filling_applied ticker=%s method=%s interval=%d", sym, fill_method, expected_interval)
+            except Exception as err:
+                log.warning("gap_filling_failed ticker=%s err=%s", sym, str(err))
+                # Continue with original df
+                pass
 
         # Create WeBull style
         webull_style = create_webull_style()
@@ -493,9 +1491,18 @@ def render_chart_with_panels(
             if num_panels >= 4:
                 panel_ratios.append(1.25)  # MACD
 
+        # Determine candle type from environment (default: candle)
+        # Options: candle, heikin-ashi, ohlc, line
+        candle_type = os.getenv("CHART_CANDLE_TYPE", "candle").lower().strip()
+        if candle_type not in ("candle", "heikin-ashi", "ohlc", "line"):
+            log.warning(
+                "invalid_candle_type value=%s defaulting to candle", candle_type
+            )
+            candle_type = "candle"
+
         # Render chart (only pass kwargs if they have values)
         plot_kwargs = {
-            "type": "candle",
+            "type": candle_type,
             "style": webull_style,
             "volume": True,
             "panel_ratios": tuple(panel_ratios),
@@ -539,6 +1546,89 @@ def render_chart_with_panels(
                 log.debug("added_sr_lines count=%d", len(hlines))
             except Exception as err:
                 log.warning("sr_lines_failed err=%s", str(err))
+
+        # Add Fibonacci retracement levels manually using axhline
+        if fib_levels:
+            try:
+                # Get the price panel (panel 0)
+                if hasattr(axes, "__iter__"):
+                    price_ax = axes[0] if len(axes) > 0 else axes
+                else:
+                    price_ax = axes
+
+                # Add each Fibonacci level as a horizontal line
+                for level_name, price in fib_levels.items():
+                    price_ax.axhline(
+                        y=price,
+                        color=INDICATOR_COLORS["fibonacci"],
+                        linestyle="--",
+                        linewidth=1.5,
+                        alpha=0.6,
+                        label=f"Fib {level_name}",
+                    )
+                log.info("fibonacci_lines_added ticker=%s count=%d", sym, len(fib_levels))
+            except Exception as err:
+                log.warning("fibonacci_lines_failed ticker=%s err=%s", sym, str(err))
+
+        # Add triangle patterns if requested
+        indicators_lower = [ind.lower() for ind in indicators]
+        if "patterns" in indicators_lower or "triangles" in indicators_lower:
+            try:
+                # Get the price panel (panel 0)
+                if hasattr(axes, "__iter__") and len(axes) > 0:
+                    price_ax = axes[0]
+                else:
+                    price_ax = axes
+
+                add_triangle_patterns(price_ax, df, sym)
+            except Exception as err:
+                log.warning("triangle_patterns_failed ticker=%s err=%s", sym, str(err))
+
+        # Add Head & Shoulders and Double Top/Bottom patterns
+        if "patterns" in indicators_lower or "hs" in indicators_lower:
+            try:
+                # Get the price panel (panel 0)
+                if hasattr(axes, "__iter__") and len(axes) > 0:
+                    price_ax = axes[0]
+                else:
+                    price_ax = axes
+
+                add_hs_patterns(price_ax, df, sym)
+                add_double_patterns(price_ax, df, sym)
+            except Exception as err:
+                log.warning("hs_double_patterns_failed ticker=%s err=%s", sym, str(err))
+
+        # Add POC/VAH/VAL lines if requested
+        show_poc = os.getenv("CHART_VOLUME_PROFILE_SHOW_POC", "1") == "1"
+
+        log.debug("poc_vah_val_check ticker=%s indicators=%s show_poc=%s",
+                  sym, indicators_lower, show_poc)
+
+        if ('volume_profile' in indicators_lower or 'vp' in indicators_lower) and show_poc:
+            log.debug("poc_vah_val_trigger ticker=%s", sym)
+            try:
+                if hasattr(axes, "__iter__") and len(axes) > 0:
+                    price_ax = axes[0]
+                else:
+                    price_ax = axes
+
+                add_poc_vah_val_lines(price_ax, df, sym)
+            except Exception as err:
+                log.warning("poc_vah_val_failed ticker=%s err=%s", sym, str(err))
+
+        # Add volume profile horizontal bars if requested
+        show_bars = os.getenv("CHART_VOLUME_PROFILE_SHOW_BARS", "1") == "1"
+        if ('volume_profile' in indicators_lower or 'vp' in indicators_lower) and show_bars:
+            try:
+                if hasattr(axes, "__iter__") and len(axes) > 0:
+                    price_ax = axes[0]
+                else:
+                    price_ax = axes
+
+                bins = int(os.getenv("CHART_VOLUME_PROFILE_BINS", "20"))
+                add_volume_profile_bars(price_ax, df, sym, bins=bins)
+            except Exception as err:
+                log.warning("volume_profile_bars_failed ticker=%s err=%s", sym, str(err))
 
         # Apply enhanced panel styling if chart_panels is available
         if HAS_CHART_PANELS:
@@ -779,21 +1869,45 @@ def render_intraday_chart(
 
         from . import market
 
+        # Try intraday data first (5-minute bars with pre/post market)
         df = market.get_intraday(
             sym, interval="5min", output_size="compact", prepost=True
         )
         try:
             log.info(
-                "charts_render_df ticker=%s rows=%s cols=%s",
+                "charts_render_df ticker=%s interval=5min rows=%s cols=%s",
                 sym,
                 getattr(df, "shape", ("-", "-"))[0],
                 list(getattr(df, "columns", [])),
             )
         except Exception:
             pass
-        # Validate DataFrame
+
+        # Fallback: If intraday data is empty, try daily data
         if df is None or getattr(df, "empty", False):
-            raise ValueError("no_intraday_data")
+            log.info("charts_intraday_empty ticker=%s trying_daily_fallback", sym)
+            df = market.get_intraday(
+                sym, interval="1d", output_size="compact", prepost=False
+            )
+            try:
+                log.info(
+                    "charts_render_df ticker=%s interval=1d rows=%s cols=%s",
+                    sym,
+                    getattr(df, "shape", ("-", "-"))[0],
+                    list(getattr(df, "columns", [])),
+                )
+            except Exception:
+                pass
+
+            # If daily also fails, give up
+            if df is None or getattr(df, "empty", False):
+                raise ValueError("no_chart_data_available")
+
+        # Flatten MultiIndex columns if present (yfinance sometimes returns these)
+        if hasattr(df.columns, 'levels'):
+            # MultiIndex columns like ('Open', 'TICKER') -> 'Open'
+            df.columns = df.columns.get_level_values(0)
+
         # Ensure the index is datetimes; mplfinance expects a DatetimeIndex
         # If the index isn't a DatetimeIndex, attempt to coerce
         if not isinstance(df.index, pd.DatetimeIndex):
@@ -802,15 +1916,59 @@ def render_intraday_chart(
             except Exception:
                 pass
 
-        # Compute VWAP series for overlay when possible
+        # Ensure required columns are numeric and clean
+        required_cols = ['Open', 'High', 'Low', 'Close']
+        for col in required_cols:
+            if col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except Exception:
+                    pass
+
+        # Check if Volume column exists and is numeric
+        has_volume = False
+        if 'Volume' in df.columns:
+            try:
+                df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
+                # Check if we have any valid volume data
+                if df['Volume'].notna().any() and df['Volume'].sum() > 0:
+                    has_volume = True
+                    log.debug("charts_volume_available ticker=%s rows_with_vol=%d", sym, df['Volume'].notna().sum())
+                else:
+                    log.debug("charts_volume_empty ticker=%s", sym)
+            except Exception as e:
+                log.debug("charts_volume_parse_failed ticker=%s err=%s", sym, str(e))
+        else:
+            log.debug("charts_no_volume_column ticker=%s", sym)
+
+        # Apply gap filling if enabled
+        fill_enabled = os.getenv("CHART_FILL_EXTENDED_HOURS", "1") == "1"
+        if fill_enabled and len(df) > 1:
+            fill_method = os.getenv("CHART_FILL_METHOD", "forward_fill")
+            # Determine interval from index (5min, 15min, etc.)
+            try:
+                import pandas as pd
+                if len(df) >= 2:
+                    time_diff = (df.index[1] - df.index[0]).total_seconds() / 60
+                    expected_interval = int(time_diff)
+                    df = fill_gaps(df, method=fill_method, expected_interval_minutes=expected_interval)
+                    log.debug("gap_filling_applied ticker=%s method=%s interval=%d", sym, fill_method, expected_interval)
+            except Exception as err:
+                log.warning("gap_filling_failed ticker=%s err=%s", sym, str(err))
+                # Continue with original df
+                pass
+
+        # Compute VWAP series for overlay when volume data is available
         vwap_series = None
-        try:
-            close = df["Close"]
-            vol = df["Volume"]
-            if vol.sum() != 0:
-                vwap_series = (close * vol).cumsum() / vol.cumsum()
-        except Exception:
-            vwap_series = None
+        if has_volume:
+            try:
+                close = df["Close"]
+                vol = df["Volume"]
+                vol_total = vol.sum()
+                if vol_total > 0:
+                    vwap_series = (close * vol).cumsum() / vol.cumsum()
+            except Exception:
+                vwap_series = None
 
         # Compose additional plots: VWAP overlay if available
         add_plots = []
@@ -825,16 +1983,30 @@ def render_intraday_chart(
         use_webull = os.getenv("CHART_STYLE", "webull").lower() == "webull"
         chart_style = create_webull_style() if use_webull else "yahoo"
 
-        try:
-            fig, axes = mpf.plot(
-                df,
-                type="candle",
-                style=chart_style,
-                volume=True,
-                addplot=add_plots if add_plots else None,
-                returnfig=True,
-                figsize=(12, 7),
+        # Determine candle type from environment (default: candle)
+        # Options: candle, heikin-ashi, ohlc, line
+        candle_type = os.getenv("CHART_CANDLE_TYPE", "candle").lower().strip()
+        if candle_type not in ("candle", "heikin-ashi", "ohlc", "line"):
+            log.warning(
+                "invalid_candle_type value=%s defaulting to candle", candle_type
             )
+            candle_type = "candle"
+
+        try:
+            # Build plot kwargs (conditionally include volume and addplot to avoid mplfinance validator errors)
+            plot_kwargs = {
+                "type": candle_type,
+                "style": chart_style,
+                "volume": has_volume,  # Only show volume subplot if we have volume data
+                "returnfig": True,
+                "figsize": (12, 7),
+            }
+
+            # Only add addplot if we have plots (avoids "None" validator error)
+            if add_plots:
+                plot_kwargs["addplot"] = add_plots
+
+            fig, axes = mpf.plot(df, **plot_kwargs)
         except Exception as err:
             # Fallback: treat as failure and write placeholder
             raise err
@@ -1188,7 +2360,8 @@ def render_multipanel_chart(
             try:
                 close = df["Close"]
                 vol = df["Volume"]
-                if vol.sum() != 0:
+                vol_total = vol.sum()
+                if vol_total > 0:
                     df["vwap"] = (close * vol).cumsum() / vol.cumsum()
             except Exception as err:
                 log.warning("vwap_calc_failed err=%s", str(err))
@@ -1245,6 +2418,32 @@ def render_multipanel_chart(
             except Exception as err:
                 log.warning("sr_calc_failed err=%s", str(err))
 
+        # Fibonacci Retracement Levels
+        fib_levels = {}
+        if "fibonacci" in indicators_lower or "fib" in indicators_lower:
+            try:
+                from .indicators.fibonacci import calculate_fibonacci_levels, find_swing_points
+
+                # Find swing points from closing prices
+                # Convert Series to list using .values.tolist() for compatibility
+                close_prices = df["Close"].values.tolist() if hasattr(df["Close"], "values") else list(df["Close"])
+                swing_high, swing_low, h_idx, l_idx = find_swing_points(close_prices)
+
+                if swing_high and swing_low:
+                    # Calculate Fibonacci levels
+                    fib_levels = calculate_fibonacci_levels(swing_high, swing_low)
+                    log.info(
+                        "fibonacci_levels ticker=%s high=%.2f low=%.2f levels=%d",
+                        sym,
+                        swing_high,
+                        swing_low,
+                        len(fib_levels),
+                    )
+                else:
+                    log.warning("fibonacci_no_swing_points ticker=%s", sym)
+            except Exception as err:
+                log.warning("fibonacci_calc_failed ticker=%s err=%s", sym, str(err))
+
         # Use the existing render_chart_with_panels function
         return render_chart_with_panels(
             ticker=sym,
@@ -1252,6 +2451,7 @@ def render_multipanel_chart(
             indicators=indicators,
             support_levels=support_levels,
             resistance_levels=resistance_levels,
+            fib_levels=fib_levels,
             out_dir=out_dir,
         )
 

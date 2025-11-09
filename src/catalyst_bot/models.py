@@ -133,6 +133,9 @@ class ScoredItem:
     source_weight: float = 1.0
     # Explicit list of keyword/category hits. Tests rely on this field.
     keyword_hits: List[str] = None  # type: ignore
+    # Enrichment tracking fields
+    enriched: bool = False
+    enrichment_timestamp: Optional[float] = None
 
     def __post_init__(self) -> None:
         # Ensure keyword_hits is an empty list if not provided

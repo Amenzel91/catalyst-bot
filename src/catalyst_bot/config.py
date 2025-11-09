@@ -196,7 +196,8 @@ class Settings:
 
     # Behavior / thresholds
     price_ceiling: Optional[float] = _env_float_opt("PRICE_CEILING")
-    loop_seconds: int = int(os.getenv("LOOP_SECONDS", "60"))
+    min_avg_volume: Optional[float] = _env_float_opt("MIN_AVG_VOLUME")  # Filter low liquidity stocks
+    loop_seconds: int = int(os.getenv("LOOP_SECONDS", "30"))  # Reduced from 60 for faster scanning
 
     # Feature flags
     feature_record_only: bool = _b("FEATURE_RECORD_ONLY", False)
@@ -383,6 +384,23 @@ class Settings:
     # noise dominating the signal.
     sentiment_min_articles: int = int(
         os.getenv("SENTIMENT_MIN_ARTICLES", "1").strip() or "1"
+    )
+
+    # --- Article freshness thresholds ---
+    # Maximum age for regular articles to alert on (minutes).  Articles older
+    # than this threshold are rejected as stale to ensure only breaking news
+    # triggers alerts.  This prevents alerting on old news that has already
+    # moved the market.  Defaults to 30 minutes for regular articles.
+    max_article_age_minutes: int = int(
+        os.getenv("MAX_ARTICLE_AGE_MINUTES", "30").strip() or "30"
+    )
+
+    # Maximum age for SEC filings to alert on (minutes).  SEC filings are
+    # allowed a longer freshness window because they process more slowly
+    # through EDGAR and often contain material information even hours after
+    # filing.  Defaults to 240 minutes (4 hours).
+    max_sec_filing_age_minutes: int = int(
+        os.getenv("MAX_SEC_FILING_AGE_MINUTES", "240").strip() or "240"
     )
 
     # --- Patch‑6: Analyst signals ---
@@ -714,6 +732,15 @@ class Settings:
     # tickers trading below $1.  Defaults to 0 (disabled).
     price_floor: float = float(os.getenv("PRICE_FLOOR", "0") or "0")
 
+    # --- WAVE 1.2: OTC Stock Filter ---
+    # Filter out OTC/pink sheet stocks (illiquid, unsuitable for day trading).
+    # OTC stocks trade on OTCQB, OTCQX, or Pink Sheets and are typically
+    # illiquid penny stocks with wide spreads.  When enabled, tickers with
+    # OTC exchange codes will be rejected before classification to save
+    # processing.  Examples blocked: MMTXU, RVLY.  Examples allowed: AAPL,
+    # TSLA, SPY.  Set FILTER_OTC_STOCKS=1 to enable.  Defaults to true.
+    filter_otc_stocks: bool = _b("FILTER_OTC_STOCKS", True)
+
     # --- Phase‑C Patch 9: Plain logging mode ---
     # When this flag is enabled (LOG_PLAIN=1), the bot will emit human‑readable
     # one‑line logs to the console.  The log messages will include a timestamp,
@@ -872,6 +899,30 @@ class Settings:
     indicator_cache_enabled: bool = _b("INDICATOR_CACHE_ENABLED", True)
     indicator_cache_ttl_sec: int = int(os.getenv("INDICATOR_CACHE_TTL_SEC", "300"))
     indicator_cache_max_size: int = int(os.getenv("INDICATOR_CACHE_MAX_SIZE", "1000"))
+
+    # --- WAVE 3.2: Chart Data Gap Filling ---
+    # Enable automatic gap filling for chart data during premarket/afterhours
+    # When enabled, fills data gaps with last known prices to create smooth visualizations
+    # Filled periods are visually distinguished with lighter colors/dashed lines
+    # Default: True (enabled)
+    chart_fill_extended_hours: bool = _b("CHART_FILL_EXTENDED_HOURS", True)
+
+    # Gap filling method: "forward_fill", "interpolate", or "flat_line"
+    # - forward_fill: Use last known price (recommended, most accurate)
+    # - interpolate: Linear interpolation between gaps (experimental)
+    # - flat_line: Same as forward_fill (legacy alias)
+    # Default: "forward_fill"
+    chart_fill_method: str = os.getenv("CHART_FILL_METHOD", "forward_fill")
+
+    # Show annotations for extended hours periods (premarket/afterhours)
+    # When enabled, adds background shading and labels for extended hours
+    # Default: True (enabled)
+    chart_show_extended_hours_annotation: bool = _b("CHART_SHOW_EXTENDED_HOURS_ANNOTATION", True)
+
+    # Fetch extended hours data from Tiingo (4am-8pm ET instead of 9:30am-4pm)
+    # Requires Tiingo API key and FEATURE_TIINGO=1
+    # Default: True (enabled if Tiingo is available)
+    chart_fetch_extended_hours: bool = _b("CHART_FETCH_EXTENDED_HOURS", True)
 
     # --- WAVE 7.1: Discord Slash Commands & Embeds ---
     discord_application_id: str = os.getenv("DISCORD_APPLICATION_ID", "")
@@ -1053,6 +1104,108 @@ class Settings:
     # Defaults to 3 (unigrams, bigrams, trigrams) to capture multi-word concepts.
     semantic_keywords_ngram_max: int = int(
         os.getenv("SEMANTIC_KEYWORDS_NGRAM_MAX", "3") or "3"
+    )
+
+    # --- WAVE 3: Float Data Robustness ---
+    # Enable float data collection with multi-source fallback and caching.
+    # When enabled, the bot will fetch float shares (shares available for trading)
+    # from multiple sources with cascading fallback: FinViz -> yfinance -> Tiingo.
+    # Float data is cached to reduce API calls and improve reliability.
+    # Float size is a key volatility predictor: <5M float = 4.2x higher volatility.
+    # Defaults to True (enabled).
+    feature_float_data: bool = _b("FEATURE_FLOAT_DATA", True)
+
+    # Enable float data caching. When enabled, float values are cached for
+    # float_cache_max_age_hours to reduce API calls and improve reliability.
+    # Float data changes infrequently (quarterly filings), so caching is safe.
+    # Defaults to True (enabled).
+    float_data_enable_cache: bool = _b("FLOAT_DATA_ENABLE_CACHE", True)
+
+    # Maximum age in hours for cached float data before it's considered stale.
+    # Float data doesn't change frequently, so 24 hours is a safe default.
+    # Increase to 168 (1 week) or 720 (30 days) if API quota is limited.
+    # Defaults to 24 hours.
+    float_cache_max_age_hours: int = int(os.getenv("FLOAT_CACHE_MAX_AGE_HOURS", "24") or "24")
+
+    # Comma-separated list of float data sources in priority order.
+    # Available sources: finviz, yfinance, tiingo
+    # The bot will try each source in order until valid data is found.
+    # Format: "finviz,yfinance,tiingo"
+    # Defaults to "finviz,yfinance,tiingo" (all sources enabled).
+    float_data_sources: str = os.getenv("FLOAT_DATA_SOURCES", "finviz,yfinance,tiingo")
+
+    # Request delay in seconds between FinViz scraping attempts.
+    # FinViz has rate limiting, so a 2-second delay is recommended.
+    # Defaults to 2.0 seconds.
+    float_request_delay_sec: float = float(os.getenv("FLOAT_REQUEST_DELAY_SEC", "2.0") or "2.0")
+
+    # --- WAVE 3: Multi-Ticker Article Handling ---
+    # Enable smart multi-ticker detection to reduce false positives from articles
+    # that mention multiple tickers but are only about one (e.g., "AAPL down, MSFT up").
+    # When enabled, scores each ticker's relevance and only alerts primary subjects.
+    # Replaces the old "reject all multi-ticker articles" filter with intelligent scoring.
+    # Set FEATURE_MULTI_TICKER_SCORING=1 to enable. Defaults to True (enabled).
+    feature_multi_ticker_scoring: bool = _b("FEATURE_MULTI_TICKER_SCORING", True)
+
+    # Minimum relevance score (0-100) for a ticker to receive an alert.
+    # Scores based on: title position (50 pts), first paragraph (30 pts), frequency (20 pts).
+    # - 80-100: Highly relevant (ticker is main subject)
+    # - 40-60: Moderately relevant (ticker is discussed)
+    # - <40: Barely mentioned (comparison/context only)
+    # Defaults to 40 to filter out incidental mentions.
+    multi_ticker_min_relevance_score: int = int(
+        os.getenv("MULTI_TICKER_MIN_RELEVANCE_SCORE", "40") or "40"
+    )
+
+    # Maximum number of primary tickers to alert for a single article.
+    # True multi-ticker stories (e.g., merger/partnership) can alert up to this many tickers.
+    # - 1: Strict single-ticker only (highest score wins)
+    # - 2: Allow true multi-ticker stories (recommended)
+    # - 3+: More permissive (may allow sector commentary)
+    # Defaults to 2 for partnership/acquisition stories.
+    multi_ticker_max_primary: int = int(
+        os.getenv("MULTI_TICKER_MAX_PRIMARY", "2") or "2"
+    )
+
+    # Score difference threshold to determine single vs. multi-ticker classification.
+    # If top ticker's score exceeds 2nd by more than this amount, only alert top ticker.
+    # Example: AAPL=85, MSFT=35 (diff=50) → single-ticker story (AAPL only)
+    # Example: AAPL=75, GOOGL=70 (diff=5) → multi-ticker story (both)
+    # Defaults to 30 points (significant gap required for single-ticker).
+    multi_ticker_score_diff_threshold: int = int(
+        os.getenv("MULTI_TICKER_SCORE_DIFF_THRESHOLD", "30") or "30"
+    )
+
+    # --- WAVE ALPHA: LLM Cost Optimization Features ---
+    # Agent 1: Flash-Lite Integration (73% cheaper than Flash)
+    # Enable gemini-2.0-flash-lite for simple operations (<500 chars, basic classification)
+    feature_flash_lite: bool = _b("FEATURE_FLASH_LITE", True)
+    # Complexity threshold for flash-lite routing (0.0-1.0)
+    # Operations below this threshold may use flash-lite if text is short
+    flash_lite_complexity_threshold: float = float(
+        os.getenv("LLM_FLASH_LITE_THRESHOLD", "0.3") or "0.3"
+    )
+
+    # Agent 2: SEC LLM Caching (avoid duplicate LLM calls for same filing)
+    # Cache SEC filing analysis results for 72 hours to prevent re-analysis
+    feature_sec_llm_cache: bool = _b("FEATURE_SEC_LLM_CACHE", True)
+    # Cache TTL in hours (default: 72 hours)
+    sec_llm_cache_ttl_hours: int = int(os.getenv("SEC_LLM_CACHE_TTL_HOURS", "72") or "72")
+
+    # Agent 3: Batch Classification (group 5-10 items per API call)
+    # Enable batching of LLM classification requests to reduce overhead
+    feature_llm_batch: bool = _b("FEATURE_LLM_BATCH", True)
+    # Number of items to batch together
+    llm_batch_size: int = int(os.getenv("LLM_BATCH_SIZE", "5") or "5")
+    # Maximum wait time for batch to fill (seconds)
+    llm_batch_timeout: float = float(os.getenv("LLM_BATCH_TIMEOUT", "2.0") or "2.0")
+
+    # Agent 4: Cost Monitoring Alerts (multi-tier safety thresholds)
+    # Warn/crit/emergency thresholds automatically disable expensive models
+    llm_cost_alert_warn: float = float(os.getenv("LLM_COST_ALERT_WARN", "5.0") or "5.0")
+    llm_cost_alert_crit: float = float(os.getenv("LLM_COST_ALERT_CRIT", "10.0") or "10.0")
+    llm_cost_alert_emergency: float = float(
+        os.getenv("LLM_COST_ALERT_EMERGENCY", "20.0") or "20.0"
     )
 
     # Paths (tests expect Path fields)

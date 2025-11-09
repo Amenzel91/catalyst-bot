@@ -1,12 +1,14 @@
 """
-Hybrid LLM router: Local Mistral → Gemini Flash → Anthropic Claude
+Hybrid LLM router: Local Mistral → Gemini Flash/Pro → Anthropic Claude
 
 This module provides a three-tier fallback architecture for LLM queries with
 automatic routing based on availability, performance, and quota limits.
 
 Routing Logic:
 1. Local Mistral (70%): Fast, free, handles short articles
-2. Gemini Flash (25%): Medium complexity, free tier covers typical volume
+2. Gemini Flash/Pro (25%): Tiered based on complexity (Wave 3B)
+   - Flash: Simple filings, fast, cheap ($0.075/1M tokens input)
+   - Pro: Complex filings (M&A, earnings), deep analysis ($1.25/1M tokens)
 3. Anthropic Claude (5%): Highest accuracy fallback, paid
 
 Environment Variables:
@@ -14,6 +16,9 @@ Environment Variables:
 * ``LLM_LOCAL_MAX_LENGTH`` – Max article length for local (default: 1000)
 * ``GEMINI_API_KEY`` – Gemini API key (free tier: 1500 req/day)
 * ``ANTHROPIC_API_KEY`` – Anthropic Claude key (paid fallback)
+* ``LLM_TIER_STRATEGY`` – Tiering strategy: auto, flash, pro, adaptive (default: auto)
+* ``LLM_COMPLEXITY_THRESHOLD`` – Pro threshold for auto mode (default: 0.7)
+* ``LLM_COST_TRACKING`` – Enable cost logging (default: true)
 
 CRITICAL FIX: Added rate limit tracking with exponential backoff to prevent
 API quota exhaustion and rate limit errors.
@@ -48,6 +53,315 @@ except ImportError:
     genai = None
 
 _logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Gemini Model Costs (Wave 3B - Cost Tracking)
+# ============================================================================
+
+GEMINI_COSTS = {
+    "gemini-1.5-flash-002": {
+        "input": 0.075 / 1_000_000,  # $0.075 per 1M tokens
+        "output": 0.30 / 1_000_000,  # $0.30 per 1M tokens
+    },
+    "gemini-2.5-flash": {
+        "input": 0.075 / 1_000_000,
+        "output": 0.30 / 1_000_000,
+    },
+    "gemini-2.0-flash-lite": {
+        "input": 0.02 / 1_000_000,  # $0.02 per 1M tokens (73% cheaper than Flash)
+        "output": 0.10 / 1_000_000,  # $0.10 per 1M tokens (67% cheaper than Flash)
+    },
+    "gemini-1.5-pro-002": {
+        "input": 1.25 / 1_000_000,  # $1.25 per 1M tokens
+        "output": 5.00 / 1_000_000,  # $5.00 per 1M tokens
+    },
+    "gemini-2.5-pro": {
+        "input": 1.25 / 1_000_000,
+        "output": 5.00 / 1_000_000,
+    },
+}
+
+
+# ============================================================================
+# SEC Filing Complexity Scoring (Wave 3B)
+# ============================================================================
+
+
+def is_simple_operation(
+    operation: str,
+    text_length: int = 0,
+    complexity_threshold: float = 0.3,
+) -> bool:
+    """
+    Determine if an operation is simple enough for Flash-Lite model.
+
+    Flash-Lite is suitable for:
+    - Short text analysis (<500 chars)
+    - Simple classification tasks
+    - Keyword extraction from brief content
+    - Quick sentiment analysis
+
+    Parameters
+    ----------
+    operation : str
+        Type of operation (e.g., 'sentiment', 'classification', 'sec_analysis')
+    text_length : int
+        Length of text to analyze in characters
+    complexity_threshold : float
+        Complexity score threshold (0.0-1.0), operations below this use Flash-Lite
+
+    Returns
+    -------
+    bool
+        True if operation is simple enough for Flash-Lite
+
+    Examples
+    --------
+    >>> is_simple_operation('sentiment', text_length=200)
+    True
+    >>> is_simple_operation('sec_analysis', text_length=5000)
+    False
+    """
+    # Short text is always simple
+    if text_length < 500:
+        return True
+
+    # Medium text (500-2000 chars) depends on operation type
+    if text_length < 2000:
+        simple_operations = {
+            'sentiment',
+            'classification',
+            'keyword_extraction',
+            'duplicate_check',
+        }
+        return operation.lower() in simple_operations
+
+    # Long text (>2000 chars) requires Flash/Pro
+    return False
+
+
+def calculate_filing_complexity(
+    filing_section=None,
+    numeric_metrics=None,
+    guidance_analysis=None,
+    filing_text: str = "",
+) -> float:
+    """
+    Calculate SEC filing complexity score (0.0-1.0).
+
+    Determines whether to use Gemini Flash (simple) or Pro (complex) based on:
+    - Filing type and item code (8-K Item 1.01 M&A = complex)
+    - Text length (>5000 chars = complex)
+    - Numeric density (>10 metrics = complex)
+    - Forward guidance presence (raises/lowers = complex)
+
+    Parameters
+    ----------
+    filing_section : FilingSection, optional
+        Parsed SEC filing section from sec_parser.py
+    numeric_metrics : NumericMetrics, optional
+        Extracted numeric data from numeric_extractor.py
+    guidance_analysis : GuidanceAnalysis, optional
+        Forward guidance from guidance_extractor.py
+    filing_text : str
+        Raw filing text (fallback if filing_section unavailable)
+
+    Returns
+    -------
+    float
+        Complexity score: 0.0-0.3 (simple), 0.3-0.7 (medium), 0.7-1.0 (complex)
+
+    Examples
+    --------
+    >>> from sec_parser import FilingSection
+    >>> filing = FilingSection(item_code="1.01", filing_type="8-K", text="M&A announcement...")
+    >>> complexity = calculate_filing_complexity(filing_section=filing)
+    >>> complexity >= 0.7  # M&A is complex
+    True
+    """
+    score = 0.0
+
+    # Factor 1: Filing type impact (0.0-0.3)
+    if filing_section:
+        high_impact_items = ["1.01", "1.03", "2.02"]  # M&A, bankruptcy, earnings
+        if filing_section.item_code in high_impact_items:
+            score += 0.3
+        elif filing_section.filing_type in ("10-Q", "10-K"):
+            score += 0.25
+
+    # Factor 2: Text length (0.0-0.2)
+    text = filing_section.text if filing_section else filing_text
+    if len(text) > 10000:
+        score += 0.2
+    elif len(text) > 5000:
+        score += 0.15
+    elif len(text) > 2000:
+        score += 0.1
+
+    # Factor 3: Numeric density (0.0-0.2)
+    if numeric_metrics:
+        total_metrics = (
+            len(numeric_metrics.revenue)
+            + len(numeric_metrics.eps)
+            + len(numeric_metrics.margins)
+            + len(numeric_metrics.guidance_ranges)
+        )
+        if total_metrics > 15:
+            score += 0.2
+        elif total_metrics > 10:
+            score += 0.15
+        elif total_metrics > 5:
+            score += 0.1
+
+    # Factor 4: Forward guidance presence (0.0-0.3)
+    if guidance_analysis and guidance_analysis.has_guidance:
+        # Raised/lowered guidance is more complex than maintained
+        if any(
+            g.change_direction in ("raised", "lowered")
+            for g in guidance_analysis.guidance_items
+        ):
+            score += 0.3
+        elif guidance_analysis.overall_direction == "mixed":
+            score += 0.25
+        else:
+            score += 0.15
+
+    return min(1.0, score)
+
+
+def select_model_tier(
+    complexity: float,
+    strategy: Optional[str] = None,
+    confidence_threshold: float = 0.6,
+    text_length: int = 0,
+    operation: str = "",
+) -> str:
+    """
+    Select Gemini model based on filing complexity and strategy.
+
+    Now includes Flash-Lite routing for simple operations (Agent 1).
+
+    Parameters
+    ----------
+    complexity : float
+        Complexity score from calculate_filing_complexity (0.0-1.0)
+    strategy : str, optional
+        Tiering strategy: "auto", "flash", "flash-lite", "pro", "adaptive"
+        Defaults to LLM_TIER_STRATEGY env var or "auto"
+    confidence_threshold : float
+        For adaptive strategy: upgrade to Pro if confidence < threshold
+    text_length : int
+        Length of text being analyzed (for flash-lite routing)
+    operation : str
+        Operation type (for flash-lite routing)
+
+    Returns
+    -------
+    str
+        Model name: "gemini-2.0-flash-lite", "gemini-2.5-flash", or "gemini-2.5-pro"
+
+    Examples
+    --------
+    >>> select_model_tier(0.1, strategy="auto", text_length=200, operation="sentiment")
+    'gemini-2.0-flash-lite'
+    >>> select_model_tier(0.3, strategy="auto")  # Simple filing
+    'gemini-2.5-flash'
+    >>> select_model_tier(0.8, strategy="auto")  # Complex M&A
+    'gemini-2.5-pro'
+    >>> select_model_tier(0.5, strategy="flash-lite")  # Force Flash-Lite
+    'gemini-2.0-flash-lite'
+    """
+    if strategy is None:
+        strategy = os.getenv("LLM_TIER_STRATEGY", "auto").lower()
+
+    complexity_threshold = float(os.getenv("LLM_COMPLEXITY_THRESHOLD", "0.7"))
+    flash_lite_enabled = os.getenv("FEATURE_FLASH_LITE", "1") in ("1", "true", "yes", "on")
+    flash_lite_threshold = float(os.getenv("LLM_FLASH_LITE_THRESHOLD", "0.3"))
+
+    # Strategy overrides
+    if strategy == "flash-lite":
+        return "gemini-2.0-flash-lite"
+    elif strategy == "flash":
+        return "gemini-2.5-flash"
+    elif strategy == "pro":
+        return "gemini-2.5-pro"
+    elif strategy == "auto":
+        # Agent 1: Flash-Lite routing for simple operations
+        if flash_lite_enabled and complexity < flash_lite_threshold:
+            # Check if operation is simple enough for Flash-Lite
+            if is_simple_operation(operation, text_length, flash_lite_threshold):
+                return "gemini-2.0-flash-lite"
+
+        # Standard Flash/Pro routing
+        if complexity >= complexity_threshold:
+            return "gemini-2.5-pro"
+        else:
+            return "gemini-2.5-flash"
+    elif strategy == "adaptive":
+        # Start with Flash-Lite for simple ops, Flash otherwise
+        if flash_lite_enabled and is_simple_operation(operation, text_length, flash_lite_threshold):
+            return "gemini-2.0-flash-lite"
+        return "gemini-2.5-flash"
+    else:
+        _logger.warning(f"Unknown tier strategy: {strategy}, defaulting to auto")
+        return select_model_tier(complexity, strategy="auto", text_length=text_length, operation=operation)
+
+
+def log_llm_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    operation: str = "sec_analysis",
+) -> float:
+    """
+    Calculate and log LLM cost for a request.
+
+    Parameters
+    ----------
+    model : str
+        Model name (e.g., "gemini-2.5-flash", "gemini-2.5-pro")
+    input_tokens : int
+        Number of input tokens
+    output_tokens : int
+        Number of output tokens
+    operation : str
+        Operation type for logging context
+
+    Returns
+    -------
+    float
+        Total cost in USD
+
+    Examples
+    --------
+    >>> cost = log_llm_cost("gemini-2.5-flash", 1000, 200)
+    >>> cost
+    0.000135  # (1000 * 0.075 + 200 * 0.30) / 1M
+    """
+    if model not in GEMINI_COSTS:
+        _logger.warning(f"Unknown model for cost tracking: {model}")
+        return 0.0
+
+    costs = GEMINI_COSTS[model]
+    input_cost = input_tokens * costs["input"]
+    output_cost = output_tokens * costs["output"]
+    total_cost = input_cost + output_cost
+
+    cost_tracking_enabled = os.getenv("LLM_COST_TRACKING", "true").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    if cost_tracking_enabled:
+        _logger.info(
+            f"llm_cost model={model} operation={operation} "
+            f"tokens_in={input_tokens} tokens_out={output_tokens} "
+            f"cost_usd=${total_cost:.6f}"
+        )
+
+    return total_cost
 
 
 # Rate limit tracking for Gemini and Claude
@@ -245,6 +559,12 @@ class HybridLLMRouter:
             requests_per_hour=1500,
             backoff_threshold=0.8,
         )
+        # Agent 1: Flash-Lite has higher rate limits (500 RPM)
+        self.flash_lite_rate_limiter = RateLimitTracker(
+            requests_per_minute=500,
+            requests_per_hour=10000,
+            backoff_threshold=0.9,  # Higher threshold for generous limits
+        )
         # Claude paid tier: 50 RPM typical, adjust based on your tier
         self.claude_rate_limiter = RateLimitTracker(
             requests_per_minute=50,
@@ -282,6 +602,7 @@ class HybridLLMRouter:
         prompt: str,
         article_length: Optional[int] = None,
         priority: str = "normal",
+        model_override: Optional[str] = None,
     ) -> Optional[str]:
         """
         Route request through fallback chain.
@@ -290,6 +611,7 @@ class HybridLLMRouter:
             prompt: User prompt
             article_length: Length of article in chars (for routing decisions)
             priority: "high", "normal", "low" - affects retry behavior
+            model_override: Optional model override (e.g., "gemini-2.5-pro" for complex filings)
 
         Returns:
             LLM response or None if all providers failed
@@ -323,46 +645,63 @@ class HybridLLMRouter:
                 _logger.warning("llm_local_failed err=%s", str(e))
                 self.local_healthy = False
 
-        # Decision 2: Try Gemini Flash (medium complexity, free)
+        # Decision 2: Try Gemini Flash/Flash-Lite (medium/low complexity, free)
         if self.config.gemini_enabled and self.gemini_quota_remaining > 100:
+            # Agent 1: Determine model (Flash-Lite vs Flash vs override)
+            if model_override:
+                model = model_override
+                rate_limiter = self.flash_lite_rate_limiter if "lite" in model else self.gemini_rate_limiter
+            else:
+                # Auto-select based on complexity and text length
+                flash_lite_enabled = os.getenv("FEATURE_FLASH_LITE", "1") in ("1", "true", "yes", "on")
+                if flash_lite_enabled and is_simple_operation("llm_query", len(prompt), 0.3):
+                    model = "gemini-2.0-flash-lite"
+                    rate_limiter = self.flash_lite_rate_limiter
+                else:
+                    model = "gemini-2.5-flash"
+                    rate_limiter = self.gemini_rate_limiter
+
             # CRITICAL FIX: Check rate limits before calling Gemini
-            should_wait, wait_time = self.gemini_rate_limiter.should_backoff()
+            should_wait, wait_time = rate_limiter.should_backoff()
             if should_wait:
                 _logger.info(
-                    "llm_gemini_rate_limit_backoff wait_sec=%.2f stats=%s",
+                    "llm_gemini_rate_limit_backoff model=%s wait_sec=%.2f stats=%s",
+                    model,
                     wait_time,
-                    self.gemini_rate_limiter.get_stats(),
+                    rate_limiter.get_stats(),
                 )
                 # Wait if backoff time is reasonable (<5s)
                 if wait_time < 5.0:
                     await asyncio.sleep(wait_time)
                 else:
                     # Skip Gemini and try Claude instead
-                    _logger.warning("llm_gemini_skipped reason=rate_limit_backoff_too_long wait_sec=%.2f", wait_time)
+                    _logger.warning("llm_gemini_skipped reason=rate_limit_backoff_too_long model=%s wait_sec=%.2f", model, wait_time)
                     pass  # Fall through to Claude
 
             if not should_wait or wait_time < 5.0:
                 try:
-                    self.gemini_rate_limiter.record_request()
-                    result = await self._call_gemini(prompt)
+                    rate_limiter.record_request()
+                    result = await self._call_gemini(prompt, model=model)
                     if result:
-                        self.gemini_rate_limiter.record_success()
+                        rate_limiter.record_success()
                         self.gemini_quota_remaining -= 1
                         _logger.debug(
-                            "llm_route provider=gemini success=True quota=%d rate_stats=%s",
+                            "llm_route provider=gemini model=%s success=True quota=%d rate_stats=%s",
+                            model,
                             self.gemini_quota_remaining,
-                            self.gemini_rate_limiter.get_stats(),
+                            rate_limiter.get_stats(),
                         )
                         return result
                     else:
-                        self.gemini_rate_limiter.record_failure(is_rate_limit=False)
+                        rate_limiter.record_failure(is_rate_limit=False)
                 except Exception as e:
                     # Check if it's a rate limit error (429 or quota exceeded)
                     error_msg = str(e).lower()
                     is_rate_limit = "429" in error_msg or "rate limit" in error_msg or "quota" in error_msg
-                    self.gemini_rate_limiter.record_failure(is_rate_limit=is_rate_limit)
+                    rate_limiter.record_failure(is_rate_limit=is_rate_limit)
                     _logger.warning(
-                        "llm_gemini_failed err=%s is_rate_limit=%s",
+                        "llm_gemini_failed model=%s err=%s is_rate_limit=%s",
+                        model,
                         str(e),
                         is_rate_limit,
                     )
@@ -413,17 +752,18 @@ class HybridLLMRouter:
         )
         return None
 
-    async def _call_gemini(self, prompt: str) -> Optional[str]:
+    async def _call_gemini(self, prompt: str, model: str = "gemini-2.5-flash") -> Optional[str]:
         """
-        Call Gemini Flash API with usage monitoring.
+        Call Gemini API with usage monitoring and cost tracking.
 
         Args:
             prompt: User prompt
+            model: Gemini model to use ("gemini-2.5-flash" or "gemini-2.5-pro")
 
         Returns:
             Response text or None on failure
         """
-        if not self.gemini_client:
+        if not GEMINI_AVAILABLE:
             return None
 
         # Import usage monitor
@@ -438,20 +778,28 @@ class HybridLLMRouter:
         input_tokens = estimate_tokens(prompt) if monitor else 0
 
         try:
+            # Create model-specific client dynamically for tiering support
+            gemini_model = genai.GenerativeModel(model)
+
             # Gemini API is synchronous, run in thread pool
             response = await asyncio.to_thread(
-                self.gemini_client.generate_content, prompt
+                gemini_model.generate_content, prompt
             )
 
             if response and hasattr(response, "text"):
                 result_text = response.text.strip()
 
+                # Estimate output tokens
+                output_tokens = estimate_tokens(result_text) if monitor else 0
+
+                # Log cost (Wave 3B)
+                log_llm_cost(model, input_tokens, output_tokens, operation="sec_analysis")
+
                 # Log usage if monitor available
                 if monitor:
-                    output_tokens = estimate_tokens(result_text)
                     monitor.log_usage(
                         provider="gemini",
-                        model="gemini-2.5-flash",
+                        model=model,
                         operation="llm_query",
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
@@ -465,7 +813,7 @@ class HybridLLMRouter:
             if monitor:
                 monitor.log_usage(
                     provider="gemini",
-                    model="gemini-2.5-flash",
+                    model=model,
                     operation="llm_query",
                     input_tokens=input_tokens,
                     output_tokens=0,
@@ -479,14 +827,14 @@ class HybridLLMRouter:
             if monitor:
                 monitor.log_usage(
                     provider="gemini",
-                    model="gemini-2.5-flash",
+                    model=model,
                     operation="llm_query",
                     input_tokens=input_tokens,
                     output_tokens=0,
                     success=False,
                     error=str(e),
                 )
-            _logger.warning("gemini_api_error err=%s", str(e))
+            _logger.warning("gemini_api_error model=%s err=%s", model, str(e))
             return None
 
     async def _call_anthropic(self, prompt: str) -> Optional[str]:
@@ -579,17 +927,21 @@ _router: Optional[HybridLLMRouter] = None
 
 
 async def query_hybrid_llm(
-    prompt: str, article_length: Optional[int] = None, priority: str = "normal"
+    prompt: str,
+    article_length: Optional[int] = None,
+    priority: str = "normal",
+    model_override: Optional[str] = None,
 ) -> Optional[str]:
     """
     Main entry point for hybrid LLM routing.
 
-    Automatically routes through: Local → Gemini → Anthropic
+    Automatically routes through: Local → Gemini (Flash/Pro) → Anthropic
 
     Args:
         prompt: User prompt
         article_length: Optional article length for routing decisions
         priority: "high", "normal", "low" - affects retry behavior
+        model_override: Optional Gemini model override (e.g., "gemini-2.5-pro")
 
     Returns:
         LLM response or None if all providers failed
@@ -598,6 +950,9 @@ async def query_hybrid_llm(
         >>> result = await query_hybrid_llm("Analyze this headline: Apple announces record earnings")  # noqa: E501
         >>> if result:
         ...     print(f"LLM response: {result}")
+
+        >>> # Use Pro model for complex SEC filing
+        >>> result = await query_hybrid_llm(prompt, model_override="gemini-2.5-pro")
     """
     global _router
 
@@ -610,7 +965,7 @@ async def query_hybrid_llm(
             _router.config.anthropic_enabled,
         )
 
-    return await _router.route_request(prompt, article_length, priority)
+    return await _router.route_request(prompt, article_length, priority, model_override)
 
 
 def get_router() -> Optional[HybridLLMRouter]:

@@ -1,0 +1,68 @@
+{
+  "core_results": {
+    "catalyst_bot.config": "PASS",
+    "catalyst_bot.runner": "PASS",
+    "catalyst_bot.classify": "PASS",
+    "catalyst_bot.alerts": "PASS",
+    "catalyst_bot.charts_advanced": "PASS",
+    "catalyst_bot.feeds": "PASS",
+    "catalyst_bot.float_data": "PASS",
+    "catalyst_bot.ticker_validation": "PASS",
+    "catalyst_bot.dedupe": "PASS"
+  },
+  "wave_results": {
+    "catalyst_bot.catalyst_badges": "PASS",
+    "catalyst_bot.multi_ticker_handler": "PASS",
+    "catalyst_bot.offering_sentiment": "PASS",
+    "catalyst_bot.sentiment_gauge": "PASS",
+    "catalyst_bot.discord_interactions": "PASS",
+    "catalyst_bot.llm_hybrid": "PASS",
+    "catalyst_bot.moa_historical_analyzer": "PASS",
+    "catalyst_bot.sentiment_tracking": "PASS",
+    "catalyst_bot.trade_plan": "PASS"
+  },
+  "import_times": {
+    "catalyst_bot.config": 0.03483271598815918,
+    "catalyst_bot.runner": 7.607850074768066,
+    "catalyst_bot.classify": 1.1920928955078125e-06,
+    "catalyst_bot.alerts": 1.1920928955078125e-06,
+    "catalyst_bot.charts_advanced": 1.430511474609375e-06,
+    "catalyst_bot.feeds": 1.1920928955078125e-06,
+    "catalyst_bot.float_data": 0.0004420280456542969,
+    "catalyst_bot.ticker_validation": 1.430511474609375e-06,
+    "catalyst_bot.dedupe": 0.0010714530944824219,
+    "catalyst_bot.catalyst_badges": 1.430511474609375e-06,
+    "catalyst_bot.multi_ticker_handler": 1.1920928955078125e-06,
+    "catalyst_bot.offering_sentiment": 0.0003676414489746094,
+    "catalyst_bot.sentiment_gauge": 1.9073486328125e-06,
+    "catalyst_bot.discord_interactions": 7.152557373046875e-07,
+    "catalyst_bot.llm_hybrid": 1.179990291595459,
+    "catalyst_bot.moa_historical_analyzer": 0.0008273124694824219,
+    "catalyst_bot.sentiment_tracking": 0.0013496875762939453,
+    "catalyst_bot.trade_plan": 1.430511474609375e-06
+  },
+  "missing_packages": [
+    "discord",
+    "pandas_ta",
+    "openai"
+  ],
+  "circular_issues": [],
+  "slow_imports": [
+    [
+      "catalyst_bot.runner",
+      7.607850074768066
+    ],
+    [
+      "catalyst_bot.llm_hybrid",
+      1.179990291595459
+    ]
+  ],
+  "metrics": {
+    "total_modules": 18,
+    "total_passed": 18,
+    "core_passed": 9,
+    "wave_passed": 9,
+    "health_score": 85,
+    "deployment_blocker": false
+  }
+}

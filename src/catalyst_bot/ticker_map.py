@@ -106,8 +106,10 @@ def load_cik_to_ticker(db_path: str | None = None) -> Dict[str, str]:
     returned by ``_db_path()``; the path must be a file location for a
     SQLite database.
     """
+    from .storage import init_optimized_connection
+
     p = Path(db_path) if db_path else _db_path()
-    conn = sqlite3.connect(str(p))
+    conn = init_optimized_connection(str(p))
     try:
         _bootstrap_if_needed(conn)
         rows = conn.execute("SELECT cik, ticker FROM tickers").fetchall()

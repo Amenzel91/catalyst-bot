@@ -61,7 +61,6 @@ def _download_export(
         resp = requests.get(
             EXPORT_URL,
             params=params,
-            timeout=15,
             headers={
                 "Cookie": cookie,
                 "User-Agent": USER_AGENT,
