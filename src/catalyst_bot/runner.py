@@ -1306,7 +1306,24 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             # Fallback to empty results to prevent cycle crash
             sec_llm_cache = {}
 
-    for it in deduped:
+    # Sort by timestamp descending (newest first) to prioritize breaking news
+    def get_timestamp(item):
+        """Extract timestamp for sorting, defaulting to epoch for items without ts."""
+        ts_str = item.get("ts")
+        if not ts_str:
+            return "1970-01-01T00:00:00+00:00"  # Epoch - old items go to end
+        return ts_str
+
+    sorted_items = sorted(deduped, key=get_timestamp, reverse=True)
+
+    log.info(
+        "articles_sorted_by_timestamp total=%d newest=%s oldest=%s",
+        len(sorted_items),
+        sorted_items[0].get("ts", "unknown") if sorted_items else "none",
+        sorted_items[-1].get("ts", "unknown") if sorted_items else "none"
+    )
+
+    for it in sorted_items:  # Changed from 'deduped' to 'sorted_items'
         ticker = (it.get("ticker") or "").strip()
         source = it.get("source") or "unknown"
 
@@ -1869,6 +1886,140 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             log.debug("skip_instrument_like_ticker source=%s ticker=%s", source, ticker)
             continue
 
+        # ========================================================================
+        # EARLY PRICE FILTERING - Check price BEFORE expensive ML sentiment analysis
+        # This prevents wasting 5+ minutes processing 625 earnings items that will
+        # be filtered out anyway. Price check must happen before fast_classify().
+        # ========================================================================
+        last_px = None
+        last_chg = None
+
+        # Use batch-fetched price cache when available
+        if ticker in price_cache:
+            last_px, last_chg = price_cache[ticker]
+        else:
+            # Fallback to individual lookup (only if price gates set)
+            if price_ceiling is not None or price_floor is not None:
+                try:
+                    last_px, last_chg = market.get_last_price_change(ticker)
+                except Exception as price_err:
+                    log.debug(
+                        "early_price_fetch_failed ticker=%s source=%s err=%s",
+                        ticker,
+                        source,
+                        str(price_err),
+                    )
+                    # If ceiling or floor is set and price lookup failed, skip (can't enforce)
+                    skipped_price_gate += 1
+                    continue
+
+        # Enforce price ceiling EARLY (before ML inference)
+        if price_ceiling is not None:
+            if last_px is None:
+                log.debug(
+                    "early_price_skip_no_data ticker=%s source=%s",
+                    ticker,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+            # Check for NaN/Inf
+            import math
+            if math.isnan(last_px) or not math.isfinite(last_px):
+                log.debug(
+                    "early_price_skip_invalid ticker=%s price=%s source=%s",
+                    ticker,
+                    last_px,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+            if float(last_px) > float(price_ceiling):
+                log.debug(
+                    "early_price_skip_ceiling ticker=%s price=%.2f ceiling=%.2f source=%s",
+                    ticker,
+                    last_px,
+                    price_ceiling,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+        # Enforce price floor EARLY (before ML inference)
+        if price_floor is not None:
+            if last_px is None:
+                log.debug(
+                    "early_price_skip_no_data_floor ticker=%s source=%s",
+                    ticker,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+            import math
+            if math.isnan(last_px) or not math.isfinite(last_px):
+                log.debug(
+                    "early_price_skip_invalid_floor ticker=%s price=%s source=%s",
+                    ticker,
+                    last_px,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+            if float(last_px) < float(price_floor):
+                log.debug(
+                    "early_price_skip_floor ticker=%s price=%.2f floor=%.2f source=%s",
+                    ticker,
+                    last_px,
+                    price_floor,
+                    source,
+                )
+                skipped_price_gate += 1
+                continue
+
+        # ========================================================================
+        # END EARLY PRICE FILTERING
+        # ========================================================================
+
+        # ========================================================================
+        # EARLY CATEGORY FILTERING - Filter earnings BEFORE expensive ML sentiment
+        # This is the CRITICAL fix: earnings calendars waste 5+ minutes on ML inference
+        # even though they're all filtered by category gate later. Check category early!
+        # ========================================================================
+
+        # DEBUG: Log first few items to see actual values
+        if it.get("source") and "Finnhub" in str(it.get("source")):
+            log.info(
+                "DIAGNOSTIC source=%s category=%s event_type=%s ticker=%s",
+                it.get("source"),
+                it.get("category"),
+                it.get("event_type"),
+                ticker,
+            )
+
+        is_earnings = (
+            source == "Finnhub Earnings" or
+            it.get("category") == "earnings" or
+            it.get("event_type") == "earnings"
+        )
+
+        if is_earnings:
+            log.info(
+                "early_category_skip_earnings ticker=%s source=%s category=%s event_type=%s",
+                ticker,
+                source,
+                it.get("category", "unknown"),
+                it.get("event_type", "unknown"),
+            )
+            skipped_cat_gate += 1
+            continue
+        # ========================================================================
+        # END EARLY CATEGORY FILTERING
+        # ========================================================================
+
         # WAVE 3: Fast classify (keywords, sentiment, ML) - NO market enrichment
         # Market data (RVOL, float, VWAP, divergence) deferred until after filtering
         try:
@@ -1949,125 +2100,10 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     len(merged_keywords),
                 )
 
-        # Optional price gating
-        last_px = None
-        last_chg = None
-
-        # PERFORMANCE: Use batch-fetched price cache when available
-        if ticker in price_cache:
-            last_px, last_chg = price_cache[ticker]
-            log.debug(
-                "price_from_cache ticker=%s price=%s source=%s",
-                ticker,
-                last_px,
-                source,
-            )
-        else:
-            # Fallback to individual lookup (only if price gates not set or cache failed)
-            try:
-                last_px, last_chg = market.get_last_price_change(ticker)
-                log.debug(
-                    "price_fetched ticker=%s price=%s source=%s",
-                    ticker,
-                    last_px,
-                    source,
-                )
-            except Exception as price_err:
-                log.warning(
-                    "price_fetch_failed ticker=%s source=%s err=%s ceiling_set=%s",
-                    ticker,
-                    source,
-                    str(price_err),
-                    price_ceiling is not None,
-                )
-                # If ceiling or floor is set and price lookup failed, skip (can't enforce)
-                if price_ceiling is not None or price_floor is not None:
-                    skipped_price_gate += 1
-                    continue
-
-        # Enforce price ceiling if active
-        if price_ceiling is not None:
-            # FIX: If ceiling is set, we require valid price data
-            # Skip items with no price data (None) or invalid prices (NaN/Inf)
-            if last_px is None:
-                log.warning(
-                    "no_price_data ticker=%s skipping_due_to_ceiling_requirement",
-                    ticker
-                )
-                skipped_price_gate += 1
-                continue
-
-            # FIX: Check for NaN - pandas/yfinance can return NaN which passes "is not None"
-            # NaN comparisons always return False, so NaN > 10 = False (bypasses ceiling)
-            import math
-            if math.isnan(last_px) or not math.isfinite(last_px):
-                # Invalid price (NaN/Inf) - skip item if ceiling is set
-                log.warning(
-                    "invalid_price_detected ticker=%s price=%s skipping_due_to_ceiling",
-                    ticker,
-                    last_px
-                )
-                skipped_price_gate += 1
-                continue
-
-            if float(last_px) > float(price_ceiling):
-                skipped_price_gate += 1
-                # MOA Phase 1: Log rejected item for analysis
-                try:
-                    log_rejected_item(
-                        item=it,
-                        rejection_reason="HIGH_PRICE",
-                        price=last_px,
-                        score=_score_of(scored),
-                        sentiment=_sentiment_of(scored),
-                        keywords=_keywords_of(scored),
-                        scored=scored,
-                    )
-                except Exception:
-                    pass  # Don't crash on logging failures
-                continue
-
-        # Enforce price floor if active
-        if price_floor is not None:
-            # FIX: If floor is set, we require valid price data (same as ceiling logic)
-            if last_px is None:
-                # Already logged by ceiling check if both are set, only log if floor only
-                if price_ceiling is None:
-                    log.warning(
-                        "no_price_data ticker=%s skipping_due_to_floor_requirement",
-                        ticker
-                    )
-                skipped_price_gate += 1
-                continue
-
-            # FIX: Check for NaN (same as ceiling check above)
-            if math.isnan(last_px) or not math.isfinite(last_px):
-                # Already logged by ceiling check if both are set
-                if price_ceiling is None:
-                    log.warning(
-                        "invalid_price_detected ticker=%s price=%s skipping_due_to_floor",
-                        ticker,
-                        last_px
-                    )
-                skipped_price_gate += 1
-                continue
-
-            if float(last_px) < float(price_floor):
-                skipped_price_gate += 1
-                # MOA Phase 1: Log rejected item for analysis
-                try:
-                    log_rejected_item(
-                        item=it,
-                        rejection_reason="LOW_PRICE",
-                        price=last_px,
-                        score=_score_of(scored),
-                        sentiment=_sentiment_of(scored),
-                        keywords=_keywords_of(scored),
-                        scored=scored,
-                    )
-                except Exception:
-                    pass  # Don't crash on logging failures
-                continue
+        # NOTE: Price gating moved EARLY (before fast_classify) to avoid wasting
+        # 5+ minutes on ML inference for items that will be filtered by price.
+        # See "EARLY PRICE FILTERING" section above (lines ~1889-1985).
+        # last_px and last_chg are already set from early check.
 
         # -------- Classifier gating (score / sentiment / category) ----------
         scr = _score_of(scored)
@@ -2580,11 +2616,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         except Exception as e:
             log.warning("weekly_report_check_failed err=%s", str(e))
 
-        # Check if it's time to run MOA nightly analysis
-        try:
-            _run_moa_nightly_if_scheduled(log, get_settings())
-        except Exception as e:
-            log.warning("moa_nightly_check_failed err=%s", str(e))
+        # NOTE: MOA nightly check moved to main loop (before weekend skip logic)
+        # to ensure it runs even when scans are skipped on weekends
 
         # Track pending alert outcomes (15m, 1h, 4h, 1d)
         try:
@@ -3159,6 +3192,13 @@ def runner_main(
         reset_cycle_downgrade()
         if STOP:
             break
+
+        # Run MOA nightly check BEFORE weekend skip logic
+        # This allows MOA to run even on weekends when scans are skipped
+        try:
+            _run_moa_nightly_if_scheduled(log, get_settings())
+        except Exception as e:
+            log.warning("moa_nightly_check_failed err=%s", str(e))
 
         # Skip scanning during no-scan periods (configurable)
         if market_hours_enabled and current_market_info:

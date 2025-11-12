@@ -800,16 +800,22 @@ def extract_exchange(title: str) -> Optional[str]:
 # --------------------- Normalization & parsing -------------------------------
 
 
-def _to_utc_iso(dt_str: Optional[str]) -> str:
+def _to_utc_iso(dt_str: Optional[str]) -> Optional[str]:
+    """Convert timestamp to UTC ISO format, or None if invalid.
+
+    Returns None for missing or malformed timestamps instead of
+    defaulting to current time, allowing callers to handle appropriately.
+    """
     if not dt_str:
-        return datetime.now(timezone.utc).isoformat()
+        return None
     try:
         d = dtparse.parse(dt_str)
         if d.tzinfo is None:
             d = d.replace(tzinfo=timezone.utc)
         return d.astimezone(timezone.utc).isoformat()
     except Exception:
-        return datetime.now(timezone.utc).isoformat()
+        log.debug("timestamp_parse_failed dt_str=%s", dt_str)
+        return None
 
 
 def _stable_id(source: str, link: str, guid: Optional[str]) -> str:
@@ -902,6 +908,9 @@ def _normalize_entry(source: str, e) -> Optional[Dict]:
         or getattr(e, "pubDate", None)
     )
     ts_iso = _to_utc_iso(published)
+    # Fallback to current time for RSS feeds without valid timestamps
+    if not ts_iso:
+        ts_iso = datetime.now(timezone.utc).isoformat()
     guid = getattr(e, "id", None) or getattr(e, "guid", None)
 
     # Primary ticker extraction from title
@@ -968,7 +977,7 @@ def _hash_id(s: str) -> str:
         return hashlib.sha1(repr(s).encode("utf-8", "ignore")).hexdigest()
 
 
-def _parse_finviz_ts(ts: str) -> str:
+def _parse_finviz_ts(ts: str) -> Optional[str]:
     """Normalize Finviz timestamp strings to UTC ISO."""
     return _to_utc_iso(ts)
 
@@ -1119,7 +1128,7 @@ def fetch_pr_feeds() -> List[Dict]:
             if is_finnhub_enabled():
                 st = time.time()
                 finnhub_news = fetch_finnhub_news(max_items=30)
-                finnhub_earnings = fetch_finnhub_earnings_calendar(days_ahead=7)
+                finnhub_earnings = fetch_finnhub_earnings_calendar(days_ahead=1)
 
                 _seen_ids = {i.get("id") for i in all_items if i.get("id")}
                 _seen_links = {i.get("link") for i in all_items if i.get("link")}
@@ -2572,13 +2581,18 @@ def _fetch_finviz_news_from_env() -> list[dict]:
                 continue
             seen_links.add(_link_norm)
 
+            # Parse timestamp, fallback to current time if missing/invalid
+            parsed_ts = _parse_finviz_ts(ts) if ts else None
+            if not parsed_ts:
+                parsed_ts = datetime.now(timezone.utc).isoformat()
+
             item = {
                 "source": "finviz_news",
                 "title": title,
                 "summary": (low.get("summary") or "").strip(),
                 "link": link,
                 "id": _hash_id(f"finviz::{link}"),
-                "ts": _parse_finviz_ts(ts),
+                "ts": parsed_ts,
                 "ticker": _primary,
                 "tickers": _tkr_list,
             }
@@ -2747,13 +2761,17 @@ def _fetch_finviz_news_export(url: str) -> list[dict]:
         # Skip rows without a title or link
         if not title or not link:
             continue
+        # Parse timestamp, fallback to current time if missing/invalid
+        parsed_ts = _parse_finviz_ts(ts) if ts else None
+        if not parsed_ts:
+            parsed_ts = datetime.now(timezone.utc).isoformat()
         item = {
             "source": "finviz_export",
             "title": title,
             "summary": "",  # export feed has no summary
             "link": link,
             "id": _hash_id(f"finviz_export::{link}"),
-            "ts": _parse_finviz_ts(ts) if ts else None,
+            "ts": parsed_ts,
             "ticker": None,
             "tickers": [],
         }

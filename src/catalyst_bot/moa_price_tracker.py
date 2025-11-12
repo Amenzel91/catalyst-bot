@@ -531,17 +531,9 @@ def track_pending_outcomes() -> Dict[str, int]:
     Returns:
         Dict mapping timeframe -> count of outcomes recorded
     """
-    # Check market status - skip during closed market to reduce API calls
-    try:
-        market_status = get_market_status()
-        if market_status == "closed":
-            # Only check once per hour when market is closed
-            # Use a simple time-based check to avoid excessive API calls
-            current_minute = datetime.now(timezone.utc).minute
-            if current_minute % 60 != 0:  # Only run on the hour
-                return {}
-    except Exception:
-        pass  # If market hours check fails, proceed anyway
+    # NOTE: Market hours check removed to ensure 24/7 tracking
+    # This allows MOA to analyze fresh outcomes daily instead of stale October data
+    # Rate limiting per ticker (60s) already prevents excessive API calls
 
     update_counts = {}
 

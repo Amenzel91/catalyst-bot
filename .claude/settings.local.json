@@ -43,7 +43,10 @@
       "Bash(pip index:*)",
       "Bash(git -C \"C:\\Users\\menza\\OneDrive\\Desktop\\Catalyst-Bot\\catalyst-bot\" log --oneline -10)",
       "Bash(git -C \"C:\\Users\\menza\\OneDrive\\Desktop\\Catalyst-Bot\\catalyst-bot\" diff HEAD -- src/catalyst_bot/config.py)",
-      "Bash(.env)"
+      "Bash(.env)",
+      "Bash(Select-Object -First 25)",
+      "Bash(Select-String -Pattern \"DIAGNOSTIC|early_category_skip|cycle_metrics\")",
+      "Bash(Select-Object -First 50)"
     ],
     "deny": [],
     "ask": []
