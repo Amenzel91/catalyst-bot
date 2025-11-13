@@ -1057,21 +1057,62 @@ def update_keyword_stats_file(recommendations: List[Dict[str, Any]], min_confide
     This creates a closed-loop system where nightly analysis automatically
     updates keyword weights based on historical performance data.
 
+    When moa_review_enabled=True, creates a pending review in Discord instead
+    of auto-applying. Otherwise, uses legacy auto-apply behavior.
+
     Args:
         recommendations: List of keyword weight recommendations from calculate_weight_recommendations()
         min_confidence: Minimum confidence threshold to apply updates (default: 0.6)
 
     Returns:
-        Path to updated keyword_stats.json file
+        Path to updated keyword_stats.json file (or keyword_review.db if review enabled)
 
     Notes:
         - Only applies recommendations with confidence >= min_confidence (safety threshold)
         - Preserves existing weights for keywords not in recommendations
         - Uses correct schema format: {"weights": {...}, "last_updated": "...", "source": "..."}
     """
+    from .config import get_settings
+
+    settings = get_settings()
     root, _ = _ensure_moa_dirs()
     stats_path = root / "data" / "analyzer" / "keyword_stats.json"
 
+    # Feature flag: Use human review workflow if enabled
+    if getattr(settings, 'moa_review_enabled', False):
+        try:
+            from .keyword_review import create_pending_review
+            from .moa_discord_reviewer import post_review_request
+
+            # Create pending review with configured timeout
+            timeout_hours = getattr(settings, 'moa_review_timeout_hours', 48)
+            review_id = create_pending_review(
+                recommendations=recommendations,
+                min_confidence=min_confidence,
+                timeout_hours=timeout_hours
+            )
+
+            # Post to Discord admin channel
+            post_success = post_review_request(review_id, recommendations)
+
+            if post_success:
+                log.info(
+                    f"moa_review_created review_id={review_id} keywords={len(recommendations)} "
+                    f"timeout_hours={timeout_hours}"
+                )
+            else:
+                log.warning(
+                    f"moa_review_post_failed review_id={review_id} - review created but Discord post failed"
+                )
+
+            # Return path to review database
+            return root / "data" / "keyword_review.db"
+
+        except Exception as e:
+            log.error(f"moa_review_creation_failed err={e} - falling back to legacy auto-apply", exc_info=True)
+            # Fall through to legacy auto-apply on error
+
+    # Legacy auto-apply behavior (when moa_review_enabled=False or on error)
     # Load existing weights
     existing_weights = {}
     if stats_path.exists():

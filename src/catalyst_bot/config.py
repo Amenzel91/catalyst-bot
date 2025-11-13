@@ -972,6 +972,23 @@ class Settings:
     # Runs once per day during this hour. Example: MOA_NIGHTLY_HOUR=14 for 2 PM UTC.
     moa_nightly_hour: int = int(os.getenv("MOA_NIGHTLY_HOUR", "13") or "13")
 
+    # --- MOA Human-in-the-Loop Keyword Review System ---
+    # Enable human review for MOA keyword weight recommendations. When enabled,
+    # nightly MOA analysis creates a pending review in Discord admin channel
+    # instead of automatically applying weight changes. Admin can approve/reject
+    # keywords individually or in bulk. Reviews auto-apply after timeout if no
+    # action taken. When disabled, legacy auto-apply behavior is used.
+    # Set MOA_REVIEW_ENABLED=1 to enable. Defaults to OFF (legacy behavior).
+    moa_review_enabled: bool = _b("MOA_REVIEW_ENABLED", False)
+
+    # Hours before pending review auto-applies if admin doesn't respond.
+    # Defaults to 48 hours. Set MOA_REVIEW_TIMEOUT_HOURS to customize.
+    moa_review_timeout_hours: int = int(os.getenv("MOA_REVIEW_TIMEOUT_HOURS", "48") or "48")
+
+    # Discord channel ID for MOA review requests. If not set, uses
+    # DISCORD_ADMIN_CHANNEL_ID. Set MOA_REVIEW_CHANNEL_ID to override.
+    moa_review_channel_id: Optional[str] = os.getenv("MOA_REVIEW_CHANNEL_ID")
+
     # --- Market Regime Classification (VIX/SPY Analysis) ---
     # Enable market regime classification based on VIX and SPY trends.
     # When enabled, the bot will classify market conditions (BULL_MARKET,

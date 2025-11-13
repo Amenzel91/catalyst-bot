@@ -3200,6 +3200,18 @@ def runner_main(
         except Exception as e:
             log.warning("moa_nightly_check_failed err=%s", str(e))
 
+        # Check for expired MOA reviews and auto-apply after timeout
+        try:
+            settings = get_settings()
+            if getattr(settings, 'moa_review_enabled', False):
+                from .keyword_review import expire_old_reviews
+                timeout_hours = getattr(settings, 'moa_review_timeout_hours', 48)
+                expired_count = expire_old_reviews(timeout_hours=timeout_hours)
+                if expired_count > 0:
+                    log.info(f"moa_reviews_expired_and_applied count={expired_count}")
+        except Exception as e:
+            log.warning(f"moa_review_expiry_check_failed err={e}")
+
         # Skip scanning during no-scan periods (configurable)
         if market_hours_enabled and current_market_info:
             market_status = current_market_info["status"]

@@ -245,6 +245,11 @@ def handle_admin_interaction(interaction_data: Dict[str, Any]) -> Dict[str, Any]
 
         log.info(f"admin_interaction custom_id={custom_id}")
 
+        # Route MOA review interactions
+        if custom_id.startswith("moa_review_"):
+            from .moa_interaction_handler import handle_moa_review_interaction
+            return handle_moa_review_interaction(interaction_data)
+
         # Parse custom_id: admin_{action}_{report_id}
         if not custom_id.startswith("admin_"):
             return {
