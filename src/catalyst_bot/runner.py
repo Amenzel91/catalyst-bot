@@ -61,6 +61,7 @@ except ImportError as e:
     sys.exit(2)
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from . import alerts as _alerts  # used to post log digests as embeds
 from .admin_reporter import send_admin_report_if_scheduled  # Nightly admin reports
@@ -133,7 +134,71 @@ LAST_CYCLE_STATS: Dict[str, Any] = {}
 TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts": 0}
 
 # MOA Nightly Scheduler: Track last run date to prevent duplicate runs
+# This is persisted to data/moa/last_scheduled_run.json to survive restarts
 _MOA_LAST_RUN_DATE: date | None = None
+
+
+def _load_moa_last_run_date() -> date | None:
+    """
+    Load last MOA scheduled run date from persistent state file.
+
+    Returns:
+        Last run date, or None if never run or file doesn't exist
+
+    Note: Silently handles errors since this is called at module load time
+    """
+    state_path = Path("data/moa/last_scheduled_run.json")
+    if not state_path.exists():
+        return None
+
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+            last_run_str = state.get("last_scheduled_run_date")
+            if last_run_str:
+                return date.fromisoformat(last_run_str)
+    except (json.JSONDecodeError, ValueError, KeyError, OSError):
+        # Silently handle errors - logging not available at module load time
+        pass
+
+    return None
+
+
+def _save_moa_last_run_date(run_date: date) -> bool:
+    """
+    Save last MOA scheduled run date to persistent state file.
+
+    Parameters:
+        run_date: Date to save
+
+    Returns:
+        True if saved successfully
+    """
+    from .logging_utils import get_logger
+    log = get_logger("runner")
+
+    state_path = Path("data/moa/last_scheduled_run.json")
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        state = {
+            "last_scheduled_run_date": run_date.isoformat(),
+            "last_scheduled_run_timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+
+        log.info(f"moa_last_run_date_saved date={run_date.isoformat()}")
+        return True
+
+    except Exception as e:
+        log.error(f"save_moa_last_run_date_failed err={e}")
+        return False
+
+
+# Load persisted last run date on module import (survives restarts)
+_MOA_LAST_RUN_DATE = _load_moa_last_run_date()
 
 
 class HeartbeatAccumulator:
@@ -2798,6 +2863,10 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
     if _MOA_LAST_RUN_DATE == today:
         return
 
+    # Skip weekends (Saturday=5, Sunday=6) - no point analyzing weekend data
+    if now.weekday() >= 5:
+        return
+
     # ROBUST SCHEDULING LOGIC:
     # Strategy: Use a 3-hour window with multiple trigger conditions to ensure reliable execution
     #
@@ -2849,6 +2918,7 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
 
     # Mark as run for today (do this before starting thread to avoid duplicate triggers)
     _MOA_LAST_RUN_DATE = today
+    _save_moa_last_run_date(today)  # Persist to survive restarts
 
     log.info("moa_nightly_scheduled hour=%d minute=%d date=%s", moa_hour, moa_minute, today.isoformat())
 

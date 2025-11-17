@@ -137,10 +137,14 @@ def create_pending_review(
         old_weight = current_weights.get("weights", {}).get(keyword) if current_weights else None
 
         # Build evidence dict from examples
+        # Extract data from evidence dict (MOA recommendations structure)
+        rec_evidence = rec.get("evidence", {})
+
         evidence = {
-            "examples": rec.get("examples", [])[:3],  # Top 3 tickers
-            "flash_catalyst": rec.get("is_flash_catalyst", False),
-            "intraday_rate": rec.get("intraday_success_rate"),
+            "examples": rec_evidence.get("examples", [])[:3],  # Top 3 tickers
+            "flash_catalyst": rec_evidence.get("is_flash_catalyst", False),
+            "intraday_rate": rec_evidence.get("intraday_success_rate"),
+            "intraday_performance": rec_evidence.get("intraday_performance"),
         }
 
         insert_keyword_change(
@@ -149,9 +153,9 @@ def create_pending_review(
             old_weight=old_weight,
             new_weight=new_weight,
             confidence=rec["confidence"],
-            occurrences=rec["occurrences"],
-            success_rate=rec["success_rate"],
-            avg_return_pct=rec["avg_return_pct"],
+            occurrences=rec_evidence.get("occurrences", 0),
+            success_rate=rec_evidence.get("success_rate", 0.0),
+            avg_return_pct=rec_evidence.get("avg_return_pct", 0.0),
             evidence=evidence,
         )
 

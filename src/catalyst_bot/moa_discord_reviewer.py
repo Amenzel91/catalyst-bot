@@ -181,14 +181,14 @@ def post_review_request(review_id: str, recommendations: List[Dict[str, Any]]) -
             log.error("admin_webhook_not_configured")
             return False
 
-        response = _alerts.post_discord_json(payload, webhook_url=admin_webhook_url)
+        success = _alerts.post_discord_json(payload, webhook_url=admin_webhook_url)
 
-        if response and response.status_code in (200, 204):
+        if success:
             # Store message ID for updates (if needed in future)
             log.info(f"moa_review_posted review_id={review_id} channel={channel_id}")
             return True
         else:
-            log.error(f"moa_review_post_failed review_id={review_id} status={response.status_code if response else 'none'}")
+            log.error(f"moa_review_post_failed review_id={review_id}")
             return False
 
     except Exception as e:
@@ -199,6 +199,58 @@ def post_review_request(review_id: str, recommendations: List[Dict[str, Any]]) -
 # ============================================================================
 # Private Embed Builders
 # ============================================================================
+
+
+def _build_ticker_examples_text(changes: List[Dict[str, Any]]) -> str:
+    """
+    Build formatted text showing top performing tickers for each keyword.
+
+    Parameters
+    ----------
+    changes : list of dict
+        Top keyword changes (usually top 10)
+
+    Returns
+    -------
+    str
+        Formatted ticker examples text (5 keywords max to avoid Discord char limits)
+    """
+    lines = []
+
+    # Limit to first 5 keywords to avoid Discord embed size limits
+    for change in changes[:5]:
+        keyword = change["keyword"]
+
+        # Parse evidence_json
+        evidence_json = change.get("evidence_json")
+        if not evidence_json:
+            continue
+
+        try:
+            evidence = json.loads(evidence_json)
+            examples = evidence.get("examples", [])
+
+            if not examples:
+                continue
+
+            # Format ticker examples
+            ticker_parts = []
+            for ex in examples[:3]:  # Top 3 tickers
+                ticker = ex.get("ticker", "?")
+                ret = ex.get("return_pct", 0)
+                ticker_parts.append(f"`{ticker}` ({ret:+.1f}%)")
+
+            if ticker_parts:
+                lines.append(f"• **{keyword}**: {', '.join(ticker_parts)}")
+
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+
+    if lines:
+        lines.append("_Use Review Individual to see all tickers_")
+        return "\n".join(lines)
+    else:
+        return "_No ticker examples available_"
 
 
 def _build_summary_embed(review: Dict[str, Any], changes: List[Dict[str, Any]], stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -269,6 +321,9 @@ def _build_summary_embed(review: Dict[str, Any], changes: List[Dict[str, Any]], 
 
 **Top 10 Recommendations:**
 {chr(10).join(table_lines)}
+
+**📈 Top Performing Tickers per Keyword:**
+{_build_ticker_examples_text(top_10)}
 
 📝 Click **Review Individual** to approve/reject each keyword separately.
 ✅ Click **Approve All** to apply all changes immediately.

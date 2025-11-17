@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -59,12 +59,16 @@ def _ensure_moa_dirs() -> Tuple[Path, Path]:
     return root, moa_dir
 
 
-def load_outcomes() -> List[Dict[str, Any]]:
+def load_outcomes(since_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """
     Load outcomes from data/moa/outcomes.jsonl.
 
     Deduplicates by (ticker, rejection_ts) to handle cases where the
     bootstrapper was run multiple times with overlapping date ranges.
+
+    Parameters:
+        since_date: If provided, only load outcomes with rejection_ts > since_date
+                   (enables incremental analysis)
 
     Returns:
         List of outcome dictionaries with rejection data and price outcomes
@@ -79,6 +83,7 @@ def load_outcomes() -> List[Dict[str, Any]]:
     outcomes = []
     seen_keys = set()  # Track (ticker, rejection_ts) to detect duplicates
     duplicate_count = 0
+    filtered_count = 0
 
     try:
         with open(outcomes_path, "r", encoding="utf-8") as f:
@@ -103,6 +108,17 @@ def load_outcomes() -> List[Dict[str, Any]]:
                         )
                         continue
 
+                    # Incremental filtering: skip outcomes before since_date
+                    if since_date:
+                        try:
+                            outcome_date = datetime.fromisoformat(rejection_ts.replace('Z', '+00:00'))
+                            if outcome_date <= since_date:
+                                filtered_count += 1
+                                continue
+                        except (ValueError, AttributeError):
+                            # If timestamp parsing fails, include the outcome
+                            pass
+
                     seen_keys.add(dedupe_key)
                     outcomes.append(outcome)
 
@@ -110,7 +126,13 @@ def load_outcomes() -> List[Dict[str, Any]]:
                     log.debug(f"invalid_json line={line_num} err={e}")
                     continue
 
-        if duplicate_count > 0:
+        # Log loading summary
+        if since_date:
+            log.info(
+                f"loaded_outcomes_incremental count={len(outcomes)} "
+                f"since={since_date.isoformat()} filtered={filtered_count} duplicates={duplicate_count}"
+            )
+        elif duplicate_count > 0:
             log.info(
                 f"loaded_outcomes_with_dedup count={len(outcomes)} "
                 f"duplicates_removed={duplicate_count}"
@@ -394,7 +416,7 @@ def analyze_intraday_timing(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
         # Collect intraday returns
         timeframe_returns = {}
         for tf in ["15m", "30m", "1h"]:
-            if tf in outcomes_data:
+            if tf in outcomes_data and outcomes_data[tf] is not None:
                 return_pct = outcomes_data[tf].get("return_pct", 0.0)
                 timing_stats[tf]["count"] += 1
                 timing_stats[tf]["total_return"] += return_pct
@@ -486,7 +508,7 @@ def identify_flash_catalysts(
 
         # Check 15m and 30m timeframes
         for tf in ["15m", "30m"]:
-            if tf in outcomes_data:
+            if tf in outcomes_data and outcomes_data[tf] is not None:
                 return_pct = outcomes_data[tf].get("return_pct", 0.0)
 
                 if abs(return_pct) >= threshold_pct:
@@ -540,7 +562,7 @@ def analyze_intraday_keyword_correlation(
             continue
 
         for tf in ["15m", "30m"]:
-            if tf in outcomes_data:
+            if tf in outcomes_data and outcomes_data[tf] is not None:
                 return_pct = outcomes_data[tf].get("return_pct", 0.0)
 
                 for kw in keywords:
@@ -1173,20 +1195,88 @@ def update_keyword_stats_file(recommendations: List[Dict[str, Any]], min_confide
     return stats_path
 
 
+def load_last_analysis_timestamp() -> Optional[datetime]:
+    """
+    Load the timestamp of the last MOA analysis from state file.
+
+    Returns:
+        Last analysis timestamp, or None if never run or file doesn't exist
+    """
+    _, moa_dir = _ensure_moa_dirs()
+    state_path = moa_dir / "last_analysis_state.json"
+
+    if not state_path.exists():
+        return None
+
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+            last_run_str = state.get("last_analysis_timestamp")
+            if last_run_str:
+                return datetime.fromisoformat(last_run_str)
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        log.warning(f"load_last_analysis_timestamp_failed err={e}")
+
+    return None
+
+
+def save_last_analysis_timestamp(timestamp: datetime) -> bool:
+    """
+    Save the timestamp of the last MOA analysis to state file.
+
+    Parameters:
+        timestamp: Timestamp to save
+
+    Returns:
+        True if saved successfully
+    """
+    _, moa_dir = _ensure_moa_dirs()
+    state_path = moa_dir / "last_analysis_state.json"
+
+    try:
+        state = {
+            "last_analysis_timestamp": timestamp.isoformat(),
+            "last_analysis_date": timestamp.strftime("%Y-%m-%d"),
+        }
+
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+
+        log.info(f"last_analysis_timestamp_saved timestamp={timestamp.isoformat()}")
+        return True
+
+    except Exception as e:
+        log.error(f"save_last_analysis_timestamp_failed err={e}")
+        return False
+
+
 def run_historical_moa_analysis() -> Dict[str, Any]:
     """
-    Run complete MOA analysis using historical outcomes data.
+    Run MOA analysis on recent outcomes (last 14 days).
+
+    Analyzes rolling 14-day window to:
+    - Focus on current market conditions
+    - Allow rare keywords to accumulate (e.g., 'earnings' appears ~10x/week)
+    - Avoid stale patterns from months-old data
 
     Returns:
         Analysis results dictionary
     """
     start_time = time.time()
-    log.info("moa_historical_analysis_start")
+    analysis_timestamp = datetime.now(timezone.utc)
+
+    # Analyze last 14 days for current market patterns
+    lookback_days = 14
+    since_date = analysis_timestamp - timedelta(days=lookback_days)
+
+    log.info(f"moa_historical_analysis_start mode=rolling_window days={lookback_days} since={since_date.isoformat()}")
 
     try:
-        # 1. Load outcomes and rejected items
-        outcomes = load_outcomes()
+        # 1. Load outcomes from last 14 days
+        # This balances statistical significance with current market relevance
+        outcomes = load_outcomes(since_date=since_date)
         if not outcomes:
+            log.warning("moa_no_outcomes_found")
             return {
                 "status": "no_data",
                 "message": "No outcomes found in data/moa/outcomes.jsonl",
@@ -1313,6 +1403,9 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             f"flash_catalysts={len(flash_catalysts)} "
             f"sectors_analyzed={len(sector_analysis)}"
         )
+
+        # Save timestamp for incremental analysis next run
+        save_last_analysis_timestamp(analysis_timestamp)
 
         return {
             "status": "success",

@@ -46,7 +46,12 @@
       "Bash(.env)",
       "Bash(Select-Object -First 25)",
       "Bash(Select-String -Pattern \"DIAGNOSTIC|early_category_skip|cycle_metrics\")",
-      "Bash(Select-Object -First 50)"
+      "Bash(Select-Object -First 50)",
+      "Bash(del datakeyword_review.db 2)",
+      "Bash(jq:*)",
+      "Bash(Remove-Item:*)",
+      "Bash(Select-String \"moa\")",
+      "Bash(del datamoaanalysis_report.json)"
     ],
     "deny": [],
     "ask": []
