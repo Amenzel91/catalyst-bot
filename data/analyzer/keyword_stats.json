@@ -43,14 +43,14 @@
     "collaboration": 2.15,
     "at_the_market_offering": 2.14,
     "board_appointment": 2.13,
-    "acquisition": 2.11,
-    "earnings": 2.2,
-    "unknown": 2.16,
-    "beat": 2.26
+    "acquisition": 2.5,
+    "earnings": 2.35,
+    "unknown": 2.39,
+    "beat": 2.23
   },
-  "last_updated": "2025-11-17T01:24:09.176983+00:00",
+  "last_updated": "2025-11-18T02:00:12.433804+00:00",
   "source": "moa_nightly_analyzer",
   "total_keywords": 47,
-  "updates_applied": 3,
+  "updates_applied": 4,
   "min_confidence_threshold": 0.6
 }
