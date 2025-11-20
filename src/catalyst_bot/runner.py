@@ -2417,6 +2417,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             # ticker to HOT in the cascade state after sending an alert.  Any
             # errors while updating the state are ignored.  Promotion
             # timestamp is set by the helper.
+            #
+            # Phase 1 Enhancement: Pass rich context for database logging when
+            # FEATURE_WATCHLIST_PERFORMANCE=1 is enabled.
             try:
                 if getattr(settings, "feature_watchlist_cascade", False) and ticker:
                     from catalyst_bot.watchlist_cascade import (
@@ -2427,7 +2430,41 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
 
                     state_path = getattr(settings, "watchlist_state_file", "")
                     state = load_state(state_path)
-                    promote_ticker(state, ticker, state_name="HOT")
+
+                    # Phase 1: Build context for database logging
+                    context = None
+                    if getattr(settings, "feature_watchlist_performance", False):
+                        # Extract keywords for context
+                        keywords = _keywords_of(scored) if scored else []
+
+                        # Get catalyst type from categories if available
+                        catalyst_type = None
+                        if hasattr(scored, "tags") and scored.tags:
+                            # Use first tag as catalyst type
+                            catalyst_type = scored.tags[0] if scored.tags else None
+                        elif hasattr(scored, "categories") and scored.categories:
+                            catalyst_type = scored.categories[0] if scored.categories else None
+
+                        # Build context dictionary
+                        context = {
+                            "trigger_reason": "Alert triggered",
+                            "trigger_title": it.get("title"),
+                            "trigger_summary": it.get("summary"),
+                            "catalyst_type": catalyst_type,
+                            "trigger_score": scr,
+                            "trigger_sentiment": snt,
+                            "trigger_price": last_px,
+                            "trigger_volume": None,  # Volume not readily available
+                            "alert_id": it.get("id"),
+                            "tags": keywords[:5] if keywords else None,  # Top 5 keywords
+                            "metadata": {
+                                "source": it.get("source"),
+                                "link": it.get("link"),
+                                "price_change": last_chg,
+                            },
+                        }
+
+                    promote_ticker(state, ticker, state_name="HOT", context=context)
                     save_state(state_path, state)
             except Exception:
                 # ignore promotion errors

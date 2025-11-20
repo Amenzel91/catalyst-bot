@@ -466,6 +466,62 @@ class Settings:
         "WATCHLIST_STATE_FILE", "data/watchlist_state.json"
     )
 
+    # --- Phase 1: Watchlist Performance Monitoring (2025-11-20) ---
+    # Enable watchlist performance tracking to SQLite database.  When
+    # enabled, the bot logs ticker promotions with rich context and
+    # records periodic performance snapshots for analysis.  The database
+    # enables tracking price/volume changes, catalyst outcomes, and
+    # delayed breakout detection.  Defaults to false.
+    feature_watchlist_performance: bool = _b("FEATURE_WATCHLIST_PERFORMANCE", False)
+
+    # Path to the SQLite database for watchlist performance data.  If
+    # relative, it is resolved relative to the project root.  Defaults
+    # to ``data/watchlist/performance.db``.  Use
+    # WATCHLIST_PERFORMANCE_DB_PATH to override.
+    watchlist_performance_db_path: str = os.getenv(
+        "WATCHLIST_PERFORMANCE_DB_PATH", "data/watchlist/performance.db"
+    )
+
+    # Monitoring interval (in seconds) for HOT state tickers.  HOT
+    # tickers are tracked more frequently due to recent catalyst
+    # activity.  Defaults to 300 seconds (5 minutes).  Use
+    # WATCHLIST_HOT_MONITOR_INTERVAL_SEC to override.
+    watchlist_hot_monitor_interval_sec: int = int(
+        os.getenv("WATCHLIST_HOT_MONITOR_INTERVAL_SEC", "300") or "300"
+    )
+
+    # Monitoring interval (in seconds) for WARM state tickers.  WARM
+    # tickers are checked less frequently than HOT.  Defaults to 900
+    # seconds (15 minutes).  Use WATCHLIST_WARM_MONITOR_INTERVAL_SEC to
+    # override.
+    watchlist_warm_monitor_interval_sec: int = int(
+        os.getenv("WATCHLIST_WARM_MONITOR_INTERVAL_SEC", "900") or "900"
+    )
+
+    # Monitoring interval (in seconds) for COOL state tickers.  COOL
+    # tickers are checked infrequently unless re‑triggered.  Defaults to
+    # 1800 seconds (30 minutes).  Use
+    # WATCHLIST_COOL_MONITOR_INTERVAL_SEC to override.
+    watchlist_cool_monitor_interval_sec: int = int(
+        os.getenv("WATCHLIST_COOL_MONITOR_INTERVAL_SEC", "1800") or "1800"
+    )
+
+    # Price change threshold (percentage) to trigger alert for HOT
+    # tickers.  When price moves more than this amount since alert,
+    # alert outcome is recorded.  Defaults to 5.0%.  Use
+    # WATCHLIST_ALERT_PRICE_THRESHOLD_PCT to override.
+    watchlist_alert_price_threshold_pct: float = float(
+        os.getenv("WATCHLIST_ALERT_PRICE_THRESHOLD_PCT", "5.0") or "5.0"
+    )
+
+    # Volume change threshold (percentage) to trigger investigation for
+    # HOT tickers.  Large volume changes indicate continued interest.
+    # Defaults to 50.0%.  Use WATCHLIST_ALERT_VOLUME_THRESHOLD_PCT to
+    # override.
+    watchlist_alert_volume_threshold_pct: float = float(
+        os.getenv("WATCHLIST_ALERT_VOLUME_THRESHOLD_PCT", "50.0") or "50.0"
+    )
+
     # Flag to enable the 52‑week low scanner.  When true, the bot
     # proactively scans for tickers trading near their 52‑week lows and
     # adds them to the watchlist cascade.  Defaults to false.
