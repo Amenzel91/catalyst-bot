@@ -35,7 +35,7 @@ log = get_logger("moa")
 # Configuration
 PRICE_LOOKBACK_HOURS = [1, 4, 24, 168]  # 1h, 4h, 1d, 7d
 SUCCESS_THRESHOLD_PCT = 10.0  # >10% price increase = missed opportunity
-MIN_OCCURRENCES = 5  # Minimum occurrences for statistical significance
+MIN_OCCURRENCES = 15  # Minimum occurrences for statistical significance (increased from 5 for robustness)
 ANALYSIS_WINDOW_DAYS = 30  # Analyze last 30 days of rejected items
 
 # Volume/Liquidity Constraints (configurable)

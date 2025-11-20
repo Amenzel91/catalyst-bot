@@ -32,7 +32,7 @@ log = get_logger("moa_historical")
 # Configuration
 SUCCESS_THRESHOLD_PCT = 10.0  # >10% price increase = missed opportunity
 MIN_OCCURRENCES = (
-    3  # Minimum occurrences for statistical significance (lowered for small dataset)
+    10  # Minimum occurrences for statistical significance (increased from 3 for robustness)
 )
 TIMEFRAME_PRIORITY = [
     "7d",
@@ -948,6 +948,217 @@ def analyze_sector_timing_correlation(outcomes: List[Dict[str, Any]]) -> Dict[st
     return results
 
 
+def analyze_sentiment_sources(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze which sentiment sources (vader/ml/llm/earnings) predict successful catalysts.
+
+    This function evaluates the accuracy of each sentiment source by comparing
+    sentiment predictions to actual price outcomes. Helps calibrate sentiment weights.
+
+    Args:
+        outcomes: List of outcomes with sentiment breakdown data
+
+    Returns:
+        Dictionary with source performance metrics and calibration recommendations
+    """
+    from collections import defaultdict
+
+    source_stats = defaultdict(lambda: {
+        "total": 0,
+        "positive_signals": 0,
+        "successful_outcomes": 0,
+        "accuracy": 0.0,
+        "avg_return_when_positive": 0.0,
+        "correlation": 0.0,
+        "examples": []
+    })
+
+    # Analyze each outcome
+    for outcome in outcomes:
+        sentiment_breakdown = outcome.get("sentiment_breakdown", {})
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_success = max_return >= SUCCESS_THRESHOLD_PCT
+        ticker = outcome.get("ticker", "")
+
+        # Check each source
+        for source in ["vader", "ml", "llm", "earnings"]:
+            if source not in sentiment_breakdown:
+                continue
+
+            sentiment_value = sentiment_breakdown[source]
+            if sentiment_value is None:
+                continue
+
+            source_stats[source]["total"] += 1
+
+            # Consider sentiment > 0.5 as positive signal
+            if sentiment_value > 0.5:
+                source_stats[source]["positive_signals"] += 1
+
+                if is_success:
+                    source_stats[source]["successful_outcomes"] += 1
+                    source_stats[source]["avg_return_when_positive"] += max_return
+
+                    # Store example
+                    if len(source_stats[source]["examples"]) < 3:
+                        source_stats[source]["examples"].append({
+                            "ticker": ticker,
+                            "sentiment": sentiment_value,
+                            "return_pct": max_return
+                        })
+
+    # Calculate accuracy and recommendations
+    recommendations = []
+
+    for source, stats in source_stats.items():
+        if stats["positive_signals"] > 0:
+            stats["accuracy"] = stats["successful_outcomes"] / stats["positive_signals"]
+            stats["avg_return_when_positive"] /= stats["positive_signals"]
+
+        # Generate calibration recommendations
+        if stats["total"] >= MIN_OCCURRENCES:
+            current_weight = 1.0  # Baseline
+
+            if stats["accuracy"] >= 0.7:
+                recommended_weight = current_weight + 0.2
+                recommendation = f"High accuracy ({stats['accuracy']:.1%}): INCREASE weight"
+            elif stats["accuracy"] >= 0.6:
+                recommended_weight = current_weight + 0.1
+                recommendation = f"Good accuracy ({stats['accuracy']:.1%}): SLIGHT INCREASE"
+            elif stats["accuracy"] < 0.4:
+                recommended_weight = current_weight - 0.2
+                recommendation = f"Low accuracy ({stats['accuracy']:.1%}): DECREASE weight"
+            elif stats["accuracy"] < 0.5:
+                recommended_weight = current_weight - 0.1
+                recommendation = f"Below average ({stats['accuracy']:.1%}): SLIGHT DECREASE"
+            else:
+                recommended_weight = current_weight
+                recommendation = f"Average accuracy ({stats['accuracy']:.1%}): MAINTAIN weight"
+
+            recommendations.append({
+                "source": source,
+                "accuracy": stats["accuracy"],
+                "avg_return": stats["avg_return_when_positive"],
+                "sample_size": stats["positive_signals"],
+                "current_weight": current_weight,
+                "recommended_weight": recommended_weight,
+                "recommendation": recommendation
+            })
+
+    log.info(
+        "analyzed_sentiment_sources",
+        sources_analyzed=len(source_stats),
+        recommendations_generated=len(recommendations)
+    )
+
+    return {
+        "source_statistics": dict(source_stats),
+        "recommendations": recommendations,
+        "summary": {
+            "best_source": max(recommendations, key=lambda x: x["accuracy"])["source"] if recommendations else None,
+            "worst_source": min(recommendations, key=lambda x: x["accuracy"])["source"] if recommendations else None
+        }
+    }
+
+
+def analyze_source_effectiveness(outcomes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Analyze which news sources (SEC 8-K, GlobeNewswire, etc.) produce best catalysts.
+
+    Tracks success rates, false positive rates, and average returns by news source.
+    Helps calibrate source credibility tiers.
+
+    Args:
+        outcomes: List of outcomes with source information
+
+    Returns:
+        Dictionary with source performance metrics and recommendations
+    """
+    from collections import defaultdict
+
+    source_stats = defaultdict(lambda: {
+        "total": 0,
+        "missed_opportunities": 0,
+        "miss_rate": 0.0,
+        "avg_return": 0.0,
+        "total_return": 0.0,
+        "examples": []
+    })
+
+    # Analyze each outcome
+    for outcome in outcomes:
+        source = outcome.get("source", "unknown")
+        max_return = outcome.get("max_return_pct", 0.0)
+        is_missed_opp = outcome.get("is_missed_opportunity", False)
+        ticker = outcome.get("ticker", "")
+
+        source_stats[source]["total"] += 1
+        source_stats[source]["total_return"] += max_return
+
+        if is_missed_opp:
+            source_stats[source]["missed_opportunities"] += 1
+
+            # Store example
+            if len(source_stats[source]["examples"]) < 3:
+                source_stats[source]["examples"].append({
+                    "ticker": ticker,
+                    "return_pct": max_return
+                })
+
+    # Calculate metrics and generate recommendations
+    recommendations = []
+
+    for source, stats in source_stats.items():
+        if stats["total"] > 0:
+            stats["miss_rate"] = stats["missed_opportunities"] / stats["total"]
+            stats["avg_return"] = stats["total_return"] / stats["total"]
+
+        # Generate credibility recommendations
+        if stats["total"] >= MIN_OCCURRENCES:
+            # High miss rate = source produces good catalysts that we're rejecting
+            if stats["miss_rate"] >= 0.3 and stats["avg_return"] >= 15.0:
+                recommendation = "HIGH QUALITY: Consider increasing source credibility tier"
+                action = "increase_tier"
+            elif stats["miss_rate"] >= 0.2 and stats["avg_return"] >= 12.0:
+                recommendation = "GOOD QUALITY: Maintain or slight increase in credibility"
+                action = "maintain"
+            elif stats["miss_rate"] < 0.1 and stats["avg_return"] < 8.0:
+                recommendation = "LOW QUALITY: Consider decreasing source credibility tier"
+                action = "decrease_tier"
+            else:
+                recommendation = "AVERAGE: Maintain current credibility tier"
+                action = "maintain"
+
+            recommendations.append({
+                "source": source,
+                "miss_rate": stats["miss_rate"],
+                "avg_return": stats["avg_return"],
+                "sample_size": stats["total"],
+                "missed_opportunities": stats["missed_opportunities"],
+                "action": action,
+                "recommendation": recommendation
+            })
+
+    # Sort by miss rate (descending) to highlight best sources
+    recommendations.sort(key=lambda x: x["miss_rate"], reverse=True)
+
+    log.info(
+        "analyzed_source_effectiveness",
+        sources_analyzed=len(source_stats),
+        recommendations_generated=len(recommendations)
+    )
+
+    return {
+        "source_statistics": dict(source_stats),
+        "recommendations": recommendations[:10],  # Top 10 sources
+        "summary": {
+            "best_source": recommendations[0]["source"] if recommendations else None,
+            "worst_source": recommendations[-1]["source"] if len(recommendations) > 1 else None,
+            "total_sources_analyzed": len(source_stats)
+        }
+    }
+
+
 def calculate_weight_recommendations(
     keyword_stats: Dict[str, Dict[str, Any]],
     intraday_keyword_stats: Dict[str, Dict[str, Any]] = None,
@@ -1325,7 +1536,13 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
         # 12. Analyze market regime performance
         regime_analysis = analyze_regime_performance(merged_data)
 
-        # 13. Generate weight recommendations (with intraday data)
+        # 13. Analyze sentiment source effectiveness (vader/ml/llm/earnings)
+        sentiment_source_analysis = analyze_sentiment_sources(merged_data)
+
+        # 14. Analyze news source effectiveness (SEC, GlobeNewswire, etc.)
+        source_effectiveness = analyze_source_effectiveness(merged_data)
+
+        # 15. Generate weight recommendations (with intraday data)
         recommendations = calculate_weight_recommendations(
             keyword_stats, intraday_keyword_stats
         )
@@ -1387,6 +1604,8 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             )[
                 :20
             ],  # Top 20 missed opportunities
+            "sentiment_source_analysis": sentiment_source_analysis,
+            "source_effectiveness": source_effectiveness,
         }
 
         # 11. Save report
