@@ -1,0 +1,416 @@
+name: Trading Bot CI - Tests and Quality Checks
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'requirements*.txt'
+      - '.github/workflows/trading-bot-ci.yml'
+  push:
+    branches: [develop]
+
+env:
+  PYTHON_VERSION: '3.10'
+  POETRY_VERSION: '1.7.0'
+
+jobs:
+  # ===========================================================================
+  # Code Quality Checks
+  # ===========================================================================
+  code-quality:
+    name: Code Quality (Black, Flake8, MyPy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install quality tools
+        run: |
+          pip install --upgrade pip
+          pip install black==23.12.0 flake8==7.0.0 mypy==1.7.1 isort==5.13.2
+
+      - name: Run Black (code formatting check)
+        run: |
+          black --check --diff src/ tests/
+          echo "✓ Black formatting check passed"
+
+      - name: Run isort (import sorting check)
+        run: |
+          isort --check-only --diff src/ tests/
+          echo "✓ isort import sorting check passed"
+
+      - name: Run Flake8 (linting)
+        run: |
+          flake8 src/ tests/ \
+            --max-line-length=100 \
+            --ignore=E203,W503,E501 \
+            --exclude=__pycache__,.git,build,dist \
+            --count --statistics
+          echo "✓ Flake8 linting passed"
+
+      - name: Run MyPy (type checking)
+        run: |
+          mypy src/ \
+            --ignore-missing-imports \
+            --no-strict-optional \
+            --warn-unreachable \
+            --show-error-codes
+          echo "✓ MyPy type checking passed"
+        continue-on-error: true  # Don't fail build on type errors (warning only)
+
+  # ===========================================================================
+  # Security Checks
+  # ===========================================================================
+  security:
+    name: Security Scan (Bandit, Safety)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install security tools
+        run: |
+          pip install bandit==1.7.5 safety==3.0.0
+
+      - name: Run Bandit (security linter)
+        run: |
+          bandit -r src/ \
+            -f json -o bandit-report.json \
+            -ll  # Only high and medium severity
+          bandit -r src/ -ll  # Human-readable output
+          echo "✓ Bandit security scan passed"
+        continue-on-error: true
+
+      - name: Run Safety (dependency vulnerability check)
+        run: |
+          pip install -r requirements.txt
+          safety check --json > safety-report.json || true
+          safety check || true
+          echo "✓ Safety dependency check complete"
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            safety-report.json
+
+  # ===========================================================================
+  # Unit Tests
+  # ===========================================================================
+  unit-tests:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-trading.txt
+          pip install pytest==7.4.3 pytest-cov==4.1.0 pytest-xdist==3.5.0 pytest-timeout==2.2.0
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/ \
+            -v \
+            --cov=src/catalyst_bot \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-report=term-missing \
+            --cov-fail-under=70 \
+            --junitxml=junit.xml \
+            --timeout=300 \
+            -n auto
+        timeout-minutes: 15
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-${{ matrix.python-version }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: |
+            junit.xml
+            htmlcov/
+
+  # ===========================================================================
+  # Integration Tests
+  # ===========================================================================
+  integration-tests:
+    name: Integration Tests (Broker, RL, Database)
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+
+    services:
+      # PostgreSQL for integration tests (optional)
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: catalyst_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-trading.txt
+          pip install pytest==7.4.3
+
+      - name: Set up test environment
+        run: |
+          # Create test databases
+          mkdir -p data/databases data/cache data/logs
+
+          # Create test .env
+          cat > .env.test << 'EOF'
+          TRADING_MODE=test
+          ALPACA_API_KEY=${{ secrets.ALPACA_TEST_API_KEY }}
+          ALPACA_SECRET=${{ secrets.ALPACA_TEST_SECRET }}
+          ALPACA_PAPER=1
+          DB_DIR=data/databases
+          CACHE_DIR=data/cache
+          LOG_DIR=data/logs
+          EOF
+
+      - name: Run integration tests
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_TEST_API_KEY }}
+          ALPACA_SECRET: ${{ secrets.ALPACA_TEST_SECRET }}
+        run: |
+          pytest tests/integration/ \
+            -v \
+            --timeout=600 \
+            -m integration
+        timeout-minutes: 15
+
+      - name: Upload integration test logs
+        uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: integration-test-logs
+          path: data/logs/
+
+  # ===========================================================================
+  # Build Docker Image
+  # ===========================================================================
+  docker-build:
+    name: Build and Test Docker Image
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: catalyst-trading-bot:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test Docker image
+        run: |
+          docker run --rm catalyst-trading-bot:ci-test python -c "
+          import catalyst_bot
+          print('✓ Import successful')
+          "
+
+          docker run --rm catalyst-trading-bot:ci-test python -c "
+          from alpaca.trading.client import TradingClient
+          from stable_baselines3 import PPO
+          print('✓ Critical dependencies available')
+          "
+
+      - name: Scan Docker image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: catalyst-trading-bot:ci-test
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ===========================================================================
+  # Test Coverage Report
+  # ===========================================================================
+  coverage-report:
+    name: Generate Coverage Report
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v3
+        with:
+          pattern: test-results-*
+          path: coverage-reports/
+
+      - name: Comment PR with coverage
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 70
+
+  # ===========================================================================
+  # Performance Benchmarks
+  # ===========================================================================
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-benchmark==4.0.0
+
+      - name: Run benchmarks
+        run: |
+          pytest tests/benchmarks/ \
+            --benchmark-only \
+            --benchmark-json=benchmark-results.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v3
+        with:
+          name: benchmark-results
+          path: benchmark-results.json
+
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark-results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: false
+          comment-on-alert: true
+
+  # ===========================================================================
+  # Final Status Check
+  # ===========================================================================
+  ci-success:
+    name: All CI Checks Passed
+    runs-on: ubuntu-latest
+    needs: [code-quality, security, unit-tests, integration-tests, docker-build]
+    if: always()
+
+    steps:
+      - name: Check job statuses
+        run: |
+          if [[ "${{ needs.code-quality.result }}" != "success" ]]; then
+            echo "::error::Code quality checks failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.security.result }}" != "success" ]]; then
+            echo "::warning::Security checks had issues"
+          fi
+
+          if [[ "${{ needs.unit-tests.result }}" != "success" ]]; then
+            echo "::error::Unit tests failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.integration-tests.result }}" != "success" ]]; then
+            echo "::error::Integration tests failed"
+            exit 1
+          fi
+
+          if [[ "${{ needs.docker-build.result }}" != "success" ]]; then
+            echo "::error::Docker build failed"
+            exit 1
+          fi
+
+          echo "✓ All CI checks passed"
+
+      - name: Comment PR success
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ All CI checks passed! Ready for review.'
+            })
