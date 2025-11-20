@@ -1,0 +1,349 @@
+================================================================================
+COMPREHENSIVE DEPENDENCY AUDIT REPORT
+Catalyst Bot - Python Dependencies Analysis
+Generated: 2025-11-20
+================================================================================
+
+EXECUTIVE SUMMARY
+================================================================================
+
+Analyzed Files:
+  - /home/user/catalyst-bot/requirements.txt (91 lines, 42 packages)
+  - /home/user/catalyst-bot/pyproject.toml
+  - Source code: 150+ Python files
+
+Key Findings:
+  ✗ 3 CRITICAL issues requiring immediate attention
+  ⚠ 8 MODERATE issues recommended for cleanup
+  ✓ 5 GOOD practices observed
+
+Overall Health: FAIR - Core dependencies are solid, but needs cleanup
+
+================================================================================
+CRITICAL ISSUES (MUST FIX)
+================================================================================
+
+ISSUE #1: MISSING REQUIRED DEPENDENCY
+--------------------------------------
+Package: pydantic
+Status: NOT in requirements.txt but ACTIVELY USED
+
+Usage:
+  - src/catalyst_bot/llm_schemas.py (BaseModel, Field, field_validator)
+  - src/catalyst_bot/numeric_extractor.py (BaseModel, Field)
+  - tests/test_numeric_extractor.py
+
+Impact: HIGH - Code will fail at runtime if pydantic is not installed
+Fix: Add to requirements.txt: pydantic>=2.0,<3
+
+
+ISSUE #2: INCOMPATIBLE VERSION CONSTRAINT
+------------------------------------------
+Package: backports.zoneinfo>=0.2.1;python_version<"3.9"
+Status: INCOMPATIBLE with project requirements
+
+Conflict:
+  - Package requires: Python < 3.9
+  - pyproject.toml requires: Python >= 3.11
+  - zoneinfo is built-in since Python 3.9
+
+Impact: MEDIUM - Package is unnecessary and may cause confusion
+Fix: REMOVE from requirements.txt
+
+
+ISSUE #3: REDUNDANT DEPENDENCY DECLARATIONS
+--------------------------------------------
+Packages with transitive dependency conflicts:
+
+  a) matplotlib>=3.7,<4
+     - Already included as dependency of mplfinance
+     - Declaring both can cause version conflicts
+  
+  b) transformers>=4.30,<5
+     - Already included as dependency of sentence-transformers
+     - May cause version mismatch if both specified
+
+Impact: LOW-MEDIUM - Can cause version conflicts during pip install
+Fix: Remove explicit declarations, let dependencies handle them
+
+================================================================================
+MODERATE ISSUES (RECOMMENDED FIXES)
+================================================================================
+
+ISSUE #4: POTENTIALLY UNUSED PACKAGES
+--------------------------------------
+The following packages have no direct imports found:
+
+  sgmllib3k>=1.0,<2
+    - Marked as "optional explicit dep for feedparser"
+    - feedparser no longer needs this on Python 3.11+
+    - Recommendation: REMOVE
+  
+  tenacity>=8.2,<9
+    - Retry/backoff library
+    - No direct usage found
+    - May have been used in previous version
+    - Recommendation: REMOVE if confirmed unused
+  
+  tqdm>=4.66,<5
+    - Progress bar library
+    - Not directly imported
+    - May be used by other packages (transformers)
+    - Recommendation: Keep or remove based on indirect usage
+  
+  pynvml>=11.5,<12
+    - NVIDIA GPU management library
+    - Not directly used (GPUtil is used instead)
+    - Recommendation: REMOVE
+
+
+ISSUE #5: VERSION CONSTRAINT IMPROVEMENTS
+------------------------------------------
+
+  pandas>=2.2,<2.3
+    - Too restrictive, blocks pandas 2.3+
+    - Recommendation: pandas>=2.2,<3
+  
+  tzdata>=2024.1
+    - No upper bound
+    - Recommendation: tzdata>=2024.1,<2026
+  
+  numpy>=1.26,<2
+    - Correct - NumPy 2.0 has breaking changes
+    - Keep as-is until testing with NumPy 2.0
+
+
+ISSUE #6: LAZY-LOADED DEPENDENCIES CORRECTLY IMPLEMENTED
+---------------------------------------------------------
+Status: ✓ GOOD - All heavy dependencies use lazy loading
+
+Heavy dependencies loaded conditionally:
+  - torch (18 files with try/except)
+  - aiohttp (5 files)
+  - matplotlib (7 files)
+  - transformers (via torch)
+  - discord.py (1 file)
+  - anthropic (1 file)
+  - google-generativeai (1 file)
+  - redis (1 file)
+  - sentence-transformers (2 files)
+
+This is excellent practice - keeps import time fast and allows
+optional dependencies to be missing.
+
+
+ISSUE #7: OVERLAPPING FUNCTIONALITY
+------------------------------------
+Multiple packages provide similar functionality:
+
+  yfinance + finnhub-python
+    - Both fetch market data
+    - Consider: Keep both if complementary, or consolidate
+  
+  requests + aiohttp
+    - requests: sync HTTP
+    - aiohttp: async HTTP
+    - Status: OK - different use cases
+
+
+ISSUE #8: DEPENDENCY USAGE STATISTICS
+--------------------------------------
+Top 10 most-used packages (by import count):
+
+  1. numpy                  - 31 imports
+  2. pandas                 - 31 imports
+  3. requests               - 27 imports
+  4. python-dotenv          - 25 imports
+  5. scipy                  -  6 imports
+  6. beautifulsoup4         -  4 imports
+  7. yfinance               -  4 imports
+  8. feedparser             -  2 imports
+  9. flask                  -  1 import
+  10. vaderSentiment        -  1 import
+
+Rarely used packages (consider if needed):
+  - Flask: 1 import only (discord_interactions.py)
+  - pybreaker: 2 occurrences
+  - GPUtil: 2 occurrences
+  - PyNaCl: 1 occurrence
+
+================================================================================
+SECURITY ANALYSIS
+================================================================================
+
+HIGH PRIORITY:
+--------------
+  lxml>=5,<6
+    ✓ Version 5.x is good (fixes CVE-2022-2309, CVE-2021-43818)
+    - Keep updated to latest 5.x
+    - Use html.parser for untrusted input
+
+MEDIUM PRIORITY:
+----------------
+  Flask>=3.0,<4
+    ✓ Version 3.x is good
+    ⚠ Ensure CSRF protection enabled
+    ⚠ Set SESSION_COOKIE_SECURE=True
+  
+  requests>=2.31,<3
+    ✓ Version 2.31+ fixes CVE-2023-32681
+    ⚠ Ensure verify=True in all calls
+  
+  torch>=2.0,<3
+    ⚠ CVE-2024-31583: Code execution via torch.load
+    ⚠ Always use torch.load(..., weights_only=True)
+
+RECOMMENDATIONS:
+----------------
+  1. Install pip-audit: pip install pip-audit
+  2. Run regular scans: pip-audit -r requirements.txt
+  3. Set up Dependabot for automated updates
+  4. Review code for:
+     - torch.load() calls (add weights_only=True)
+     - requests calls (ensure verify=True)
+     - SQL queries (ensure parameterized)
+
+================================================================================
+IMPORT PATTERN ANALYSIS
+================================================================================
+
+✓ EXCELLENT PRACTICES OBSERVED:
+  - No wildcard imports (import *)
+  - Proper relative imports for internal modules (193 occurrences)
+  - Lazy loading for heavy dependencies
+  - Try/except error handling for optional dependencies
+  - No circular import dependencies detected
+
+Module Dependency Structure:
+  - runner.py: 25 internal dependencies (central orchestrator)
+  - alerts.py: 10 dependencies (alert system)
+  - No circular dependencies detected
+
+================================================================================
+PYTHON VERSION COMPATIBILITY
+================================================================================
+
+pyproject.toml: Python >=3.11
+requirements.txt conditions:
+  - backports.zoneinfo: python_version<"3.9" [CONFLICT - remove]
+  - google-generativeai: python_version>="3.9" [OK]
+
+Compatibility Status: ✓ GOOD (after removing backports.zoneinfo)
+
+================================================================================
+IMMEDIATE ACTION PLAN
+================================================================================
+
+PRIORITY 1 (CRITICAL - Do Now):
+--------------------------------
+1. ADD to requirements.txt:
+   pydantic>=2.0,<3
+
+2. REMOVE from requirements.txt:
+   backports.zoneinfo>=0.2.1;python_version<"3.9"
+
+3. Test that code still runs:
+   python -m pytest tests/
+
+PRIORITY 2 (HIGH - Do This Week):
+----------------------------------
+4. REMOVE redundant declarations:
+   - matplotlib>=3.7,<4 (included via mplfinance)
+   - transformers>=4.30,<5 (included via sentence-transformers)
+
+5. REMOVE unused packages (after verification):
+   - sgmllib3k>=1.0,<2
+   - tenacity>=8.2,<9 (if confirmed unused)
+   - pynvml>=11.5,<12
+
+6. UPDATE version constraints:
+   pandas>=2.2,<3
+   tzdata>=2024.1,<2026
+
+PRIORITY 3 (MEDIUM - Do This Month):
+-------------------------------------
+7. Security audit:
+   - pip install pip-audit
+   - pip-audit -r requirements.txt
+   - Review torch.load() calls
+   - Review requests.get/post calls
+
+8. Code review for security:
+   - Add weights_only=True to torch.load()
+   - Ensure verify=True in requests
+   - Validate SQL queries are parameterized
+
+PRIORITY 4 (LOW - Consider Later):
+-----------------------------------
+9. Dependency cleanup:
+   - Evaluate if Flask is needed (only 1 import)
+   - Consider consolidating yfinance/finnhub-python
+   - Remove tqdm if truly unused
+
+10. Automation:
+    - Set up Dependabot or Renovate
+    - Add pip-audit to CI/CD
+    - Configure automated dependency updates
+
+================================================================================
+SUGGESTED requirements.txt CHANGES
+================================================================================
+
+ADDITIONS:
+----------
++pydantic>=2.0,<3
+
+REMOVALS:
+---------
+-backports.zoneinfo>=0.2.1;python_version<"3.9"
+-sgmllib3k>=1.0,<2
+-matplotlib>=3.7,<4  # Included via mplfinance
+-transformers>=4.30,<5  # Included via sentence-transformers
+-tenacity>=8.2,<9  # Unused
+-pynvml>=11.5,<12  # Unused
+
+UPDATES:
+--------
+~pandas>=2.2,<2.3  →  pandas>=2.2,<3
+~tzdata>=2024.1  →  tzdata>=2024.1,<2026
+
+================================================================================
+DEPENDENCY HEALTH SCORE
+================================================================================
+
+Security:        7/10  (Good versions, but needs audit)
+Compatibility:   8/10  (One conflict to fix)
+Cleanliness:     6/10  (Some unused dependencies)
+Best Practices:  9/10  (Excellent import patterns)
+Documentation:   8/10  (Good comments in requirements.txt)
+
+OVERALL SCORE:   7.6/10  (GOOD - Needs minor cleanup)
+
+================================================================================
+CONCLUSION
+================================================================================
+
+The catalyst-bot dependency management is generally well-structured with
+excellent import patterns and lazy loading practices. However, there are
+three critical issues that need immediate attention:
+
+1. Missing pydantic dependency
+2. Incompatible backports.zoneinfo constraint  
+3. Redundant dependency declarations
+
+After addressing these issues and cleaning up unused dependencies, the
+project will have excellent dependency health.
+
+The codebase demonstrates mature dependency management with:
+- Conditional imports for heavy packages
+- Proper error handling for optional dependencies
+- No circular imports
+- Good security-conscious version constraints
+
+Recommended timeline: Address Priority 1 items immediately, then tackle
+Priority 2 within the week. Security audit should be completed within
+the month.
+
+================================================================================
+END OF REPORT
+================================================================================
