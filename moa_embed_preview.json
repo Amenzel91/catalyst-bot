@@ -1,0 +1,31 @@
+{
+  "title": "📊 MOA Nightly Analysis Complete",
+  "description": "7:30 PM CST | After-Hours Market Analysis",
+  "color": 3066993,
+  "fields": [
+    {
+      "name": "📊 Analysis Summary",
+      "value": "**MOA Analysis:**\n• Outcomes Analyzed: **23,327**\n• Missed Opportunities: **3588** (15.4% miss rate)\n• Avg Missed Return: **+35.5%**",
+      "inline": false
+    },
+    {
+      "name": "🎯 Top 5 Missed Opportunities (Biggest Winners We Skipped)",
+      "value": "1. **$LPTX** → +581.4%\n   Keywords: earnings\n   Rejected: Non Substantive\n\n2. **$LPTX** → +580.7%\n   Keywords: earnings\n   Rejected: Non Substantive\n\n3. **$LPTX** → +579.0%\n   Keywords: earnings\n   Rejected: Non Substantive\n\n4. **$LPTX** → +576.0%\n   Keywords: earnings\n   Rejected: Non Substantive\n\n5. **$LPTX** → +573.2%\n   Keywords: earnings\n   Rejected: Non Substantive",
+      "inline": false
+    },
+    {
+      "name": "💰 Top 4 Keyword Recommendations (Auto-Applied at Confidence ≥ 60%)",
+      "value": "1. ✅ **UNKNOWN** → Weight: 2.39 (Conf: 90%)\n   66 occurrences | 100% success | +38.9% avg | Ex: DENN, ECIA\n\n2. ✅ **EARNINGS** → Weight: 2.35 (Conf: 90%)\n   3524 occurrences | 100% success | +35.4% avg | Ex: TRDA, PASG\n\n3. ✅ **BEAT** → Weight: 2.23 (Conf: 75%)\n   5 occurrences | 100% success | +23.5% avg | Ex: BDSX, BDSX\n\n4. ✅ **ACQUISITION** → Weight: 2.50 (Conf: 60%)\n   3 occurrences | 100% success | +69.8% avg | Ex: CURR, DENN",
+      "inline": false
+    },
+    {
+      "name": "🔗 Full Reports",
+      "value": "• MOA: `data/moa/analysis_report.json`",
+      "inline": false
+    }
+  ],
+  "timestamp": "2025-11-21T03:53:16.738246+00:00",
+  "footer": {
+    "text": "MOA Auto-Learning System | Keyword weights updated automatically"
+  }
+}

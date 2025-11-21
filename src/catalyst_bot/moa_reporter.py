@@ -34,6 +34,52 @@ except ImportError:
 log = get_logger("moa_reporter")
 
 
+def _load_moa_report() -> Optional[Dict[str, Any]]:
+    """Load full MOA report from data/moa/analysis_report.json.
+
+    Returns
+    -------
+    dict or None
+        Full MOA report with recommendations, keyword stats, and top missed opportunities
+    """
+    import json
+    report_path = Path(__file__).resolve().parents[2] / "data" / "moa" / "analysis_report.json"
+
+    if not report_path.exists():
+        log.debug(f"moa_report_not_found path={report_path}")
+        return None
+
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning(f"moa_report_load_failed err={e}")
+        return None
+
+
+def _load_fp_report() -> Optional[Dict[str, Any]]:
+    """Load full False Positive report from data/false_positives/analysis_report.json.
+
+    Returns
+    -------
+    dict or None
+        Full FP report with recommendations
+    """
+    import json
+    report_path = Path(__file__).resolve().parents[2] / "data" / "false_positives" / "analysis_report.json"
+
+    if not report_path.exists():
+        log.debug(f"fp_report_not_found path={report_path}")
+        return None
+
+    try:
+        with open(report_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log.warning(f"fp_report_load_failed err={e}")
+        return None
+
+
 def merge_recommendations(
     moa_recs: List[Dict[str, Any]],
     fp_recs: List[Dict[str, Any]],
@@ -116,11 +162,18 @@ def build_moa_completion_embed(
     dict
         Discord embed structure
     """
-    # Extract data from results
-    moa_summary = (moa_result or {}).get("summary", {}) if moa_result else {}
-    moa_recs = (moa_result or {}).get("recommendations", []) if moa_result else []
-    fp_summary = (fp_result or {}).get("summary", {}) if fp_result else {}
-    fp_recs = (fp_result or {}).get("recommendations", []) if fp_result else []
+    # Load full reports from disk (the return values only contain summaries)
+    moa_full_report = _load_moa_report()
+    fp_full_report = _load_fp_report()
+
+    # Extract data from full reports
+    moa_summary = moa_full_report.get("summary", {}) if moa_full_report else {}
+    moa_recs = moa_full_report.get("recommendations", []) if moa_full_report else []
+    moa_top_missed = moa_full_report.get("top_missed_opportunities", []) if moa_full_report else []
+    moa_keyword_stats = moa_full_report.get("keyword_stats", {}) if moa_full_report else {}
+
+    fp_summary = fp_full_report.get("summary", {}) if fp_full_report else {}
+    fp_recs = fp_full_report.get("recommendations", []) if fp_full_report else []
 
     # Merge recommendations
     merged_recs = merge_recommendations(moa_recs, fp_recs, min_confidence=0.6, top_n=top_n)
@@ -153,7 +206,33 @@ def build_moa_completion_embed(
             "inline": False
         })
 
-    # 2. Top Recommendations
+    # 2. Top Missed Opportunities (Tickers & Returns)
+    if moa_top_missed:
+        missed_text = []
+        for i, opp in enumerate(moa_top_missed[:5], 1):  # Top 5
+            ticker = opp.get("ticker", "???")
+            return_pct = opp.get("max_return_pct", 0.0)
+            keywords = opp.get("keywords", [])
+            reason = opp.get("rejection_reason", "unknown")
+
+            # Show first 2 keywords only
+            kw_display = ", ".join(keywords[:2]) if keywords else "none"
+            if len(keywords) > 2:
+                kw_display += f" +{len(keywords)-2} more"
+
+            missed_text.append(
+                f"{i}. **${ticker}** → +{return_pct:.1f}%\n"
+                f"   Keywords: {kw_display}\n"
+                f"   Rejected: {reason.replace('_', ' ').title()}"
+            )
+
+        fields.append({
+            "name": "🎯 Top 5 Missed Opportunities (Biggest Winners We Skipped)",
+            "value": "\n\n".join(missed_text),
+            "inline": False
+        })
+
+    # 3. Top Keyword Recommendations
     if merged_recs:
         recs_text = []
         for i, rec in enumerate(merged_recs, 1):
@@ -166,31 +245,35 @@ def build_moa_completion_embed(
                 occurrences = evidence.get("occurrences", 0)
                 success_rate = evidence.get("success_rate", 0.0)
                 avg_return = evidence.get("avg_return_pct", 0.0)
+
+                # Get example tickers if available
+                examples = evidence.get("examples", [])
+                example_tickers = [ex.get("ticker") for ex in examples[:2] if ex.get("ticker")]
+                ticker_str = f" | Ex: {', '.join(example_tickers)}" if example_tickers else ""
+
                 recs_text.append(
-                    f"{i}. ✅ **{keyword.upper()}** → {weight:.2f} "
-                    f"(conf: {confidence:.0%})\n"
-                    f"   • {occurrences} occurrences | {success_rate:.0%} success | +{avg_return:.1f}% avg"
+                    f"{i}. ✅ **{keyword.upper()}** → Weight: {weight:.2f} (Conf: {confidence:.0%})\n"
+                    f"   {occurrences} occurrences | {success_rate:.0%} success | +{avg_return:.1f}% avg{ticker_str}"
                 )
             else:  # penalty
                 penalty = rec["penalty"]
                 failure_rate = evidence.get("failure_rate", 0.0)
                 avg_return = evidence.get("avg_return", 0.0)
                 recs_text.append(
-                    f"{i}. ❌ **{keyword.upper()}** → {penalty:.2f} "
-                    f"(conf: {confidence:.0%})\n"
-                    f"   • {failure_rate:.0%} failure rate | {avg_return:+.1f}% avg return"
+                    f"{i}. ❌ **{keyword.upper()}** → Penalty: {penalty:.2f} (Conf: {confidence:.0%})\n"
+                    f"   {failure_rate:.0%} failure rate | {avg_return:+.1f}% avg return"
                 )
 
         fields.append({
-            "name": f"💰 Top {len(merged_recs)} Recommendations (Confidence ≥ 60%)",
-            "value": "\n\n".join(recs_text[:10]),  # Limit to prevent embed overflow
+            "name": f"💰 Top {min(len(merged_recs), top_n)} Keyword Recommendations (Auto-Applied at Confidence ≥ 60%)",
+            "value": "\n\n".join(recs_text[:top_n]),
             "inline": False
         })
 
-    # 3. Flash Catalysts (if available)
+    # 4. Flash Catalysts (if available)
     flash_catalysts = {}
-    if moa_result and "intraday_analysis" in moa_result:
-        intraday = moa_result["intraday_analysis"]
+    if moa_full_report and "intraday_analysis" in moa_full_report:
+        intraday = moa_full_report["intraday_analysis"]
         flash_catalysts = intraday.get("flash_catalysts", {})
 
     if flash_catalysts and flash_catalysts.get("count", 0) > 0:
@@ -214,10 +297,10 @@ def build_moa_completion_embed(
             "inline": False
         })
 
-    # 4. Sector Insights (if available)
+    # 5. Sector Insights (if available)
     sector_analysis = {}
-    if moa_result and "sector_analysis" in moa_result:
-        sector_analysis = moa_result["sector_analysis"].get("sector_performance", {})
+    if moa_full_report and "sector_analysis" in moa_full_report:
+        sector_analysis = moa_full_report["sector_analysis"].get("sector_performance", {})
 
     if sector_analysis:
         # Get top 3 sectors by miss rate
@@ -243,17 +326,30 @@ def build_moa_completion_embed(
                 "inline": False
             })
 
-    # 5. Report Links
+    # 6. Report Links
     report_paths = []
-    if moa_result:
+    if moa_full_report:
         report_paths.append("• MOA: `data/moa/analysis_report.json`")
-    if fp_result:
+    if fp_full_report:
         report_paths.append("• False Positives: `data/false_positives/analysis_report.json`")
 
     if report_paths:
         fields.append({
             "name": "🔗 Full Reports",
             "value": "\n".join(report_paths),
+            "inline": False
+        })
+
+    # If no data at all, show helpful message
+    if not fields:
+        fields.append({
+            "name": "ℹ️ No Analysis Data Available",
+            "value": (
+                "No MOA analysis reports found. This could mean:\n"
+                "• MOA nightly analysis hasn't run yet (scheduled for 7:30 PM CST)\n"
+                "• No rejected items with price outcomes to analyze\n"
+                "• Report files not found in data/moa/ directory"
+            ),
             "inline": False
         })
 

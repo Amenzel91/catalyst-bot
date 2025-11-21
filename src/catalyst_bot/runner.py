@@ -33,7 +33,7 @@ from catalyst_bot.accepted_items_logger import log_accepted_item
 from catalyst_bot.rejected_items_logger import log_rejected_item
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.ticker_validation import TickerValidator
-from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title
+from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title, ticker_from_summary
 from catalyst_bot.multi_ticker_handler import analyze_multi_ticker_article
 
 # Be nice to operators: give a clear error when a runtime dep is missing,
@@ -805,11 +805,18 @@ def enrich_ticker(entry: dict, item: dict):
 
         # PR/News: parse ticker from title or summary patterns for ALL sources
         # This ensures ticker extraction works for prnewswire, businesswire, etc.
-        for field in ("title", "summary"):
-            t = ticker_from_title(item.get(field) or "")
-            if t:
-                item["ticker"] = t
-                return
+        # Strategy: Try title patterns first, then fallback to summary body patterns
+        t = ticker_from_title(item.get("title") or "")
+        if t:
+            item["ticker"] = t
+            return
+
+        # Fallback: Try summary text if title extraction failed
+        # This catches cases like "(Nasdaq: FRGT)" in the article body
+        t = ticker_from_summary(item.get("summary") or "")
+        if t:
+            item["ticker"] = t
+            return
 
 
 # ---------------- Article freshness check ----------------
@@ -1338,18 +1345,20 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             if doc_text and len(doc_text) > 50:  # Only process substantial text
                 filing_type = source.replace("sec_", "").upper()
                 item_id = it.get("id") or it.get("link") or ""
+                ticker = (it.get("ticker") or "").strip()  # Extract ticker for pre-filter
                 sec_filings_to_process.append({
                     "item_id": item_id,
                     "document_text": doc_text,
                     "title": it.get("title", ""),
                     "filing_type": filing_type,
+                    "ticker": ticker,  # Pass ticker to integration layer
                 })
 
     # Batch process all SEC filings in parallel (one asyncio.run call for ALL filings)
     if sec_filings_to_process:
         try:
             import asyncio
-            from .sec_llm_analyzer import batch_extract_keywords_from_documents
+            from .sec_integration import batch_extract_keywords_from_documents
 
             log.info("sec_batch_processing_start count=%d", len(sec_filings_to_process))
 

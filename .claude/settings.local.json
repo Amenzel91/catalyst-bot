@@ -51,7 +51,8 @@
       "Bash(jq:*)",
       "Bash(Remove-Item:*)",
       "Bash(Select-String \"moa\")",
-      "Bash(del datamoaanalysis_report.json)"
+      "Bash(del datamoaanalysis_report.json)",
+      "Bash(Select-Object -Last 50)"
     ],
     "deny": [],
     "ask": []

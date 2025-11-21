@@ -269,6 +269,67 @@ def extract_tickers_from_title(
     return out
 
 
+def ticker_from_summary(
+    summary: Optional[str],
+    *,
+    max_chars: int = 500,
+) -> Optional[str]:
+    """Extract ticker from article summary/body text.
+
+    This is a fallback function for when ticker_from_title() returns None.
+    It looks for exchange-qualified ticker patterns like "(Nasdaq: FRGT)"
+    or "(NYSE: BA)" in the first N characters of the summary.
+
+    This function is optimized for speed by only scanning the beginning
+    of the summary text, where exchange qualifications typically appear.
+
+    Args:
+        summary: Article summary or body text
+        max_chars: Maximum characters to scan (default: 500)
+
+    Returns:
+        First ticker found, or None
+
+    Examples:
+        >>> ticker_from_summary("Freight Technologies (Nasdaq: FRGT) announced...")
+        'FRGT'
+        >>> ticker_from_summary("Boeing (NYSE: BA) reported...")
+        'BA'
+        >>> ticker_from_summary("No ticker here")
+        None
+    """
+    if not summary:
+        return None
+
+    # Only scan first N characters for performance
+    text = summary[:max_chars]
+
+    # Pattern: (Nasdaq: TICKER), (NYSE: TICKER), (AMEX: TICKER), etc.
+    # This matches the format commonly used in press releases and news articles
+    # Pattern breakdown:
+    #   \( : Opening parenthesis (escaped)
+    #   (?:Nasdaq|NYSE|AMEX|NYSE American|NYSE Arca|CBOE|Cboe) : Exchange name
+    #   :\s* : Colon followed by optional whitespace
+    #   ([A-Z]{2,5}(?:\.[A-Z])?) : Ticker (2-5 uppercase, optional dot like BRK.A)
+    #   \) : Closing parenthesis (escaped)
+    pattern = re.compile(
+        r'\((?:Nasdaq|NYSE|AMEX|NYSE American|NYSE Arca|CBOE|Cboe):\s*([A-Z]{2,5}(?:\.[A-Z])?)\)',
+        re.IGNORECASE  # Case insensitive for exchange names
+    )
+
+    match = pattern.search(text)
+    if not match:
+        return None
+
+    ticker = match.group(1).upper()
+
+    # Validate against parenthetical exclusions
+    if ticker in _PARENTHETICAL_EXCLUSIONS:
+        return None
+
+    return ticker
+
+
 if __name__ == "__main__":
     # quick self-checks
     tests = [
