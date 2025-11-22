@@ -42,8 +42,9 @@ def get_current_price_volume(ticker: str) -> Tuple[Optional[float], Optional[flo
     """
     try:
         # Get price using existing infrastructure
-        snapshot = get_last_price_snapshot(ticker)
-        price = snapshot.get("last") if snapshot else None
+        # get_last_price_snapshot returns Tuple[Optional[float], Optional[float]] = (last, prev)
+        last_price, _prev_close = get_last_price_snapshot(ticker)
+        price = last_price
 
         # Get volume from yfinance
         volume = None

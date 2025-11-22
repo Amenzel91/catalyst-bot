@@ -1417,15 +1417,37 @@ def fetch_pr_feeds() -> List[Dict]:
     # Remove articles older than NEWS_MAX_AGE_MINUTES to ensure real-time alerting.
     # This reduces API usage by skipping price/sentiment fetching for stale news.
     # Set NEWS_MAX_AGE_MINUTES=0 to disable and process all news (not recommended).
+    #
+    # SEC filings use a separate, longer freshness window since the SEC RSS feed
+    # has inherent delays (filings can take hours to appear in the Atom feed).
+    # SEC filings are official documents and remain actionable longer than news.
     max_age_min = int(os.getenv("NEWS_MAX_AGE_MINUTES", "10"))
-    items_before_freshness = len(all_items)
-    all_items, rejected_old = _filter_by_freshness(all_items, max_age_minutes=max_age_min)
+    sec_max_age_min = int(os.getenv("SEC_MAX_AGE_MINUTES", "480"))  # 8 hours default for SEC
+
+    # Separate SEC items from news items for different freshness windows
+    sec_items = [it for it in all_items if it.get("source", "").startswith("sec_")]
+    news_items = [it for it in all_items if not it.get("source", "").startswith("sec_")]
+
+    # Apply freshness filter to news items (strict 10-min window)
+    items_before_freshness = len(news_items)
+    news_items, rejected_news = _filter_by_freshness(news_items, max_age_minutes=max_age_min)
+
+    # Apply separate freshness filter to SEC items (longer window)
+    sec_before = len(sec_items)
+    sec_items, rejected_sec = _filter_by_freshness(sec_items, max_age_minutes=sec_max_age_min)
+
+    # Combine filtered items
+    all_items = news_items + sec_items
+    rejected_old = rejected_news + rejected_sec
+
     if rejected_old > 0:
         log.info(
-            "freshness_filter_applied rejected=%d kept=%d max_age_min=%d",
+            "freshness_filter_applied rejected=%d kept=%d max_age_min=%d sec_max_age_min=%d sec_kept=%d",
             rejected_old,
             len(all_items),
             max_age_min,
+            sec_max_age_min,
+            len(sec_items),
         )
 
     # -----------------------------------------------------------------

@@ -533,6 +533,49 @@ def get_alerts_by_keyword(
         conn.close()
 
 
+def get_recent_tickers(days: int = 7) -> List[str]:
+    """
+    Get unique tickers from recent alerts.
+
+    Used by SEC monitor to build dynamic watchlist from recent activity.
+
+    Parameters
+    ----------
+    days : int, optional
+        Number of days to look back (default: 7)
+
+    Returns
+    -------
+    list of str
+        Unique ticker symbols from recent alerts
+    """
+    conn = _get_connection()
+    try:
+        now = int(time.time())
+        cutoff = now - (days * 86400)
+
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT DISTINCT ticker
+            FROM alert_performance
+            WHERE posted_at >= ? AND ticker IS NOT NULL AND ticker != ''
+            ORDER BY posted_at DESC
+            """,
+            (cutoff,),
+        )
+
+        tickers = [row["ticker"] for row in cursor.fetchall()]
+        log.debug("get_recent_tickers days=%d count=%d", days, len(tickers))
+        return tickers
+
+    except Exception as e:
+        log.error("get_recent_tickers_failed days=%d error=%s", days, str(e))
+        return []
+    finally:
+        conn.close()
+
+
 def get_performance_stats(lookback_days: int = 7) -> Dict[str, Any]:
     """
     Get aggregate performance statistics.

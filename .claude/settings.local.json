@@ -52,7 +52,8 @@
       "Bash(Remove-Item:*)",
       "Bash(Select-String \"moa\")",
       "Bash(del datamoaanalysis_report.json)",
-      "Bash(Select-Object -Last 50)"
+      "Bash(Select-Object -Last 50)",
+      "Bash(git rev-parse:*)"
     ],
     "deny": [],
     "ask": []

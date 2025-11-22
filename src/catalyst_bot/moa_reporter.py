@@ -208,8 +208,17 @@ def build_moa_completion_embed(
 
     # 2. Top Missed Opportunities (Tickers & Returns)
     if moa_top_missed:
+        # Deduplicate by ticker - keep only the highest return per ticker
+        seen_tickers = set()
+        unique_missed = []
+        for opp in moa_top_missed:
+            ticker = opp.get("ticker", "???")
+            if ticker not in seen_tickers:
+                seen_tickers.add(ticker)
+                unique_missed.append(opp)
+
         missed_text = []
-        for i, opp in enumerate(moa_top_missed[:5], 1):  # Top 5
+        for i, opp in enumerate(unique_missed[:5], 1):  # Top 5 unique tickers
             ticker = opp.get("ticker", "???")
             return_pct = opp.get("max_return_pct", 0.0)
             keywords = opp.get("keywords", [])

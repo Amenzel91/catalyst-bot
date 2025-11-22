@@ -45,6 +45,13 @@ TIMEFRAME_PRIORITY = [
 FLASH_CATALYST_THRESHOLD_PCT = 5.0  # >5% move in 15-30 minutes = flash catalyst
 INTRADAY_TIMEFRAMES = ["15m", "30m", "1h"]  # Short-term timeframes for timing analysis
 
+# Multi-Window Analysis Configuration (Ticket #6)
+ANALYSIS_WINDOWS = {
+    "7d": {"days": 7, "weight": 0.50, "name": "Short-term"},
+    "30d": {"days": 30, "weight": 0.30, "name": "Standard"},
+    "90d": {"days": 90, "weight": 0.20, "name": "Long-term"}
+}
+
 
 def _repo_root() -> Path:
     """Get repository root directory."""
@@ -1461,14 +1468,191 @@ def save_last_analysis_timestamp(timestamp: datetime) -> bool:
         return False
 
 
-def run_historical_moa_analysis() -> Dict[str, Any]:
+def analyze_multi_window_keywords(
+    outcomes_by_window: Dict[str, List[Dict[str, Any]]]
+) -> Dict[str, Any]:
     """
-    Run MOA analysis on recent outcomes (last 14 days).
+    Analyze keyword performance across multiple time windows (Ticket #6).
 
-    Analyzes rolling 14-day window to:
+    Combines 7-day, 30-day, and 90-day windows with weighted averaging to identify:
+    - Short-term trends (7-day: 50% weight)
+    - Standard patterns (30-day: 30% weight)
+    - Long-term stability (90-day: 20% weight)
+
+    Parameters:
+        outcomes_by_window: Dict of window_name -> list of outcomes
+
+    Returns:
+        Multi-window analysis results with weighted recommendations
+    """
+    log.info("multi_window_analysis_start")
+
+    # Analyze each window separately
+    window_results = {}
+
+    for window_name, outcomes in outcomes_by_window.items():
+        if not outcomes:
+            window_results[window_name] = {
+                "total_outcomes": 0,
+                "keywords_analyzed": 0,
+                "keyword_stats": {}
+            }
+            continue
+
+        # Identify missed opportunities in this window
+        missed_opps = [o for o in outcomes if o.get("is_missed_opportunity", False)]
+
+        # Extract keyword statistics
+        keyword_stats = defaultdict(lambda: {
+            "occurrences": 0,
+            "successes": 0,
+            "failures": 0,
+            "total_return": 0.0
+        })
+
+        for outcome in missed_opps:
+            cls_data = outcome.get("cls", {})
+            keywords = cls_data.get("keywords", [])
+            max_return = outcome.get("max_return_pct", 0.0)
+            is_success = max_return >= SUCCESS_THRESHOLD_PCT
+
+            for keyword in keywords:
+                kw_lower = keyword.lower()
+                keyword_stats[kw_lower]["occurrences"] += 1
+                keyword_stats[kw_lower]["total_return"] += max_return
+
+                if is_success:
+                    keyword_stats[kw_lower]["successes"] += 1
+                else:
+                    keyword_stats[kw_lower]["failures"] += 1
+
+        # Calculate metrics for each keyword
+        keyword_analysis = {}
+
+        for keyword, stats in keyword_stats.items():
+            if stats["occurrences"] < MIN_OCCURRENCES:
+                continue
+
+            success_rate = stats["successes"] / stats["occurrences"]
+            avg_return = stats["total_return"] / stats["occurrences"]
+
+            keyword_analysis[keyword] = {
+                "occurrences": stats["occurrences"],
+                "success_rate": round(success_rate, 3),
+                "avg_return_pct": round(avg_return, 2),
+                "successes": stats["successes"],
+                "failures": stats["failures"]
+            }
+
+        window_results[window_name] = {
+            "total_outcomes": len(outcomes),
+            "missed_opportunities": len(missed_opps),
+            "keywords_analyzed": len(keyword_analysis),
+            "keyword_stats": keyword_analysis
+        }
+
+        log.info(
+            f"multi_window_analysis_complete window={window_name} "
+            f"outcomes={len(outcomes)} missed={len(missed_opps)} "
+            f"keywords={len(keyword_analysis)}"
+        )
+
+    # Calculate weighted recommendations across all windows
+    all_keywords = set()
+    for window_data in window_results.values():
+        all_keywords.update(window_data["keyword_stats"].keys())
+
+    weighted_recommendations = {}
+
+    for keyword in all_keywords:
+        weighted_success = 0.0
+        weighted_return = 0.0
+        total_weight = 0.0
+        window_presence = []
+
+        for window_name, window_data in window_results.items():
+            window_config = ANALYSIS_WINDOWS[window_name]
+            weight = window_config["weight"]
+
+            if keyword in window_data["keyword_stats"]:
+                stats = window_data["keyword_stats"][keyword]
+                weighted_success += stats["success_rate"] * weight
+                weighted_return += stats["avg_return_pct"] * weight
+                total_weight += weight
+                window_presence.append(window_name)
+
+        if total_weight > 0:
+            # Calculate trend indicator
+            trend = "stable"
+            if "7d" in window_presence and "90d" in window_presence:
+                short_term = window_results["7d"]["keyword_stats"][keyword]["success_rate"]
+                long_term = window_results["90d"]["keyword_stats"][keyword]["success_rate"]
+
+                if short_term > long_term * 1.2:
+                    trend = "improving"
+                elif short_term < long_term * 0.8:
+                    trend = "declining"
+
+            weighted_recommendations[keyword] = {
+                "weighted_success_rate": round(weighted_success, 3),
+                "weighted_avg_return": round(weighted_return, 2),
+                "windows_present": window_presence,
+                "trend": trend,
+                "confidence": round(total_weight, 2)
+            }
+
+    # Detect divergent signals (keywords with very different performance across windows)
+    divergent_signals = []
+
+    if "7d" in window_results and "90d" in window_results:
+        short_term = window_results["7d"]["keyword_stats"]
+        long_term = window_results["90d"]["keyword_stats"]
+
+        common_keywords = set(short_term.keys()) & set(long_term.keys())
+
+        for keyword in common_keywords:
+            st_success = short_term[keyword]["success_rate"]
+            lt_success = long_term[keyword]["success_rate"]
+
+            # Check for significant divergence (>30% difference)
+            divergence = abs(st_success - lt_success)
+
+            if divergence >= 0.3:
+                divergent_signals.append({
+                    "keyword": keyword,
+                    "7d_success_rate": round(st_success, 3),
+                    "90d_success_rate": round(lt_success, 3),
+                    "divergence": round(divergence, 3),
+                    "signal": "bullish" if st_success > lt_success else "bearish"
+                })
+
+        # Sort by divergence
+        divergent_signals.sort(key=lambda x: x["divergence"], reverse=True)
+
+    log.info(
+        f"multi_window_weighted_recommendations_calculated "
+        f"total_keywords={len(weighted_recommendations)} "
+        f"divergent_signals={len(divergent_signals)}"
+    )
+
+    return {
+        "windows": window_results,
+        "weighted_recommendations": weighted_recommendations,
+        "divergent_signals": divergent_signals[:20]  # Top 20 divergent signals
+    }
+
+
+def run_historical_moa_analysis(lookback_days: int = 14) -> Dict[str, Any]:
+    """
+    Run MOA analysis on recent outcomes.
+
+    Analyzes rolling window to:
     - Focus on current market conditions
     - Allow rare keywords to accumulate (e.g., 'earnings' appears ~10x/week)
     - Avoid stale patterns from months-old data
+
+    Args:
+        lookback_days: Number of days to look back (default 14)
 
     Returns:
         Analysis results dictionary
@@ -1476,8 +1660,7 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
     start_time = time.time()
     analysis_timestamp = datetime.now(timezone.utc)
 
-    # Analyze last 14 days for current market patterns
-    lookback_days = 14
+    # Analyze lookback window for current market patterns
     since_date = analysis_timestamp - timedelta(days=lookback_days)
 
     log.info(f"moa_historical_analysis_start mode=rolling_window days={lookback_days} since={since_date.isoformat()}")
@@ -1494,6 +1677,27 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             }
 
         rejected_items = load_rejected_items()
+
+        # 1.5. Multi-Window Analysis (Ticket #6): Load outcomes for 7d, 30d, 90d windows
+        log.info("multi_window_loading_outcomes")
+        outcomes_by_window = {}
+
+        for window_name, window_config in ANALYSIS_WINDOWS.items():
+            window_since = analysis_timestamp - timedelta(days=window_config["days"])
+            window_outcomes = load_outcomes(since_date=window_since)
+
+            # Merge with rejection metadata and identify missed opportunities
+            window_merged = merge_rejection_data(window_outcomes, rejected_items)
+            outcomes_by_window[window_name] = window_merged
+
+            log.info(
+                f"multi_window_loaded window={window_name} "
+                f"days={window_config['days']} "
+                f"outcomes={len(window_outcomes)}"
+            )
+
+        # Run multi-window analysis
+        multi_window_analysis = analyze_multi_window_keywords(outcomes_by_window)
 
         # 2. Merge outcomes with rejection metadata
         merged_data = merge_rejection_data(outcomes, rejected_items)
@@ -1606,6 +1810,7 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
             ],  # Top 20 missed opportunities
             "sentiment_source_analysis": sentiment_source_analysis,
             "source_effectiveness": source_effectiveness,
+            "multi_window_analysis": multi_window_analysis,
         }
 
         # 11. Save report
@@ -1647,6 +1852,11 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
                     intraday_timing.get("timeframe_stats", {}).keys()
                 ),
             },
+            "multi_window_summary": {
+                "total_keywords": len(multi_window_analysis["weighted_recommendations"]),
+                "divergent_signals": len(multi_window_analysis["divergent_signals"]),
+                "windows_analyzed": list(multi_window_analysis["windows"].keys())
+            },
             "elapsed_seconds": round(elapsed, 2),
         }
 
@@ -1658,10 +1868,22 @@ def run_historical_moa_analysis() -> Dict[str, Any]:
 # CLI entry point
 def main():
     """Run MOA historical analysis from command line."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run MOA historical analysis")
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=14,
+        help="Number of days to look back (default: 14)"
+    )
+    args = parser.parse_args()
+
     print("Running MOA Historical Analysis...")
+    print(f"Lookback: {args.lookback_days} days")
     print("=" * 60)
 
-    result = run_historical_moa_analysis()
+    result = run_historical_moa_analysis(lookback_days=args.lookback_days)
 
     print(f"\nStatus: {result['status']}")
 

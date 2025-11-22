@@ -1,9 +1,14 @@
 """Ticker validation against official exchange lists."""
 
 import logging
+import os
+from pathlib import Path
 from typing import Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Path to local ticker list cache (fallback when get-all-tickers fails)
+LOCAL_TICKER_CSV = Path(__file__).parent.parent.parent / "data" / "valid_tickers.csv"
 
 # Fallback list of common valid tickers (updated periodically)
 # This provides basic validation when get-all-tickers library fails
@@ -162,7 +167,31 @@ class TickerValidator:
         self._load_valid_tickers()
 
     def _load_valid_tickers(self):
-        """Load valid ticker list from get-all-tickers library."""
+        """Load valid ticker list with multiple fallback strategies.
+
+        Priority order:
+        1. Local CSV file (data/valid_tickers.csv) - fast, reliable
+        2. get-all-tickers library (NASDAQ API) - may fail if API changes
+        3. Hardcoded fallback list - last resort
+        4. Disable validation - if all else fails
+        """
+        # Strategy 1: Try local CSV file first (most reliable)
+        if LOCAL_TICKER_CSV.exists():
+            try:
+                with open(LOCAL_TICKER_CSV, "r", encoding="utf-8") as f:
+                    ticker_list = [line.strip().upper() for line in f if line.strip()]
+                if ticker_list:
+                    self._valid_tickers = set(ticker_list)
+                    logger.info(
+                        "Loaded %d valid tickers from local cache %s",
+                        len(self._valid_tickers),
+                        LOCAL_TICKER_CSV.name,
+                    )
+                    return
+            except Exception as e:
+                logger.debug("local_ticker_csv_failed path=%s err=%s", LOCAL_TICKER_CSV, e)
+
+        # Strategy 2: Try get-all-tickers library (NASDAQ API)
         try:
             from get_all_tickers import Region
             from get_all_tickers.get_tickers import get_tickers as get_all_tickers_func
@@ -173,20 +202,34 @@ class TickerValidator:
             logger.info(
                 f"Loaded {len(self._valid_tickers)} valid tickers from official exchanges"
             )
+
+            # Cache to local file for future use
+            self._save_tickers_to_cache()
+            return
         except ImportError:
-            logger.warning(
-                "get-all-tickers not installed, using fallback list of %d common tickers",
-                len(FALLBACK_VALID_TICKERS),
-            )
-            self._valid_tickers = FALLBACK_VALID_TICKERS.copy()
+            logger.debug("get-all-tickers not installed, trying fallback")
         except Exception as e:
-            logger.warning(
-                "Failed to load ticker list (%s), disabling ticker validation to avoid false rejections",
-                str(e),
-            )
-            # Don't use restrictive fallback list for penny stock bot
-            # Ticker extraction logic will handle false positives (ESMO, FDA, etc.)
-            self._valid_tickers = None
+            logger.debug("get-all-tickers failed: %s, trying fallback", str(e))
+
+        # Strategy 3: Use hardcoded fallback list
+        logger.warning(
+            "Using fallback list of %d common tickers (NASDAQ API unavailable)",
+            len(FALLBACK_VALID_TICKERS),
+        )
+        self._valid_tickers = FALLBACK_VALID_TICKERS.copy()
+
+    def _save_tickers_to_cache(self):
+        """Save current ticker list to local CSV for future fallback."""
+        if not self._valid_tickers:
+            return
+        try:
+            LOCAL_TICKER_CSV.parent.mkdir(parents=True, exist_ok=True)
+            with open(LOCAL_TICKER_CSV, "w", encoding="utf-8") as f:
+                for ticker in sorted(self._valid_tickers):
+                    f.write(f"{ticker}\n")
+            logger.info("Cached %d tickers to %s", len(self._valid_tickers), LOCAL_TICKER_CSV.name)
+        except Exception as e:
+            logger.debug("ticker_cache_save_failed err=%s", e)
 
     def is_valid(self, ticker: str) -> bool:
         """

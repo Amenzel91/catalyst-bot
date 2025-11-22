@@ -28,6 +28,26 @@ from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem
 from .source_credibility import get_source_category, get_source_tier, get_source_weight
 
+# Ticker profiler for per-ticker keyword affinity (optional)
+try:
+    from .ticker_profiler import get_ticker_profiler
+    TICKER_PROFILER_AVAILABLE = True
+except ImportError:
+    TICKER_PROFILER_AVAILABLE = False
+
+    def get_ticker_profiler():
+        return None
+
+# Dynamic source scorer for performance-based source weighting (optional)
+try:
+    from .dynamic_source_scorer import get_dynamic_source_weight
+    DYNAMIC_SOURCE_SCORER_AVAILABLE = True
+except ImportError:
+    DYNAMIC_SOURCE_SCORER_AVAILABLE = False
+
+    def get_dynamic_source_weight(url: str) -> float:
+        return 1.0
+
 # Module-level logger
 log = get_logger(__name__)
 
@@ -965,6 +985,28 @@ def fast_classify(
         credibility_tier = get_source_tier(source_url)
         credibility_weight = get_source_weight(source_url)
 
+        # --- DYNAMIC SOURCE SCORER INTEGRATION ---
+        # Optionally replace static weight with dynamic performance-based weight
+        if DYNAMIC_SOURCE_SCORER_AVAILABLE and os.getenv("FEATURE_DYNAMIC_SOURCE_SCORER", "0") == "1":
+            try:
+                dynamic_weight = get_dynamic_source_weight(source_url)
+
+                # Blend static and dynamic: 50% each when both available
+                # This provides stability while incorporating performance data
+                if dynamic_weight != 1.0:
+                    original_weight = credibility_weight
+                    credibility_weight = (credibility_weight * 0.5) + (dynamic_weight * 0.5)
+
+                    log.info(
+                        "dynamic_source_weight_applied url=%s static=%.2f dynamic=%.2f blended=%.2f",
+                        source_url[:80] if source_url else "N/A",
+                        original_weight,
+                        dynamic_weight,
+                        credibility_weight,
+                    )
+            except Exception as e:
+                log.debug("dynamic_source_scorer_failed url=%s err=%s", source_url[:50] if source_url else "N/A", str(e))
+
         if credibility_tier == 3 and credibility_weight < 1.0:
             log.debug(
                 "source_credibility_downweight url=%s tier=%d weight=%.2f",
@@ -1002,6 +1044,40 @@ def fast_classify(
 
     # Aggregate relevance
     relevance = float(total_keyword_score) * float(combined_source_weight)
+
+    # --- TICKER PROFILER INTEGRATION ---
+    # Apply ticker-specific keyword affinity multiplier (0.5x to 2.5x)
+    # This adjusts scoring based on historical performance for specific tickers
+    ticker_multiplier = 1.0
+    ticker = getattr(item, "ticker", None)
+
+    if ticker and TICKER_PROFILER_AVAILABLE and os.getenv("FEATURE_TICKER_PROFILER", "1") == "1":
+        try:
+            profiler = get_ticker_profiler()
+            if profiler:
+                # Get sector from item if available
+                sector = None
+                if hasattr(item, "raw") and item.raw:
+                    sector = item.raw.get("sector")
+
+                ticker_multiplier = profiler.get_ticker_multiplier(
+                    ticker=ticker,
+                    keywords=hits,
+                    sector=sector
+                )
+
+                if ticker_multiplier != 1.0:
+                    log.info(
+                        "ticker_profiler_applied ticker=%s multiplier=%.2f keywords=%s",
+                        ticker,
+                        ticker_multiplier,
+                        hits[:5],  # Log first 5 keywords
+                    )
+        except Exception as e:
+            log.debug("ticker_profiler_failed ticker=%s err=%s", ticker, str(e))
+
+    # Apply ticker multiplier to relevance
+    relevance = relevance * ticker_multiplier
 
     # Total score: simple combination
     total_score = relevance + sentiment

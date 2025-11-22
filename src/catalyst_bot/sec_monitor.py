@@ -352,14 +352,56 @@ def get_recent_filings(ticker: str, hours: int = 1) -> List[Dict[str, Any]]:
 
 
 def _build_watchlist() -> List[str]:
-    """Build watchlist of tickers to monitor from active feeds.
+    """Build watchlist of tickers to monitor from multiple sources.
+
+    Sources (in priority order):
+    1. SEC_MONITOR_WATCHLIST env var (comma-separated tickers)
+    2. data/sec_watchlist.txt file (one ticker per line)
+    3. Recent alerted tickers from feedback database
 
     Returns:
-        List of ticker symbols to monitor
+        List of unique ticker symbols to monitor
     """
-    # For now, return empty list (will be populated by start_sec_monitor)
-    # In production, could pull from feeds, watchlist CSV, or scanner results
-    return []
+    tickers: set[str] = set()
+
+    # Source 1: Environment variable
+    env_watchlist = os.getenv("SEC_MONITOR_WATCHLIST", "").strip()
+    if env_watchlist:
+        for t in env_watchlist.split(","):
+            t = t.strip().upper()
+            if t:
+                tickers.add(t)
+        log.debug("sec_watchlist_env count=%d", len(tickers))
+
+    # Source 2: Watchlist file
+    watchlist_file = Path(__file__).parent.parent.parent / "data" / "sec_watchlist.txt"
+    if watchlist_file.exists():
+        try:
+            with open(watchlist_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    t = line.strip().upper()
+                    if t and not t.startswith("#"):
+                        tickers.add(t)
+            log.debug("sec_watchlist_file count=%d path=%s", len(tickers), watchlist_file.name)
+        except Exception as e:
+            log.debug("sec_watchlist_file_failed err=%s", e)
+
+    # Source 3: Recent alerted tickers from feedback database (last 7 days)
+    try:
+        from .feedback.database import get_recent_tickers
+
+        recent = get_recent_tickers(days=7)
+        for t in recent:
+            tickers.add(t.upper())
+        log.debug("sec_watchlist_recent count=%d", len(recent))
+    except ImportError:
+        log.debug("feedback_database_not_available")
+    except Exception as e:
+        log.debug("sec_watchlist_recent_failed err=%s", e)
+
+    result = list(tickers)
+    log.info("sec_watchlist_built total=%d", len(result))
+    return result
 
 
 def _sec_monitor_loop() -> None:

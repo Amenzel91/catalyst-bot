@@ -160,7 +160,7 @@ class GeminiProvider(BaseLLMProvider):
         Returns:
             Cost in USD
         """
-        pricing = self.PRICING.get(model, self.PRICING["gemini-1.5-flash"])
+        pricing = self.PRICING.get(model, self.PRICING["gemini-2.5-flash"])
 
         cost_input = (tokens_input / 1_000_000) * pricing["input"]
         cost_output = (tokens_output / 1_000_000) * pricing["output"]
