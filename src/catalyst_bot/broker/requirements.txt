@@ -1,0 +1,26 @@
+# Broker Integration Requirements
+#
+# Install with: pip install -r requirements.txt
+#
+# These packages are required for the broker integration components:
+# - broker_interface.py
+# - alpaca_client.py
+# - order_executor.py
+# - position_manager.py
+
+# HTTP Client for async API requests
+aiohttp>=3.8.0,<4.0.0
+
+# Optional: Official Alpaca SDK (alternative to our implementation)
+# alpaca-trade-api>=3.0.0,<4.0.0
+
+# Optional: WebSocket support for real-time updates
+# websockets>=10.0,<12.0
+
+# Note: The following are already in the main catalyst-bot requirements:
+# - Python 3.8+
+# - sqlite3 (built-in)
+# - asyncio (built-in)
+# - dataclasses (built-in in Python 3.7+)
+# - logging (built-in)
+# - decimal (built-in)
