@@ -591,3 +591,145 @@ def get_performance_stats(lookback_days: int = 7) -> Dict[str, Any]:
         return {}
     finally:
         conn.close()
+
+
+def update_discord_info(
+    alert_id: str,
+    message_id: str,
+    channel_id: str,
+) -> bool:
+    """
+    Update Discord message info for an alert.
+
+    Called after an alert is successfully posted to Discord to store
+    the message_id and channel_id for thread-based trade notifications.
+
+    Parameters
+    ----------
+    alert_id : str
+        Alert identifier
+    message_id : str
+        Discord message ID (snowflake)
+    channel_id : str
+        Discord channel ID (snowflake)
+
+    Returns
+    -------
+    bool
+        True if updated successfully
+
+    Note
+    ----
+    Requires migration 004_add_discord_tracking to be applied first.
+    Will log a warning if columns don't exist but won't fail.
+    """
+    conn = _get_connection()
+    try:
+        cursor = conn.cursor()
+
+        # Check if columns exist first
+        cursor.execute("PRAGMA table_info(alert_performance)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if "discord_message_id" not in columns:
+            log.warning(
+                "discord_message_id_column_missing run_migration_004 alert_id=%s",
+                alert_id,
+            )
+            return False
+
+        now = int(time.time())
+        cursor.execute(
+            """
+            UPDATE alert_performance
+            SET discord_message_id = ?,
+                discord_channel_id = ?,
+                updated_at = ?
+            WHERE alert_id = ?
+            """,
+            (message_id, channel_id, now, alert_id),
+        )
+
+        conn.commit()
+        updated = cursor.rowcount > 0
+
+        if updated:
+            log.info(
+                "discord_info_updated alert_id=%s message_id=%s channel_id=%s",
+                alert_id,
+                message_id,
+                channel_id,
+            )
+        else:
+            log.warning("alert_not_found_for_discord_update alert_id=%s", alert_id)
+
+        return updated
+
+    except Exception as e:
+        log.error(
+            "update_discord_info_failed alert_id=%s error=%s",
+            alert_id,
+            str(e),
+        )
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
+def get_alert_by_ticker_and_time(
+    ticker: str,
+    min_posted_at: int,
+    max_posted_at: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Find an alert by ticker within a time range.
+
+    Useful for looking up which alert triggered a trade when
+    only ticker and approximate time are known.
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker symbol
+    min_posted_at : int
+        Minimum posted timestamp (Unix)
+    max_posted_at : int, optional
+        Maximum posted timestamp (defaults to min + 1 hour)
+
+    Returns
+    -------
+    dict or None
+        Alert record if found, including discord_message_id
+    """
+    if max_posted_at is None:
+        max_posted_at = min_posted_at + 3600  # 1 hour window
+
+    conn = _get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM alert_performance
+            WHERE ticker = ?
+              AND posted_at >= ?
+              AND posted_at <= ?
+            ORDER BY posted_at DESC
+            LIMIT 1
+            """,
+            (ticker.upper(), min_posted_at, max_posted_at),
+        )
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    except Exception as e:
+        log.error(
+            "get_alert_by_ticker_failed ticker=%s error=%s",
+            ticker,
+            str(e),
+        )
+        return None
+    finally:
+        conn.close()
