@@ -98,6 +98,8 @@ try:
         analyze_keyword_performance,
         apply_weight_adjustments,
     )
+    # Phase 2: Paper trading and position management
+    from . import paper_trader
 
     FEEDBACK_AVAILABLE = True
 except Exception:

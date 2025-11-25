@@ -89,6 +89,9 @@ def main() -> int:
     cache_path = _get_cache_path()
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Security: csv_text contains only public earnings calendar data from Alpha Vantage API response.
+        # The API key is in the request URL (line 58) but NOT in the response body.
+        # This is a false positive from CodeQL - the CSV response doesn't contain sensitive information.
         cache_path.write_text(csv_text, encoding="utf-8")
     except Exception as e:
         print(f"Error writing earnings calendar cache: {e}", file=sys.stderr)

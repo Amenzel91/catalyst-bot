@@ -155,7 +155,7 @@ def execute_paper_trade(
         return None
 
     try:
-        from alpaca.trading.requests import MarketOrderRequest
+        from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         # Phase 1: Simple fixed-dollar position sizing
@@ -169,44 +169,72 @@ def execute_paper_trade(
             # If no price, use a default qty of 10 shares
             qty = 10
 
-        # Check if market is open (Alpaca will reject otherwise)
+        # Check if market is open to determine order type
+        is_market_open = True
         try:
             clock = client.get_clock()
+            is_market_open = clock.is_open
             if not clock.is_open:
                 log.info(
-                    "paper_trade_queued ticker=%s qty=%d reason=market_closed "
+                    "paper_trade_extended_hours ticker=%s qty=%d reason=market_closed "
                     "next_open=%s",
                     ticker, qty, clock.next_open
                 )
-                # Still submit - Alpaca will queue DAY orders
         except Exception as clock_err:
             log.debug("clock_check_failed error=%s", str(clock_err))
 
-        # Create order request with extended hours support
-        # GTC (Good-Til-Canceled) allows trading in pre-market and after-hours
-        # extended_hours=True enables execution outside regular market hours
-        order_request = MarketOrderRequest(
-            symbol=ticker,
-            qty=qty,
-            side=OrderSide.BUY,
-            time_in_force=TimeInForce.GTC,
-            extended_hours=True,
-        )
+        # Create order request
+        # Extended hours orders MUST be DAY limit orders per Alpaca requirements
+        # During regular hours, use market orders for better fill rates
+        if is_market_open:
+            # Regular hours: Use market order with GTC
+            order_request = MarketOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC,
+                extended_hours=False,
+            )
+        else:
+            # Extended hours: Use DAY limit order
+            # Set limit price 2% above current price to ensure fill in volatile pre-market/after-hours
+            if not price or price <= 0:
+                log.warning(
+                    "paper_trade_skipped ticker=%s reason=no_price_extended_hours",
+                    ticker
+                )
+                return None
+
+            limit_price = round(price * 1.02, 2)  # 2% above current price
+            order_request = LimitOrderRequest(
+                symbol=ticker,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY,
+                limit_price=limit_price,
+                extended_hours=True,
+            )
 
         # Submit order
         order = client.submit_order(order_data=order_request)
 
+        # Determine order type for logging
+        order_type = "limit_day_ext" if not is_market_open else "market_gtc"
+        limit_price_log = f" limit=${limit_price:.2f}" if not is_market_open else ""
+
         log.info(
-            "paper_trade_executed ticker=%s qty=%d price=%.2f order_id=%s "
-            "alert_id=%s source=%s catalyst=%s status=%s",
+            "paper_trade_executed ticker=%s qty=%d price=%.2f%s order_id=%s "
+            "alert_id=%s source=%s catalyst=%s status=%s type=%s",
             ticker,
             qty,
             price or 0,
+            limit_price_log,
             order.id,
             alert_id or "unknown",
             source or "unknown",
             catalyst_type or "unknown",
             order.status,
+            order_type,
         )
 
         # Phase 2: Track position with automated exit rules
