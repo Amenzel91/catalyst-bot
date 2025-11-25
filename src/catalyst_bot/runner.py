@@ -1375,6 +1375,21 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 sec_llm_cache = asyncio.run(batch_extract_keywords_from_documents(sec_filings_to_process))
 
             log.info("sec_batch_processing_complete cached=%d", len(sec_llm_cache))
+
+            # CRITICAL: Mark ALL SEC filings as seen immediately after processing
+            # This prevents reprocessing the same filings on every cycle
+            # SEC filings that don't generate alerts would never be marked seen otherwise
+            if seen_store:
+                sec_marked_count = 0
+                for filing in sec_filings_to_process:
+                    try:
+                        filing_id = filing.get("id")
+                        if filing_id:
+                            seen_store.mark_seen(filing_id)
+                            sec_marked_count += 1
+                    except Exception as mark_err:
+                        log.debug("sec_mark_seen_failed filing_id=%s err=%s", filing_id, str(mark_err))
+                log.info("sec_filings_marked_seen count=%d", sec_marked_count)
         except Exception as e:
             log.error("sec_batch_processing_failed err=%s", str(e), exc_info=True)
             # Fallback to empty results to prevent cycle crash
@@ -1736,13 +1751,16 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Prevents false positives where feed ticker doesn't match article subject
         # Examples: [AMC] article about BYND, [QMCO] article that never mentions QMCO
         # This catches ticker misidentification by news aggregators
+        # NOTE: SEC sources are BYPASSED - they use CIK-to-ticker mapping which is reliable,
+        # and SEC filing titles contain CIK numbers (not ticker symbols)
         try:
             title = it.get("title") or ""
             summary = it.get("summary") or ""
             combined_text = f"{title} {summary}".upper()
 
             # Check if ticker appears in content (case-insensitive)
-            if ticker and ticker not in combined_text:
+            # Bypass for SEC sources - they use CIK numbers in titles, not ticker symbols
+            if ticker and not _is_sec_source(source) and ticker not in combined_text:
                 # Ticker doesn't appear in article - likely misidentified
                 skipped_ticker_relevance += 1
                 log.info("ticker_not_mentioned ticker=%s title=%s", ticker, title[:60])

@@ -22,6 +22,17 @@ from .market import get_intraday, get_intraday_indicators, get_momentum_indicato
 from .ml_utils import extract_features, load_model, score_alerts
 from .quickchart_post import get_quickchart_png_path
 
+# Paper trading integration
+try:
+    from .paper_trader import execute_paper_trade, is_enabled as paper_trading_enabled
+    HAS_PAPER_TRADING = True
+except ImportError:
+    HAS_PAPER_TRADING = False
+    def execute_paper_trade(*args, **kwargs):
+        return None
+    def paper_trading_enabled():
+        return False
+
 # Advanced charts with timeframe buttons
 try:
     from .chart_cache import get_cache
@@ -1319,6 +1330,24 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         keywords=list(keywords) if keywords else None,
                         posted_price=last_price,
                     )
+
+                    # Execute paper trade (Phase 1: trade every alert for data collection)
+                    if HAS_PAPER_TRADING and paper_trading_enabled():
+                        try:
+                            order_id = execute_paper_trade(
+                                ticker=ticker,
+                                price=last_price,
+                                alert_id=alert_id,
+                                source=source,
+                                catalyst_type=str(catalyst_type),
+                            )
+                            if order_id:
+                                log.info(
+                                    "paper_trade_triggered ticker=%s order_id=%s",
+                                    ticker, order_id
+                                )
+                        except Exception as trade_err:
+                            log.debug("paper_trade_hook_failed error=%s", str(trade_err))
 
                 except Exception as feedback_err:
                     # Don't fail the alert if feedback recording fails
