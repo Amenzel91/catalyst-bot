@@ -48,7 +48,7 @@ class GeminiProvider(BaseLLMProvider):
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        model: str = "gemini-1.5-flash-8b",
+        model: str = "gemini-2.5-flash",
         max_tokens: int = 1000,
         temperature: float = 0.1,
         timeout: float = 10.0

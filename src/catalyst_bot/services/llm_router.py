@@ -93,7 +93,7 @@ class LLMRouter:
 
         Example:
             >>> router.select_provider(TaskComplexity.SIMPLE)
-            ('gemini_flash_lite', 'gemini-1.5-flash-8b')
+            ('gemini_flash_lite', 'gemini-2.0-flash-lite-001')
         """
         complexity = complexity or TaskComplexity.MEDIUM
 

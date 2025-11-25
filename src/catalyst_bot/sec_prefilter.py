@@ -137,9 +137,9 @@ def check_price_filters(ticker: str) -> Tuple[bool, Optional[str]]:
 
     # Fetch current price
     try:
-        from .market import fetch_current_price
+        from .market import get_last_price_snapshot
 
-        last_px = fetch_current_price(ticker)
+        last_px, _ = get_last_price_snapshot(ticker)
 
         if last_px is None:
             # Price fetch failed - reject to be safe (can't enforce filter)
