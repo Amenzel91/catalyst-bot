@@ -53,7 +53,11 @@
       "Bash(Select-String \"moa\")",
       "Bash(del datamoaanalysis_report.json)",
       "Bash(Select-Object -Last 50)",
-      "Bash(git rev-parse:*)"
+      "Bash(git rev-parse:*)",
+      "Bash(npm update:*)",
+      "Bash(npm audit fix:*)",
+      "WebFetch(domain:www.llamaindex.ai)",
+      "WebFetch(domain:arxiv.org)"
     ],
     "deny": [],
     "ask": []

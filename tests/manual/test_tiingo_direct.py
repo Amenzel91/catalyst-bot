@@ -26,7 +26,8 @@ print(f"Ticker: {ticker}")
 print(f"Date range: {start_date} to {end_date}")
 print(f"FEATURE_TIINGO: {feature_enabled}")
 print(f"API Key present: {bool(api_key)}")
-print(f"API Key (first 10 chars): {api_key[:10]}..." if api_key else "API Key: (empty)")
+# Security: Never log API keys, even partially
+print(f"API Key: {'***SET***' if api_key else '(empty)'}")
 print("=" * 70)
 
 if not feature_enabled:

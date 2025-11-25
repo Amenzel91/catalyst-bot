@@ -366,11 +366,13 @@ def handle_interaction(interaction_data: Dict[str, Any]) -> Optional[Dict[str, A
             # Return immediate acknowledgment (type 6 = deferred update, no loading state)
             return {"type": 6}
         except Exception as e:
-            log.warning("chart_update_failed err=%s", str(e))
+            # Log full error internally (includes stack trace)
+            log.warning("chart_update_failed err=%s", str(e), exc_info=True)
+            # Security: Return generic error to user (don't expose internal details)
             return {
                 "type": 4,
                 "data": {
-                    "content": f"❌ Failed to update chart: {str(e)}",
+                    "content": "❌ Failed to update chart. Please try again later.",
                     "flags": 64,
                 },
             }

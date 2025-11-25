@@ -81,7 +81,13 @@ def _alpha_last_prev_cached(
     # If caching is disabled, delegate directly.
     if _AV_CACHE_TTL <= 0 or not _AV_CACHE_PATH:
         return _alpha_last_prev(ticker, api_key, timeout=timeout)
-    key = ticker.strip().upper()
+
+    # Security: Validate ticker to prevent path injection attacks
+    key = validate_ticker(ticker)
+    if not key:
+        log.error("market_cache_invalid_ticker ticker=%s", ticker)
+        raise ValueError(f"Invalid ticker: {ticker}")
+
     cache_file = _AV_CACHE_PATH / f"{key}.json"
     now = time.time()
     # Attempt to read from cache

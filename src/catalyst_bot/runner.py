@@ -307,15 +307,26 @@ def _mask_webhook(url: str) -> str:
     """
     Return a masked fingerprint for a Discord webhook URL like:
       https://discord.com/api/webhooks/{id}/{token}
-    Example: id=...123456 token=abcdef...
+    Example: id=...1234 token=***REDACTED***
+
+    Security: Token is completely masked to prevent leakage.
+    Only the last 4 digits of the webhook ID are shown for identification.
     """
     try:
+        if not url:
+            return "empty"
+
         parts = url.strip().split("/")
         wid = parts[-2] if len(parts) >= 2 else ""
         tok = parts[-1] if parts else ""
-        wid_tail = wid[-6:] if wid else ""
-        tok_head = tok[:6] if tok else ""
-        return f"id=...{wid_tail} token={tok_head}..."
+
+        # Only show last 4 digits of webhook ID for identification
+        wid_tail = wid[-4:] if len(wid) >= 4 else "***"
+
+        # Never show any part of the token - fully redact it
+        tok_masked = "***REDACTED***" if tok else "missing"
+
+        return f"id=...{wid_tail} token={tok_masked}"
     except Exception:
         return "unparsable"
 
@@ -3124,6 +3135,14 @@ def runner_main(
     # Send a simple "I'm alive" message to Discord (even in record-only),
     # controlled by FEATURE_HEARTBEAT
     _send_heartbeat(log, settings, reason="boot")
+
+    # Start position monitor if paper trading is enabled
+    try:
+        if paper_trader.is_enabled():
+            paper_trader.start_position_monitor()
+            log.info("paper_trading_monitor_enabled")
+    except Exception as e:
+        log.error("position_monitor_startup_failed error=%s", str(e))
 
     # signals
     try:

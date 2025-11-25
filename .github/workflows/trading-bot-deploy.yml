@@ -202,6 +202,8 @@ jobs:
       name: production
       url: https://catalyst-bot.com
     if: github.ref == 'refs/heads/main' || inputs.environment == 'production'
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -342,6 +344,8 @@ jobs:
       name: production-rollback
     if: failure() && github.ref == 'refs/heads/main'
     needs: [deploy-production]
+    permissions:
+      contents: read
 
     steps:
       - name: Rollback to previous version
@@ -384,6 +388,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [deploy-production]
     if: success()
+    permissions:
+      contents: read
 
     steps:
       - name: Monitor metrics for 30 minutes

@@ -28,6 +28,12 @@ log = get_logger("paper_trader")
 _client = None
 _client_lock = threading.Lock()
 
+# Position manager (Phase 2: Position Management)
+_position_manager = None
+_position_manager_lock = threading.Lock()
+_monitor_thread = None
+_monitor_stop_event = threading.Event()
+
 
 def _get_client():
     """Get or create Alpaca trading client (thread-safe, lazy init)."""
@@ -57,6 +63,35 @@ def _get_client():
             return None
         except Exception as e:
             log.error("paper_trader_init_failed error=%s", str(e))
+            return None
+
+
+def _get_position_manager():
+    """Get or create position manager (thread-safe, lazy init)."""
+    global _position_manager
+
+    if _position_manager is not None:
+        return _position_manager
+
+    with _position_manager_lock:
+        if _position_manager is not None:
+            return _position_manager
+
+        client = _get_client()
+        if client is None:
+            return None
+
+        try:
+            from .broker.alpaca_wrapper import AlpacaBrokerWrapper
+            from .position_manager_sync import PositionManagerSync
+
+            broker_wrapper = AlpacaBrokerWrapper(client=client)
+            _position_manager = PositionManagerSync(broker=broker_wrapper)
+            log.info("position_manager_initialized")
+            return _position_manager
+
+        except Exception as e:
+            log.error("position_manager_init_failed error=%s", str(e))
             return None
 
 
@@ -174,6 +209,37 @@ def execute_paper_trade(
             order.status,
         )
 
+        # Phase 2: Track position with automated exit rules
+        try:
+            manager = _get_position_manager()
+            if manager and price and price > 0:
+                # Calculate stop-loss and take-profit prices
+                stop_loss_pct = float(os.getenv("PAPER_TRADE_STOP_LOSS_PCT", "0.05"))  # 5%
+                take_profit_pct = float(os.getenv("PAPER_TRADE_TAKE_PROFIT_PCT", "0.15"))  # 15%
+
+                entry_price = Decimal(str(price))
+                stop_loss_price = entry_price * Decimal(str(1 - stop_loss_pct))
+                take_profit_price = entry_price * Decimal(str(1 + take_profit_pct))
+
+                # Open position in manager
+                manager.open_position(
+                    ticker=ticker,
+                    quantity=qty,
+                    entry_price=entry_price,
+                    entry_order_id=str(order.id),
+                    signal_id=alert_id,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                )
+
+                log.debug(
+                    "position_tracked ticker=%s stop=$%.2f target=$%.2f",
+                    ticker, stop_loss_price, take_profit_price
+                )
+
+        except Exception as track_err:
+            log.error("position_tracking_failed ticker=%s error=%s", ticker, str(track_err))
+
         return str(order.id)
 
     except Exception as e:
@@ -241,3 +307,119 @@ def get_open_positions() -> list:
     except Exception as e:
         log.error("get_positions_failed error=%s", str(e))
         return []
+
+
+# ============================================================================
+# Phase 2: Position Monitoring (Automated Exits)
+# ============================================================================
+
+def _position_monitor_loop():
+    """
+    Background thread that monitors positions and executes automated exits.
+
+    Runs continuously until stop event is set.
+    Checks market hours and pauses monitoring outside trading hours.
+    """
+    import time
+
+    check_interval = int(os.getenv("PAPER_TRADE_MONITOR_INTERVAL", "60"))  # 60s default
+    max_hold_hours = int(os.getenv("PAPER_TRADE_MAX_HOLD_HOURS", "24"))  # 24h default
+
+    log.info(
+        "position_monitor_started interval=%ds max_hold=%dh",
+        check_interval, max_hold_hours
+    )
+
+    while not _monitor_stop_event.is_set():
+        try:
+            manager = _get_position_manager()
+            if not manager:
+                time.sleep(check_interval)
+                continue
+
+            # Check if market is open
+            if not manager.broker.is_market_open():
+                log.debug("position_monitor_paused reason=market_closed")
+                time.sleep(check_interval)
+                continue
+
+            # Update all positions with current prices
+            updated_count = manager.update_position_prices()
+
+            # Check and execute automated exits
+            closed_positions = manager.check_and_execute_exits(max_hold_hours=max_hold_hours)
+
+            if closed_positions:
+                log.info("position_monitor_cycle updated=%d closed=%d",
+                        updated_count, len(closed_positions))
+
+                # Log each closed position
+                for closed in closed_positions:
+                    log.info(
+                        "position_auto_closed ticker=%s pnl=$%.2f pnl_pct=%.1f%% "
+                        "reason=%s hold_hours=%.1f",
+                        closed.ticker,
+                        closed.realized_pnl,
+                        closed.realized_pnl_pct * 100,
+                        closed.exit_reason,
+                        closed.hold_duration_seconds / 3600,
+                    )
+
+        except Exception as e:
+            log.error("position_monitor_error error=%s", str(e))
+
+        # Sleep until next check
+        time.sleep(check_interval)
+
+    log.info("position_monitor_stopped")
+
+
+def start_position_monitor():
+    """
+    Start the background position monitoring thread.
+
+    This should be called once at bot startup if paper trading is enabled.
+    """
+    global _monitor_thread
+
+    if _monitor_thread is not None and _monitor_thread.is_alive():
+        log.warning("position_monitor_already_running")
+        return
+
+    # Reset stop event
+    _monitor_stop_event.clear()
+
+    # Start monitoring thread
+    _monitor_thread = threading.Thread(
+        target=_position_monitor_loop,
+        name="PositionMonitor",
+        daemon=True,
+    )
+    _monitor_thread.start()
+
+    log.info("position_monitor_thread_started")
+
+
+def stop_position_monitor():
+    """
+    Stop the background position monitoring thread.
+
+    This should be called at bot shutdown.
+    """
+    global _monitor_thread
+
+    if _monitor_thread is None or not _monitor_thread.is_alive():
+        log.warning("position_monitor_not_running")
+        return
+
+    # Signal thread to stop
+    _monitor_stop_event.set()
+
+    # Wait for thread to finish (with timeout)
+    _monitor_thread.join(timeout=10.0)
+
+    if _monitor_thread.is_alive():
+        log.error("position_monitor_failed_to_stop")
+    else:
+        log.info("position_monitor_stopped")
+        _monitor_thread = None
