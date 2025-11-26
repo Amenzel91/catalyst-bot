@@ -21,4 +21,5 @@ filterwarnings = [
 ]
 markers = [
     "anyio: mark test to run with anyio",
+    "live: mark test to run with live API (requires paper trading account)",
 ]

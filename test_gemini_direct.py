@@ -30,26 +30,33 @@ async def test_gemini_direct():
 
     try:
         import google.generativeai as genai
-        print("✓ google-generativeai library installed")
+        print("[OK] google-generativeai library installed")
     except ImportError as e:
-        print(f"✗ google-generativeai library NOT installed: {e}")
+        print(f"[ERR] google-generativeai library NOT installed: {e}")
         print("\nInstall with: pip install google-generativeai")
         return
 
     try:
         # Configure API
         genai.configure(api_key=api_key)
-        print("✓ Gemini API configured")
+        print("[OK] Gemini API configured")
 
-        # Create model
+        # List available models first
+        print("\nAvailable Gemini models:")
+        for model_info in genai.list_models():
+            if "generateContent" in model_info.supported_generation_methods:
+                print(f"  - {model_info.name}")
+
+        # Create model - use gemini-2.0-flash-exp (latest stable)
+        model_name = "gemini-2.0-flash-exp"
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash-8b",
+            model_name=model_name,
             generation_config={
                 "temperature": 0.1,
                 "max_output_tokens": 500,
             }
         )
-        print("✓ Model created: gemini-1.5-flash-8b")
+        print(f"\n[OK] Model created: {model_name}")
 
         # Test prompt (simplified version of what SEC processor sends)
         prompt = """Analyze this SEC 8-K filing and extract key information.
@@ -93,12 +100,12 @@ Respond ONLY with valid JSON."""
             import json
             try:
                 parsed = json.loads(text)
-                print(f"\n✓ Successfully parsed as JSON")
+                print(f"\n[OK] Successfully parsed as JSON")
                 print(f"Keys: {list(parsed.keys())}")
             except json.JSONDecodeError as e:
-                print(f"\n✗ Failed to parse as JSON: {e}")
+                print(f"\n[ERR] Failed to parse as JSON: {e}")
         else:
-            print("✗ Response has no text attribute")
+            print("[ERR] Response has no text attribute")
             print(f"Response object: {response}")
 
             # Check for errors
@@ -122,7 +129,7 @@ Respond ONLY with valid JSON."""
             print(f"  Total tokens: {response.usage_metadata.total_token_count}")
 
     except Exception as e:
-        print(f"\n✗ Error during Gemini API call: {e}")
+        print(f"\n[ERR] Error during Gemini API call: {e}")
         import traceback
         traceback.print_exc()
 

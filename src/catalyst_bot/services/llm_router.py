@@ -61,10 +61,10 @@ class LLMRouter:
 
     # Model name mappings (provider → actual model name)
     MODEL_NAMES = {
-        "gemini_flash_lite": "gemini-2.0-flash-lite",  # Cheapest, fastest
-        "gemini_flash": "gemini-2.5-flash",           # Main workhorse
-        "gemini_pro": "gemini-2.5-flash",             # Using flash for now (pro may not be available)
-        "claude_sonnet": "claude-sonnet-4-20250514",  # Premium fallback
+        "gemini_flash_lite": "gemini-2.0-flash-lite",     # Cheapest, fastest
+        "gemini_flash": "gemini-2.0-flash-exp",           # Main workhorse (experimental but stable)
+        "gemini_pro": "gemini-2.5-pro",                   # Pro tier
+        "claude_sonnet": "claude-sonnet-4-20250514",      # Premium fallback
     }
 
     def __init__(self, config: dict):

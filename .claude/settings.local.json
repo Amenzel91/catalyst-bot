@@ -57,7 +57,8 @@
       "Bash(npm update:*)",
       "Bash(npm audit fix:*)",
       "WebFetch(domain:www.llamaindex.ai)",
-      "WebFetch(domain:arxiv.org)"
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:ai.google.dev)"
     ],
     "deny": [],
     "ask": []

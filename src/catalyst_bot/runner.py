@@ -88,6 +88,14 @@ from .moa_price_tracker import (
 from .seen_store import SeenStore  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
 
+# Paper Trading Integration - Import TradingEngine
+try:
+    from .trading.trading_engine import TradingEngine
+    TRADING_ENGINE_AVAILABLE = True
+except ImportError:
+    TRADING_ENGINE_AVAILABLE = False
+    TradingEngine = None
+
 # WAVE 1.2: Feedback Loop imports
 try:
     from .feedback import init_database, score_pending_alerts
@@ -1351,6 +1359,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     # Collect all SEC filings for batch processing (eliminates serial asyncio.run() bottleneck)
     sec_llm_cache = {}
     sec_filings_to_process = []
+    sec_filings_skipped_seen = 0
     for it in deduped:
         source = it.get("source") or "unknown"
         if _is_sec_source(source):
@@ -1358,6 +1367,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             if doc_text and len(doc_text) > 50:  # Only process substantial text
                 filing_type = source.replace("sec_", "").upper()
                 item_id = it.get("id") or it.get("link") or ""
+
+                # CRITICAL OPTIMIZATION: Skip already-seen SEC filings BEFORE expensive pre-filter
+                # This prevents re-processing the same 120 filings every cycle (saves 5min/cycle)
+                if item_id and seen_store:
+                    try:
+                        if seen_store.is_seen(item_id):
+                            sec_filings_skipped_seen += 1
+                            continue  # Skip this filing entirely
+                    except Exception:
+                        pass  # Fall through if seen check fails
+
                 ticker = (it.get("ticker") or "").strip()  # Extract ticker for pre-filter
                 sec_filings_to_process.append({
                     "item_id": item_id,
@@ -1365,6 +1385,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     "title": it.get("title", ""),
                     "filing_type": filing_type,
                     "ticker": ticker,  # Pass ticker to integration layer
+                    "id": item_id,  # Add id field for seen store compatibility
                 })
 
     # Batch process all SEC filings in parallel (one asyncio.run call for ALL filings)
@@ -1373,7 +1394,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             import asyncio
             from .sec_integration import batch_extract_keywords_from_documents
 
-            log.info("sec_batch_processing_start count=%d", len(sec_filings_to_process))
+            log.info("sec_batch_processing_start count=%d skipped_seen=%d", len(sec_filings_to_process), sec_filings_skipped_seen)
 
             # WEEK 1 FIX: Check for existing event loop to prevent deadlock
             try:
@@ -2494,6 +2515,32 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 # Don't fail the alert if tracking registration fails
                 log.debug(f"feedback_registration_failed ticker={ticker} err={e}")
 
+            # Paper Trading Integration - Process scored item for trading signal
+            if trading_engine and getattr(settings, "FEATURE_PAPER_TRADING", False):
+                try:
+                    import asyncio
+                    from decimal import Decimal
+
+                    # Convert price to Decimal for TradingEngine
+                    current_price = Decimal(str(last_px)) if last_px else None
+
+                    if current_price and ticker:
+                        # Run async trading engine call in sync context
+                        try:
+                            loop = asyncio.get_running_loop()
+                            # Already in async context - shouldn't happen
+                            log.warning("trading_engine_call_in_async_context ticker=%s", ticker)
+                        except RuntimeError:
+                            # No loop exists, safe to use asyncio.run()
+                            position_id = asyncio.run(
+                                trading_engine.process_scored_item(scored, ticker, current_price)
+                            )
+                            if position_id:
+                                log.info("trading_position_opened ticker=%s position_id=%s", ticker, position_id)
+                except Exception as e:
+                    # Never crash the bot - just log trading errors
+                    log.error("trading_engine_error ticker=%s err=%s", ticker, str(e), exc_info=True)
+
             # Optional: subscribe to Alpaca stream after sending an alert.  Run
             # asynchronously so we do not block the runner loop.  The feature
             # requires FEATURE_ALPACA_STREAM=1, valid credentials and a non‑zero
@@ -3219,6 +3266,31 @@ def runner_main(
         except Exception as e:
             log.error("sec_monitor_startup_failed err=%s", str(e))
 
+    # Paper Trading Integration - Initialize TradingEngine
+    trading_engine = None
+    if TRADING_ENGINE_AVAILABLE and getattr(settings, "feature_paper_trading", False):
+        try:
+            import asyncio
+
+            trading_engine = TradingEngine()
+
+            # Initialize async (use asyncio.run since we're in sync context)
+            try:
+                loop = asyncio.get_running_loop()
+                # Already in async context - shouldn't happen in runner_main
+                log.warning("trading_engine_init_in_async_context")
+            except RuntimeError:
+                # No loop exists, safe to use asyncio.run()
+                success = asyncio.run(trading_engine.initialize())
+                if success:
+                    log.info("trading_engine_initialized successfully")
+                else:
+                    log.error("trading_engine_init_failed")
+                    trading_engine = None
+        except Exception as e:
+            log.error("trading_engine_startup_failed err=%s", str(e), exc_info=True)
+            trading_engine = None
+
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
 
@@ -3390,6 +3462,30 @@ def runner_main(
         except Exception:
             pass
 
+        # Paper Trading Integration - Update positions at end of cycle
+        if trading_engine and getattr(settings, "FEATURE_PAPER_TRADING", False):
+            try:
+                import asyncio
+
+                # Run async position update in sync context
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Already in async context - shouldn't happen
+                    log.warning("position_update_in_async_context")
+                except RuntimeError:
+                    # No loop exists, safe to use asyncio.run()
+                    metrics = asyncio.run(trading_engine.update_positions())
+                    if metrics.get("positions", 0) > 0:
+                        log.info(
+                            "portfolio_update positions=%d exposure=$%.2f pnl=$%.2f",
+                            metrics.get("positions", 0),
+                            metrics.get("exposure", 0.0),
+                            metrics.get("pnl", 0.0),
+                        )
+            except Exception as e:
+                # Never crash the bot - just log position update errors
+                log.error("position_update_error err=%s", str(e), exc_info=True)
+
         # WAVE ALPHA Agent 1: Check if it's time to send heartbeat with cumulative stats
         try:
             global _heartbeat_acc
@@ -3433,6 +3529,23 @@ def runner_main(
         log.info("sec_monitor_stopped")
     except Exception:
         pass
+
+    # Paper Trading Integration - Shutdown TradingEngine gracefully
+    if trading_engine:
+        try:
+            import asyncio
+
+            log.info("trading_engine_shutdown_started")
+            try:
+                loop = asyncio.get_running_loop()
+                # Already in async context - shouldn't happen
+                log.warning("trading_engine_shutdown_in_async_context")
+            except RuntimeError:
+                # No loop exists, safe to use asyncio.run()
+                asyncio.run(trading_engine.shutdown())
+                log.info("trading_engine_shutdown_complete")
+        except Exception as e:
+            log.error("trading_engine_shutdown_failed err=%s", str(e), exc_info=True)
 
     # Generate LLM usage report at end of day
     log.info("=" * 70)

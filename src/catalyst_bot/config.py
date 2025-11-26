@@ -117,8 +117,12 @@ class Settings:
     feature_alpaca_stream: bool = _b("FEATURE_ALPACA_STREAM", False)
 
     # Alpaca API credentials.  Only used when FEATURE_ALPACA_STREAM is true.
+    # Note: Support both ALPACA_SECRET and ALPACA_API_SECRET for backwards compatibility
     alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "")
-    alpaca_secret: str = os.getenv("ALPACA_SECRET", "")
+    alpaca_api_secret: str = os.getenv("ALPACA_API_SECRET", "") or os.getenv("ALPACA_SECRET", "")
+    alpaca_secret: str = alpaca_api_secret  # Alias for backwards compatibility
+    alpaca_base_url: str = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    alpaca_paper_mode: bool = _b("ALPACA_PAPER_MODE", True)
 
     # Number of seconds to sample Alpaca stream after a headline.  The
     # subscription will be active for this duration to capture any immediate
@@ -132,6 +136,68 @@ class Settings:
     except Exception:
         # leave as zero when invalid
         pass
+
+    # --- Paper Trading Configuration (Wave 5) ---
+    # Master feature flag for paper trading bot integration
+    feature_paper_trading: bool = _b("FEATURE_PAPER_TRADING", False)
+
+    # Signal Generation Thresholds
+    signal_min_confidence: float = float(
+        os.getenv("SIGNAL_MIN_CONFIDENCE", "0.6") or "0.6"
+    )
+    signal_min_score: float = float(os.getenv("SIGNAL_MIN_SCORE", "1.5") or "1.5")
+    signal_sentiment_alignment: float = float(
+        os.getenv("SIGNAL_SENTIMENT_ALIGNMENT", "0.7") or "0.7"
+    )
+
+    # Position Sizing Configuration (Conservative but Uncapped)
+    position_size_base_pct: float = float(
+        os.getenv("POSITION_SIZE_BASE_PCT", "2.0") or "2.0"
+    )
+    position_size_max_pct: float = float(
+        os.getenv("POSITION_SIZE_MAX_PCT", "5.0") or "5.0"
+    )
+    max_portfolio_exposure_pct: float = float(
+        os.getenv("MAX_PORTFOLIO_EXPOSURE_PCT", "50.0") or "50.0"
+    )
+
+    # Risk Management Settings
+    default_stop_loss_pct: float = float(
+        os.getenv("DEFAULT_STOP_LOSS_PCT", "5.0") or "5.0"
+    )
+    default_take_profit_pct: float = float(
+        os.getenv("DEFAULT_TAKE_PROFIT_PCT", "10.0") or "10.0"
+    )
+    max_daily_loss_pct: float = float(
+        os.getenv("MAX_DAILY_LOSS_PCT", "10.0") or "10.0"
+    )
+    risk_reward_ratio_min: float = float(
+        os.getenv("RISK_REWARD_RATIO_MIN", "2.0") or "2.0"
+    )
+
+    # Market Data Configuration
+    market_data_update_interval: int = int(
+        os.getenv("MARKET_DATA_UPDATE_INTERVAL", "60") or "60"
+    )
+    market_data_provider: str = os.getenv("MARKET_DATA_PROVIDER", "alpaca")
+    market_data_cache_ttl: int = int(os.getenv("MARKET_DATA_CACHE_TTL", "30") or "30")
+
+    # SEC Feed Throttling (Smart Filtering)
+    sec_feed_live: bool = _b("SEC_FEED_LIVE", True)
+    sec_feed_max_per_hour: int = int(
+        os.getenv("SEC_FEED_MAX_PER_HOUR", "20") or "20"
+    )
+    sec_feed_priority_tickers: bool = _b("SEC_FEED_PRIORITY_TICKERS", True)
+
+    # Trading Schedule
+    trading_market_hours_only: bool = _b("TRADING_MARKET_HOURS_ONLY", False)
+    trading_close_eod: bool = _b("TRADING_CLOSE_EOD", False)
+    trading_close_before_weekend: bool = _b("TRADING_CLOSE_BEFORE_WEEKEND", False)
+
+    # Logging & Monitoring
+    trading_log_level: str = os.getenv("TRADING_LOG_LEVEL", "INFO")
+    trading_discord_alerts: bool = _b("TRADING_DISCORD_ALERTS", True)
+    trading_performance_report: bool = _b("TRADING_PERFORMANCE_REPORT", True)
 
     # --- Phase‑C: Watchlist support ---
     # Path to the CSV file containing watchlist tickers. The file should

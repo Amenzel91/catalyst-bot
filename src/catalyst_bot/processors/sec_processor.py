@@ -336,16 +336,9 @@ If no material events or financial metrics are found, use empty arrays [].
 
         try:
             # Try to parse JSON response
-            # Handle markdown code blocks if present
+            # NOTE: Markdown code block stripping is now handled by the LLM provider (gemini.py)
+            # The response should already be clean JSON at this point
             clean_response = llm_response.strip()
-            if clean_response.startswith("```json"):
-                clean_response = clean_response[7:]
-            if clean_response.startswith("```"):
-                clean_response = clean_response[3:]
-            if clean_response.endswith("```"):
-                clean_response = clean_response[:-3]
-
-            clean_response = clean_response.strip()
 
             data = json.loads(clean_response)
 
@@ -371,12 +364,30 @@ If no material events or financial metrics are found, use empty arrays [].
                     context=metric_data.get("context", "")
                 ))
 
-            # Parse sentiment
+            # Parse sentiment with validation
             sentiment_data = data.get("sentiment", {})
-            sentiment = sentiment_data.get("overall", "neutral")
 
+            # Validate sentiment value (must be bullish, neutral, or bearish)
+            VALID_SENTIMENTS = {"bullish", "neutral", "bearish"}
+            raw_sentiment = sentiment_data.get("overall", "neutral")
+            if isinstance(raw_sentiment, str):
+                raw_sentiment = raw_sentiment.lower().strip()
+
+            if raw_sentiment not in VALID_SENTIMENTS:
+                log.warning(
+                    "invalid_sentiment_from_llm ticker=%s sentiment=%s defaulting_to_neutral",
+                    ticker,
+                    raw_sentiment
+                )
+                sentiment = "neutral"
+            else:
+                sentiment = raw_sentiment
+
+            # Parse and clamp confidence to [0.0, 1.0]
             try:
                 sentiment_confidence = float(sentiment_data.get("confidence", 0.5))
+                # Clamp to valid range
+                sentiment_confidence = max(0.0, min(1.0, sentiment_confidence))
             except (ValueError, TypeError):
                 sentiment_confidence = 0.5
 

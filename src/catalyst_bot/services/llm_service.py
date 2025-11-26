@@ -297,15 +297,60 @@ class LLMService:
                 compressed
             )
 
-            # 5. Execute request
-            response = await provider.query(
-                prompt=prompt,
-                system_prompt=request.system_prompt,
-                model=model,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                timeout=request.timeout_seconds
-            )
+            # 5. Execute request with retry and fallback logic
+            last_error = None
+            retry_count = 0
+            max_retries = request.max_retries if hasattr(request, 'max_retries') else 2
+
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await provider.query(
+                        prompt=prompt,
+                        system_prompt=request.system_prompt,
+                        model=model,
+                        max_tokens=request.max_tokens,
+                        temperature=request.temperature,
+                        timeout=request.timeout_seconds
+                    )
+                    # Success - break out of retry loop
+                    break
+
+                except (TimeoutError, Exception) as e:
+                    last_error = e
+                    retry_count = attempt + 1
+
+                    log.warning(
+                        "llm_query_failed provider=%s attempt=%d/%d err=%s",
+                        provider_name,
+                        retry_count,
+                        max_retries + 1,
+                        str(e)[:100]
+                    )
+
+                    # If this isn't the last attempt and fallback is enabled, try fallback provider
+                    if attempt < max_retries:
+                        fallback_provider_name, fallback_model = self.router.get_fallback_provider(
+                            failed_provider=provider_name,
+                            complexity=request.complexity or TaskComplexity.MEDIUM
+                        )
+
+                        # Mark current provider as unhealthy temporarily (5 minutes)
+                        self.router.mark_provider_unhealthy(provider_name, duration_seconds=300)
+
+                        # Switch to fallback provider
+                        provider_name = fallback_provider_name
+                        model = fallback_model
+                        provider = self._get_provider(provider_name)
+
+                        log.info(
+                            "llm_fallback_provider from=%s to=%s model=%s",
+                            provider_name,
+                            fallback_provider_name,
+                            fallback_model
+                        )
+                    else:
+                        # Last attempt failed - re-raise error
+                        raise last_error
 
             # 6. Build response object
             latency_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -322,7 +367,7 @@ class LLMService:
                 confidence=response.get("confidence"),
                 request_id=request_id,
                 prompt_compressed=compressed,
-                retries=0
+                retries=retry_count  # Track actual retry count
             )
 
             # 7. Track cost and performance

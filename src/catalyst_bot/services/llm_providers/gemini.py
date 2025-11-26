@@ -27,11 +27,13 @@ log = get_logger("gemini_provider")
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini API provider."""
 
-    # Pricing per 1M tokens (USD)
+    # Pricing per 1M tokens (USD) - Updated January 2025
+    # Source: https://ai.google.dev/pricing
     PRICING = {
-        "gemini-2.0-flash-lite": {"input": 0.02, "output": 0.08},  # Cheapest
-        "gemini-2.5-flash": {"input": 0.075, "output": 0.30},      # Main model
-        "gemini-2.5-pro": {"input": 1.25, "output": 5.00},         # Pro (if available)
+        "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},     # Flash Lite (2025 pricing)
+        "gemini-2.0-flash-exp": {"input": 0.30, "output": 2.50},       # Flash Experimental (2025 pricing)
+        "gemini-2.5-flash": {"input": 0.30, "output": 2.50},           # Flash stable (2025 pricing)
+        "gemini-2.5-pro": {"input": 1.25, "output": 10.00},            # Pro tier (2025 pricing)
     }
 
     def __init__(self, config: dict):
@@ -62,6 +64,7 @@ class GeminiProvider(BaseLLMProvider):
             raise ValueError("GEMINI_API_KEY not set")
 
         try:
+            import asyncio
             import google.generativeai as genai
 
             # Configure API
@@ -82,15 +85,43 @@ class GeminiProvider(BaseLLMProvider):
 
             # Generate response
             log.debug(
-                "gemini_query_start model=%s prompt_len=%d",
+                "gemini_query_start model=%s prompt_len=%d timeout=%.1fs",
                 model,
-                len(prompt)
+                len(prompt),
+                timeout
             )
 
-            response = model_instance.generate_content(prompt)
+            # CRITICAL FIX: Run blocking Gemini call in thread pool with timeout
+            # This prevents blocking the asyncio event loop
+            response = await asyncio.wait_for(
+                asyncio.to_thread(model_instance.generate_content, prompt),
+                timeout=timeout
+            )
 
-            # Extract text
-            text = response.text if hasattr(response, "text") else ""
+            # Extract text (handle safety blocks gracefully)
+            text = ""
+            try:
+                text = response.text if hasattr(response, "text") else ""
+            except ValueError as e:
+                # Gemini safety filter blocked the content (finish_reason=2)
+                # This is common for SEC filings with sensitive financial data
+                if "finish_reason" in str(e):
+                    log.warning(
+                        "gemini_safety_block model=%s reason=%s",
+                        model,
+                        str(e)[:100]
+                    )
+                    # Return empty response - SEC processor will handle gracefully
+                    return {
+                        "text": "",
+                        "tokens_input": 0,
+                        "tokens_output": 0,
+                        "cost_usd": 0.0,
+                        "parsed_output": None,
+                        "confidence": None,
+                    }
+                else:
+                    raise
 
             # Count tokens (Gemini provides usage metadata)
             tokens_input = 0
@@ -110,11 +141,24 @@ class GeminiProvider(BaseLLMProvider):
             # Calculate cost
             cost_usd = self.estimate_cost(model, tokens_input, tokens_output)
 
+            # Strip markdown code blocks from response (Gemini wraps JSON in ```json...```)
+            # This is the root cause of empty/failed SEC processing
+            text_cleaned = text.strip()
+            if text_cleaned.startswith("```"):
+                # Remove opening ```json or ```
+                lines = text_cleaned.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]  # Remove first line
+                # Remove closing ```
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]  # Remove last line
+                text_cleaned = "\n".join(lines).strip()
+
             # Try to parse as JSON if response looks like JSON
             parsed_output = None
-            if text.strip().startswith("{") or text.strip().startswith("["):
+            if text_cleaned.startswith("{") or text_cleaned.startswith("["):
                 try:
-                    parsed_output = json.loads(text)
+                    parsed_output = json.loads(text_cleaned)
                 except json.JSONDecodeError:
                     pass
 
@@ -127,7 +171,7 @@ class GeminiProvider(BaseLLMProvider):
             )
 
             return {
-                "text": text,
+                "text": text_cleaned,  # Return cleaned text (markdown code blocks stripped)
                 "tokens_input": tokens_input,
                 "tokens_output": tokens_output,
                 "cost_usd": cost_usd,
@@ -138,6 +182,14 @@ class GeminiProvider(BaseLLMProvider):
         except ImportError:
             log.error("gemini_library_not_installed install_with: pip install google-generativeai")
             raise ValueError("google-generativeai library not installed")
+
+        except asyncio.TimeoutError:
+            log.error(
+                "gemini_query_timeout model=%s timeout=%.1fs",
+                model,
+                timeout
+            )
+            raise TimeoutError(f"Gemini query timed out after {timeout}s")
 
         except Exception as e:
             log.error("gemini_query_failed model=%s err=%s", model, str(e), exc_info=True)
