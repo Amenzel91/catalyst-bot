@@ -22,12 +22,29 @@ from .market import get_intraday, get_intraday_indicators, get_momentum_indicato
 from .ml_utils import extract_features, load_model, score_alerts
 from .quickchart_post import get_quickchart_png_path
 
-# Paper trading integration
+# Paper trading integration - MIGRATED TO TradingEngine (2025-11-26)
 try:
-    from .paper_trader import execute_paper_trade, is_enabled as paper_trading_enabled
+    from .adapters.trading_engine_adapter import execute_with_trading_engine
     HAS_PAPER_TRADING = True
+
+    # Legacy execute_paper_trade() is now a wrapper around TradingEngine
+    def execute_paper_trade(*args, **kwargs):
+        """Legacy wrapper - redirects to TradingEngine via adapter."""
+        log.warning("execute_paper_trade_legacy_called - use execute_with_trading_engine directly")
+        return None  # Legacy signature incompatible, use new adapter
+
+    def paper_trading_enabled():
+        """Check if paper trading is enabled via settings."""
+        try:
+            s = get_settings()
+            return getattr(s, "feature_paper_trading", False)
+        except Exception:
+            return False
+
 except ImportError:
     HAS_PAPER_TRADING = False
+    def execute_with_trading_engine(*args, **kwargs):
+        return False
     def execute_paper_trade(*args, **kwargs):
         return None
     def paper_trading_enabled():
@@ -1331,23 +1348,38 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         posted_price=last_price,
                     )
 
-                    # Execute paper trade (Phase 1: trade every alert for data collection)
+                    # Execute trade using TradingEngine (MIGRATED 2025-11-26)
                     if HAS_PAPER_TRADING and paper_trading_enabled():
                         try:
-                            order_id = execute_paper_trade(
+                            # Import extended hours detection
+                            from .market_hours import is_extended_hours
+                            from decimal import Decimal
+
+                            # Get current settings
+                            s = get_settings()
+
+                            # Execute trade via TradingEngine adapter
+                            success = execute_with_trading_engine(
+                                item=scored,  # ScoredItem from classify()
                                 ticker=ticker,
-                                price=last_price,
-                                alert_id=alert_id,
-                                source=source,
-                                catalyst_type=str(catalyst_type),
+                                current_price=Decimal(str(last_price)) if last_price else None,
+                                extended_hours=is_extended_hours(),
+                                settings=s,
                             )
-                            if order_id:
+
+                            if success:
                                 log.info(
-                                    "paper_trade_triggered ticker=%s order_id=%s",
-                                    ticker, order_id
+                                    "trading_engine_signal_executed ticker=%s extended_hours=%s",
+                                    ticker, is_extended_hours()
+                                )
+                            else:
+                                log.debug(
+                                    "trading_engine_signal_skipped ticker=%s reason=low_confidence_or_hold",
+                                    ticker
                                 )
                         except Exception as trade_err:
-                            log.debug("paper_trade_hook_failed error=%s", str(trade_err))
+                            log.error("trading_engine_execution_failed ticker=%s error=%s",
+                                    ticker, str(trade_err), exc_info=True)
 
                 except Exception as feedback_err:
                     # Don't fail the alert if feedback recording fails

@@ -237,6 +237,29 @@ def get_cycle_seconds(status: MarketStatus) -> int:
         return int(os.getenv("MARKET_CLOSED_CYCLE_SEC", "180"))
 
 
+def is_extended_hours(dt: datetime | None = None) -> bool:
+    """
+    Check if the market is in extended hours (pre-market or after-hours).
+
+    This function is used by the trading engine to determine whether to
+    enable extended hours trading with Alpaca. Extended hours require
+    DAY limit orders instead of GTC.
+
+    Parameters
+    ----------
+    dt : datetime, optional
+        The datetime to check. If None, uses current UTC time.
+
+    Returns
+    -------
+    bool
+        True if in pre-market (4-9:30 AM ET) or after-hours (4-8 PM ET),
+        False otherwise.
+    """
+    status = get_market_status(dt)
+    return status in ("pre_market", "after_hours")
+
+
 def get_market_info(dt: datetime | None = None) -> Dict[str, object]:
     """
     Get comprehensive market information for the given datetime.
@@ -256,6 +279,7 @@ def get_market_info(dt: datetime | None = None) -> Dict[str, object]:
         - is_warmup: bool
         - is_weekend: bool
         - is_holiday: bool
+        - is_extended_hours: bool
     """
     if dt is None:
         from datetime import timezone
@@ -271,4 +295,5 @@ def get_market_info(dt: datetime | None = None) -> Dict[str, object]:
         "is_warmup": is_preopen_warmup(dt),
         "is_weekend": is_weekend(dt),
         "is_holiday": is_market_holiday(dt),
+        "is_extended_hours": is_extended_hours(dt),
     }

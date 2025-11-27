@@ -99,7 +99,7 @@ class AlpacaBrokerWrapper:
             Order ID if successful, None otherwise
         """
         try:
-            from alpaca.trading.requests import MarketOrderRequest
+            from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
 
             # Get current position to determine quantity
@@ -111,14 +111,44 @@ class AlpacaBrokerWrapper:
                     log.warning("close_position_failed ticker=%s reason=no_position", ticker)
                     return None
 
-            # Create market sell order
-            order_request = MarketOrderRequest(
-                symbol=ticker,
-                qty=quantity,
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                extended_hours=True,
+            # Detect if we're in extended hours
+            from ..market_hours import is_extended_hours
+            from ..config import get_settings
+
+            settings = get_settings()
+            use_extended_hours = (
+                settings.trading_extended_hours and
+                is_extended_hours()
             )
+
+            # Alpaca requires DAY limit orders for extended hours
+            if use_extended_hours:
+                # Get current price for limit order
+                current_price = self.get_current_price(ticker)
+                if not current_price:
+                    log.error("close_position_failed ticker=%s reason=no_price_in_extended_hours", ticker)
+                    return None
+
+                # Use limit order at current price for immediate fill
+                order_request = LimitOrderRequest(
+                    symbol=ticker,
+                    qty=quantity,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,  # Required for extended hours
+                    limit_price=float(current_price),
+                    extended_hours=True,
+                )
+                log.info("close_position_extended_hours ticker=%s qty=%d limit_price=%s",
+                         ticker, quantity, current_price)
+            else:
+                # Regular hours: use market order with GTC
+                order_request = MarketOrderRequest(
+                    symbol=ticker,
+                    qty=quantity,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.GTC,
+                    extended_hours=False,
+                )
 
             order = self.client.submit_order(order_data=order_request)
 

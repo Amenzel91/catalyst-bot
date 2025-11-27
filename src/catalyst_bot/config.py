@@ -139,7 +139,8 @@ class Settings:
 
     # --- Paper Trading Configuration (Wave 5) ---
     # Master feature flag for paper trading bot integration
-    feature_paper_trading: bool = _b("FEATURE_PAPER_TRADING", False)
+    # MIGRATED TO TRADINGENGINE (2025-11-26): Now uses TradingEngine instead of legacy paper_trader.py
+    feature_paper_trading: bool = _b("FEATURE_PAPER_TRADING", True)
 
     # Signal Generation Thresholds
     signal_min_confidence: float = float(
@@ -193,6 +194,11 @@ class Settings:
     trading_market_hours_only: bool = _b("TRADING_MARKET_HOURS_ONLY", False)
     trading_close_eod: bool = _b("TRADING_CLOSE_EOD", False)
     trading_close_before_weekend: bool = _b("TRADING_CLOSE_BEFORE_WEEKEND", False)
+
+    # Extended Hours Trading (Pre-market: 4-9:30 AM ET, After-hours: 4-8 PM ET)
+    # When enabled, orders will be placed with extended_hours=True and TimeInForce.DAY
+    # Alpaca requires DAY limit orders for extended hours (no GTC, no market orders)
+    trading_extended_hours: bool = _b("TRADING_EXTENDED_HOURS", True)
 
     # Logging & Monitoring
     trading_log_level: str = os.getenv("TRADING_LOG_LEVEL", "INFO")

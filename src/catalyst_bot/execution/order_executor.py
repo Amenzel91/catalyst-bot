@@ -440,6 +440,7 @@ class OrderExecutor:
         self,
         signal: TradingSignal,
         use_bracket_order: bool = True,
+        extended_hours: bool = False,
     ) -> ExecutionResult:
         """
         Execute a trading signal.
@@ -447,13 +448,14 @@ class OrderExecutor:
         Args:
             signal: Trading signal to execute
             use_bracket_order: Whether to use bracket orders (entry + stop + target)
+            extended_hours: Whether to enable extended hours trading (pre-market/after-hours)
 
         Returns:
             ExecutionResult with execution details
         """
         self.logger.info(
             f"Executing signal: {signal.ticker} {signal.action} "
-            f"(confidence={signal.confidence:.2f})"
+            f"(confidence={signal.confidence:.2f}, extended_hours={extended_hours})"
         )
 
         try:
@@ -519,9 +521,9 @@ class OrderExecutor:
 
             # Execute order
             if use_bracket_order and signal.stop_loss_price and signal.take_profit_price:
-                result = await self._execute_bracket_order(signal, quantity)
+                result = await self._execute_bracket_order(signal, quantity, extended_hours=extended_hours)
             else:
-                result = await self._execute_simple_order(signal, quantity)
+                result = await self._execute_simple_order(signal, quantity, extended_hours=extended_hours)
 
             # Log execution
             self.logger.info(
@@ -543,6 +545,7 @@ class OrderExecutor:
         self,
         signal: TradingSignal,
         quantity: int,
+        extended_hours: bool = False,
     ) -> ExecutionResult:
         """
         Execute a simple market order.
@@ -550,6 +553,7 @@ class OrderExecutor:
         Args:
             signal: Trading signal
             quantity: Number of shares
+            extended_hours: Whether to enable extended hours trading
 
         Returns:
             ExecutionResult
@@ -558,13 +562,27 @@ class OrderExecutor:
             # Generate client order ID
             client_order_id = f"signal_{signal.signal_id}_{uuid.uuid4().hex[:8]}"
 
+            # Determine order type and time in force based on extended hours
+            # Alpaca requirement: Extended hours must use DAY limit orders (no GTC, no market)
+            if extended_hours:
+                order_type = OrderType.LIMIT
+                time_in_force = TimeInForce.DAY
+                # Use current price as limit for extended hours limit order
+                limit_price = signal.current_price or signal.entry_price
+            else:
+                order_type = OrderType.MARKET
+                time_in_force = TimeInForce.DAY
+                limit_price = None
+
             # Place order
             order = await self.broker.place_order(
                 ticker=signal.ticker,
                 side=signal.get_side(),
                 quantity=quantity,
-                order_type=OrderType.MARKET,
-                time_in_force=TimeInForce.DAY,
+                order_type=order_type,
+                limit_price=limit_price,
+                time_in_force=time_in_force,
+                extended_hours=extended_hours,
                 client_order_id=client_order_id,
             )
 
@@ -610,6 +628,7 @@ class OrderExecutor:
         self,
         signal: TradingSignal,
         quantity: int,
+        extended_hours: bool = False,
     ) -> ExecutionResult:
         """
         Execute a bracket order (entry + stop loss + take profit).
@@ -617,6 +636,7 @@ class OrderExecutor:
         Args:
             signal: Trading signal
             quantity: Number of shares
+            extended_hours: Whether to enable extended hours trading
 
         Returns:
             ExecutionResult
@@ -629,16 +649,30 @@ class OrderExecutor:
             # Generate client order ID
             client_order_id = f"bracket_{signal.signal_id}_{uuid.uuid4().hex[:8]}"
 
+            # Determine order parameters based on extended hours
+            # Alpaca requirement: Extended hours must use DAY limit orders
+            if extended_hours:
+                # Extended hours: MUST use DAY limit orders
+                entry_type = OrderType.LIMIT
+                entry_limit_price = signal.entry_price or signal.current_price
+                time_in_force = TimeInForce.DAY
+            else:
+                # Regular hours: Can use GTC and market/limit orders
+                entry_type = OrderType.LIMIT if signal.entry_price else OrderType.MARKET
+                entry_limit_price = signal.entry_price
+                time_in_force = TimeInForce.GTC
+
             # Create bracket order parameters
             params = BracketOrderParams(
                 ticker=signal.ticker,
                 side=signal.get_side(),
                 quantity=quantity,
-                entry_type=OrderType.LIMIT if signal.entry_price else OrderType.MARKET,
-                entry_limit_price=signal.entry_price,
+                entry_type=entry_type,
+                entry_limit_price=entry_limit_price,
                 stop_loss_price=signal.stop_loss_price,
                 take_profit_price=signal.take_profit_price,
-                time_in_force=TimeInForce.GTC,
+                time_in_force=time_in_force,
+                extended_hours=extended_hours,
                 client_order_id=client_order_id,
             )
 

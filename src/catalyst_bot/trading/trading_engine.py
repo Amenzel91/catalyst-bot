@@ -540,10 +540,28 @@ class TradingEngine:
             ManagedPosition object if successful, None otherwise
         """
         try:
+            # Determine if we should use extended hours trading
+            # Import here to avoid circular dependency
+            from ..market_hours import is_extended_hours
+            from ..config import get_settings
+
+            settings = get_settings()
+            use_extended_hours = (
+                settings.trading_extended_hours and
+                is_extended_hours()
+            )
+
+            if use_extended_hours:
+                self.logger.info(
+                    f"Extended hours trading enabled for {signal.ticker} "
+                    f"(pre-market/after-hours mode)"
+                )
+
             # Execute order
             result: ExecutionResult = await self.order_executor.execute_signal(
                 signal=signal,
                 use_bracket_order=True,  # Always use bracket orders for risk management
+                extended_hours=use_extended_hours,
             )
 
             if not result.success:

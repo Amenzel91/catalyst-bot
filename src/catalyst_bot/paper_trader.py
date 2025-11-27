@@ -1,15 +1,41 @@
 """
-Paper Trading Module
-====================
+Paper Trading Module - DEPRECATED (2025-11-26)
+===============================================
 
-Executes paper trades on Alpaca based on bot alerts.
-Designed for data collection - trades every alert to capture performance data.
+⚠️  DEPRECATED: This module has been replaced by TradingEngine.
+⚠️  DO NOT USE THIS MODULE FOR NEW CODE.
 
-Usage:
+This module is kept for reference only. All trading now goes through:
+    src.catalyst_bot.adapters.trading_engine_adapter.execute_with_trading_engine()
+
+Migration Details:
+    - Backup: paper_trader.py.LEGACY_BACKUP_2025-11-26
+    - New System: TradingEngine with OrderExecutor, PositionManager, and risk management
+    - Adapter: SignalAdapter converts ScoredItem → TradingSignal
+    - Extended Hours: Fully supported with DAY limit orders
+    - Tests: 85 tests passing in tests/test_*_adapter.py
+
+For migration documentation, see:
+    - docs/LEGACY-TO-TRADINGENGINE-MIGRATION-PLAN.md
+    - docs/migration/INTEGRATION_MAP.md
+    - docs/migration/ADAPTER_DESIGN.md
+
+Old Usage (DEPRECATED):
     from .paper_trader import execute_paper_trade
-
-    # After an alert is generated:
     execute_paper_trade(ticker="AAPL", price=150.00, alert_id="abc123")
+
+New Usage:
+    from .adapters.trading_engine_adapter import execute_with_trading_engine
+    from .market_hours import is_extended_hours
+    from decimal import Decimal
+
+    success = execute_with_trading_engine(
+        item=scored_item,  # ScoredItem from classify()
+        ticker="AAPL",
+        current_price=Decimal("150.00"),
+        extended_hours=is_extended_hours(),
+        settings=get_settings()
+    )
 """
 
 from __future__ import annotations
