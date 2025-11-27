@@ -72,6 +72,7 @@ class SignalAdapter:
         ticker: str,
         current_price: Decimal,
         extended_hours: bool = False,
+        data_collection_mode: bool = False,
     ) -> Optional[TradingSignal]:
         """
         Convert ScoredItem to TradingSignal with risk parameters.
@@ -81,6 +82,7 @@ class SignalAdapter:
             ticker: Stock ticker symbol (uppercase)
             current_price: Current market price
             extended_hours: Whether to enable extended hours trading
+            data_collection_mode: If True, bypasses confidence filtering for data collection
 
         Returns:
             TradingSignal if actionable, None if below thresholds
@@ -88,8 +90,8 @@ class SignalAdapter:
         # Calculate confidence from scored item
         confidence = self._calculate_confidence(scored_item)
 
-        # Check minimum confidence threshold
-        if confidence < self.config.min_confidence_for_trade:
+        # Check minimum confidence threshold (skip in data collection mode)
+        if not data_collection_mode and confidence < self.config.min_confidence_for_trade:
             self.logger.debug(
                 f"Signal for {ticker} below minimum confidence threshold: "
                 f"{confidence:.2%} < {self.config.min_confidence_for_trade:.2%}"
@@ -130,6 +132,11 @@ class SignalAdapter:
             "enriched": scored_item.enriched,
             "enrichment_timestamp": scored_item.enrichment_timestamp,
             "extended_hours": extended_hours,
+            "data_collection_mode": data_collection_mode,
+            "would_filter": (
+                not data_collection_mode
+                and confidence < self.config.min_confidence_for_trade
+            ),
         }
 
         # Create trading signal

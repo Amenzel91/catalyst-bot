@@ -53,6 +53,9 @@ def execute_with_trading_engine(
         # Import TradingEngine here to avoid circular dependency
         from ..trading.trading_engine import TradingEngine
 
+        # Get data_collection_mode from settings (defaults to False if not available)
+        data_collection_mode = getattr(settings, "data_collection_mode", False) if settings else False
+
         # Initialize signal adapter with default configuration
         adapter_config = SignalAdapterConfig(
             default_stop_loss_pct=0.05,  # 5% stop-loss
@@ -69,6 +72,7 @@ def execute_with_trading_engine(
             ticker=ticker,
             current_price=current_price,
             extended_hours=extended_hours,
+            data_collection_mode=data_collection_mode,
         )
 
         # If no actionable signal, return False

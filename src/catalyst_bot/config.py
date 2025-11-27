@@ -142,6 +142,12 @@ class Settings:
     # MIGRATED TO TRADINGENGINE (2025-11-26): Now uses TradingEngine instead of legacy paper_trader.py
     feature_paper_trading: bool = _b("FEATURE_PAPER_TRADING", True)
 
+    # Data Collection Mode
+    # When enabled (1), trades ALL alerts regardless of confidence for maximum data collection.
+    # When disabled (0), filters signals below 60% confidence (production mode).
+    # Use during initial 1-2 month data collection phase to gather comprehensive training data.
+    data_collection_mode: bool = _b("DATA_COLLECTION_MODE", True)
+
     # Signal Generation Thresholds
     signal_min_confidence: float = float(
         os.getenv("SIGNAL_MIN_CONFIDENCE", "0.6") or "0.6"

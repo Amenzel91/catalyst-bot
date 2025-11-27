@@ -1152,33 +1152,36 @@ def fast_classify(
             )
 
     # --- MARKET REGIME ADJUSTMENT ---
+    # PHASE 1 FIX (2025-11-27): Feature flag check ADDED
+    # Previously ran unconditionally
     regime_multiplier = 1.0
     regime_data = None
 
-    try:
-        from .market_regime import get_current_regime
+    if os.getenv("FEATURE_MARKET_REGIME", "0") == "1":
+        try:
+            from .market_regime import get_current_regime
 
-        regime_data = get_current_regime()
-        regime_multiplier = regime_data.get("multiplier", 1.0)
+            regime_data = get_current_regime()
+            regime_multiplier = regime_data.get("multiplier", 1.0)
 
-        pre_regime_score = total_score
-        total_score = total_score * regime_multiplier
+            pre_regime_score = total_score
+            total_score = total_score * regime_multiplier
 
-        log.info(
-            "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
-            "multiplier=%.2f pre_score=%.3f post_score=%.3f",
-            ticker or "N/A",
-            regime_data.get("regime", "UNKNOWN"),
-            regime_data.get("vix", 0.0),
-            regime_data.get("spy_trend", "UNKNOWN"),
-            regime_multiplier,
-            pre_regime_score,
-            total_score,
-        )
-    except ImportError:
-        pass
-    except Exception as e:
-        log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+            log.info(
+                "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
+                "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+                ticker or "N/A",
+                regime_data.get("regime", "UNKNOWN"),
+                regime_data.get("vix", 0.0),
+                regime_data.get("spy_trend", "UNKNOWN"),
+                regime_multiplier,
+                pre_regime_score,
+                total_score,
+            )
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # Build ScoredItem with enriched=False
     scored: ScoredItem | dict
@@ -1366,37 +1369,40 @@ def enrich_scored_item(
                 pass
 
     # --- RVOL (RELATIVE VOLUME) BOOST ---
+    # PHASE 1 FIX (2025-11-27): Feature flag check ADDED
+    # Previously ran unconditionally, causing mid-pump alerts
     rvol_multiplier = 1.0
     rvol_data = None
 
-    try:
-        from .rvol import calculate_rvol_intraday
+    if ticker and os.getenv("FEATURE_RVOL", "0") == "1":
+        try:
+            from .rvol import calculate_rvol_intraday
 
-        rvol_data = calculate_rvol_intraday(ticker)
-        if rvol_data:
-            rvol_multiplier = rvol_data.get("multiplier", 1.0)
+            rvol_data = calculate_rvol_intraday(ticker)
+            if rvol_data:
+                rvol_multiplier = rvol_data.get("multiplier", 1.0)
 
-            pre_rvol_score = total_score
-            total_score = total_score * rvol_multiplier
+                pre_rvol_score = total_score
+                total_score = total_score * rvol_multiplier
 
-            log.info(
-                "rvol_adjustment ticker=%s rvol=%.2fx rvol_class=%s multiplier=%.2f "
-                "current_vol=%d avg_vol=%.0f pre_score=%.3f post_score=%.3f",
-                ticker,
-                rvol_data.get("rvol", 1.0),
-                rvol_data.get("rvol_class", "NORMAL"),
-                rvol_multiplier,
-                rvol_data.get("current_volume", 0),
-                rvol_data.get("avg_volume_20d", 0.0),
-                pre_rvol_score,
-                total_score,
+                log.info(
+                    "rvol_adjustment ticker=%s rvol=%.2fx rvol_class=%s multiplier=%.2f "
+                    "current_vol=%d avg_vol=%.0f pre_score=%.3f post_score=%.3f",
+                    ticker,
+                    rvol_data.get("rvol", 1.0),
+                    rvol_data.get("rvol_class", "NORMAL"),
+                    rvol_multiplier,
+                    rvol_data.get("current_volume", 0),
+                    rvol_data.get("avg_volume_20d", 0.0),
+                    pre_rvol_score,
+                    total_score,
+                )
+        except ImportError:
+            pass
+        except Exception as e:
+            log.debug(
+                "rvol_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
             )
-    except ImportError:
-        pass
-    except Exception as e:
-        log.debug(
-            "rvol_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
-        )
 
     # --- FLOAT-BASED CONFIDENCE ADJUSTMENT ---
     float_multiplier = 1.0
@@ -2025,47 +2031,52 @@ def classify_legacy(
             )
 
     # --- MARKET REGIME ADJUSTMENT ---
+    # PHASE 1 FIX (2025-11-27): Feature flag check ADDED (SEC Digester)
+    # Previously ran unconditionally
     # Apply regime multiplier to total_score based on current market conditions
     # This adjusts scores based on overall market environment (VIX, SPY trend)
     regime_multiplier = 1.0
     regime_data = None
 
-    try:
-        from .market_regime import get_current_regime
+    if os.getenv("FEATURE_MARKET_REGIME", "0") == "1":
+        try:
+            from .market_regime import get_current_regime
 
-        regime_data = get_current_regime()
-        regime_multiplier = regime_data.get("multiplier", 1.0)
+            regime_data = get_current_regime()
+            regime_multiplier = regime_data.get("multiplier", 1.0)
 
-        # Store pre-adjustment score for logging
-        pre_regime_score = total_score
+            # Store pre-adjustment score for logging
+            pre_regime_score = total_score
 
-        # Apply regime adjustment to total_score
-        total_score = total_score * regime_multiplier
+            # Apply regime adjustment to total_score
+            total_score = total_score * regime_multiplier
 
-        log.info(
-            "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
-            "multiplier=%.2f pre_score=%.3f post_score=%.3f",
-            ticker or "N/A",
-            regime_data.get("regime", "UNKNOWN"),
-            regime_data.get("vix", 0.0),
-            regime_data.get("spy_trend", "UNKNOWN"),
-            regime_multiplier,
-            pre_regime_score,
-            total_score,
-        )
-    except ImportError:
-        # market_regime module not available yet
-        pass
-    except Exception as e:
-        log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+            log.info(
+                "regime_adjustment_applied ticker=%s regime=%s vix=%.2f spy_trend=%s "
+                "multiplier=%.2f pre_score=%.3f post_score=%.3f",
+                ticker or "N/A",
+                regime_data.get("regime", "UNKNOWN"),
+                regime_data.get("vix", 0.0),
+                regime_data.get("spy_trend", "UNKNOWN"),
+                regime_multiplier,
+                pre_regime_score,
+                total_score,
+            )
+        except ImportError:
+            # market_regime module not available yet
+            pass
+        except Exception as e:
+            log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # --- RVOL (RELATIVE VOLUME) BOOST ---
+    # PHASE 1 FIX (2025-11-27): Feature flag check ADDED (SEC Digester)
+    # Previously ran unconditionally, causing mid-pump alerts
     # Apply RVol multiplier to boost scores for tickers with unusual volume
     # RVol >2.0x indicates elevated interest, often preceding significant price moves
     rvol_multiplier = 1.0
     rvol_data = None
 
-    if ticker and ticker.strip():
+    if ticker and ticker.strip() and os.getenv("FEATURE_RVOL", "0") == "1":
         try:
             from .rvol import calculate_rvol_intraday
 
