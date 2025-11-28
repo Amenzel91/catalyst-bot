@@ -143,6 +143,15 @@ LAST_CYCLE_STATS: Dict[str, Any] = {}
 # are incremented at the end of each cycle.  See update in _cycle().
 TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts": 0}
 
+# Enhanced Admin Heartbeat: Feed source tracking
+FEED_SOURCE_STATS: Dict[str, int] = {"rss": 0, "sec": 0, "social": 0}
+SEC_FILING_TYPES: Dict[str, int] = {}  # "8k": count, "10q": count, etc.
+TRADING_ACTIVITY_STATS: Dict[str, Any] = {
+    "signals_generated": 0,
+    "trades_executed": 0,
+}
+ERROR_TRACKER: List[Dict[str, Any]] = []  # {"level": "error", "category": "API", "message": "..."}
+
 # MOA Nightly Scheduler: Track last run date to prevent duplicate runs
 # This is persisted to data/moa/last_scheduled_run.json to survive restarts
 _MOA_LAST_RUN_DATE: date | None = None
@@ -360,6 +369,348 @@ def price_snapshot(ticker: str) -> float | None:
         return px
     except Exception:
         return None
+
+
+# ============================================================================
+# Enhanced Admin Heartbeat Helper Functions
+# ============================================================================
+
+
+def _get_trading_engine_data() -> Dict[str, Any]:
+    """
+    Get TradingEngine portfolio metrics and status.
+
+    Returns:
+        Dictionary with portfolio_value, position_count, daily_pnl, status
+        Falls back to "—" for missing data
+    """
+    try:
+        # Check if trading engine is available and initialized
+        trading_engine = globals().get("trading_engine")
+        if not trading_engine or not getattr(trading_engine, "_initialized", False):
+            return {
+                "portfolio_value": "—",
+                "position_count": "—",
+                "daily_pnl": "—",
+                "status": "Not Initialized",
+            }
+
+        # Get portfolio metrics (async method - need to handle carefully)
+        # For now, return basic status - full metrics require async context
+        status = trading_engine.get_status() if hasattr(trading_engine, "get_status") else {}
+
+        return {
+            "portfolio_value": "—",  # Requires async call to get_portfolio_metrics()
+            "position_count": "—",   # Requires async call
+            "daily_pnl": "—",        # Requires async call
+            "status": "Enabled" if status.get("trading_enabled") else "Disabled",
+            "circuit_breaker": "Active" if status.get("circuit_breaker_active") else "Inactive",
+        }
+    except Exception:
+        return {
+            "portfolio_value": "—",
+            "position_count": "—",
+            "daily_pnl": "—",
+            "status": "Error",
+        }
+
+
+def _get_llm_usage_hourly() -> Dict[str, Any]:
+    """
+    Get LLM usage statistics for the last hour and today.
+
+    Returns:
+        Dictionary with request counts, token counts, and cost estimates
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        # Get hourly stats (last 60 minutes)
+        now = datetime.now(timezone.utc)
+        hour_ago = now - timedelta(hours=1)
+        hourly_stats = get_monitor().get_stats(since=hour_ago, until=now)
+
+        # Get daily stats
+        daily_stats = get_monitor().get_daily_stats()
+
+        # Count by provider
+        gemini_count = hourly_stats.gemini.total_requests
+        claude_count = hourly_stats.anthropic.total_requests
+        local_count = hourly_stats.local.total_requests
+
+        return {
+            "total_requests": hourly_stats.total_requests,
+            "gemini_count": gemini_count,
+            "claude_count": claude_count,
+            "local_count": local_count,
+            "input_tokens": hourly_stats.gemini.total_input_tokens + hourly_stats.anthropic.total_input_tokens,
+            "output_tokens": hourly_stats.gemini.total_output_tokens + hourly_stats.anthropic.total_output_tokens,
+            "hourly_cost": hourly_stats.total_cost,
+            "daily_cost": daily_stats.total_cost,
+        }
+    except Exception:
+        return {
+            "total_requests": 0,
+            "gemini_count": 0,
+            "claude_count": 0,
+            "local_count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "hourly_cost": 0.0,
+            "daily_cost": 0.0,
+        }
+
+
+def _get_market_status_display() -> Dict[str, str]:
+    """
+    Get formatted market status information.
+
+    Returns:
+        Dictionary with status_emoji, status_text, next_event, cycle_time
+    """
+    try:
+        from datetime import datetime, time, timedelta, timezone
+        from zoneinfo import ZoneInfo
+
+        market_info = get_market_info()
+        status = market_info.get("status", "closed")
+        cycle_seconds = market_info.get("cycle_seconds", 180)
+
+        # Map status to emoji and text
+        status_map = {
+            "regular": ("🟢", "Open"),
+            "pre_market": ("🟡", "Pre-Market"),
+            "after_hours": ("🟠", "After-Hours"),
+            "closed": ("🔴", "Closed"),
+        }
+        emoji, text = status_map.get(status, ("⚪", "Unknown"))
+
+        # Calculate next event time (open/close)
+        et = ZoneInfo("America/New_York")
+        now_et = datetime.now(timezone.utc).astimezone(et)
+        today = now_et.date()
+
+        if status in ("pre_market", "closed"):
+            # Next event is market open (9:30 AM ET)
+            next_event_dt = datetime.combine(today, time(9, 30), tzinfo=et)
+            if next_event_dt <= now_et:
+                # Already passed today, next open is tomorrow
+                next_event_dt = datetime.combine(today + timedelta(days=1), time(9, 30), tzinfo=et)
+            event_name = "Open"
+        else:
+            # Next event is market close (4:00 PM ET)
+            next_event_dt = datetime.combine(today, time(16, 0), tzinfo=et)
+            if next_event_dt <= now_et:
+                # Already passed, show tomorrow's open
+                next_event_dt = datetime.combine(today + timedelta(days=1), time(9, 30), tzinfo=et)
+                event_name = "Open"
+            else:
+                event_name = "Close"
+
+        # Format next event time
+        time_until = next_event_dt - now_et
+        hours = int(time_until.total_seconds() // 3600)
+        minutes = int((time_until.total_seconds() % 3600) // 60)
+        next_event_str = f"{event_name} in {hours}h {minutes}m"
+
+        # Market hours description
+        if status == "regular":
+            hours_desc = "Regular (9:30 AM - 4:00 PM ET)"
+        elif status == "pre_market":
+            hours_desc = "Pre-Market (4:00 - 9:30 AM ET)"
+        elif status == "after_hours":
+            hours_desc = "After-Hours (4:00 - 8:00 PM ET)"
+        else:
+            hours_desc = "Closed (Weekend/Holiday)"
+
+        return {
+            "status_emoji": emoji,
+            "status_text": text,
+            "next_event": next_event_str,
+            "cycle_time_sec": cycle_seconds,
+            "market_hours_desc": hours_desc,
+        }
+    except Exception:
+        return {
+            "status_emoji": "⚪",
+            "status_text": "Unknown",
+            "next_event": "—",
+            "cycle_time_sec": 180,
+            "market_hours_desc": "—",
+        }
+
+
+def _get_feed_activity_summary() -> Dict[str, Any]:
+    """
+    Get feed activity summary from global FEED_SOURCE_STATS.
+
+    Returns:
+        Dictionary with rss_count, sec_count, social_count, sec_breakdown
+    """
+    try:
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+
+        rss_count = FEED_SOURCE_STATS.get("rss", 0)
+        sec_count = FEED_SOURCE_STATS.get("sec", 0)
+        social_count = FEED_SOURCE_STATS.get("social", 0)
+
+        # Format SEC breakdown (e.g., "8-K: 5, 10-Q: 2")
+        if SEC_FILING_TYPES:
+            breakdown_parts = []
+            for filing_type, count in sorted(SEC_FILING_TYPES.items()):
+                # Format: "8k" -> "8-K"
+                formatted_type = filing_type.upper().replace("K", "-K").replace("Q", "-Q").replace("G", "-G").replace("D", "-D")
+                breakdown_parts.append(f"{formatted_type}: {count}")
+            sec_breakdown = ", ".join(breakdown_parts)
+        else:
+            sec_breakdown = "—"
+
+        return {
+            "rss_count": rss_count,
+            "sec_count": sec_count,
+            "social_count": social_count,
+            "sec_breakdown": sec_breakdown,
+        }
+    except Exception:
+        return {
+            "rss_count": 0,
+            "sec_count": 0,
+            "social_count": 0,
+            "sec_breakdown": "—",
+        }
+
+
+def _get_error_summary() -> str:
+    """
+    Get formatted error summary from global ERROR_TRACKER.
+
+    Returns:
+        Multi-line string with color-coded errors (🔴/🟡/🟢)
+    """
+    try:
+        global ERROR_TRACKER
+
+        if not ERROR_TRACKER:
+            return "None"
+
+        # Group errors by category
+        error_groups: Dict[str, Dict[str, int]] = {}
+        for error in ERROR_TRACKER[-50:]:  # Last 50 errors
+            level = error.get("level", "info")
+            category = error.get("category", "Unknown")
+            message = error.get("message", "")
+
+            if category not in error_groups:
+                error_groups[category] = {"error": 0, "warning": 0, "info": 0, "sample": ""}
+
+            error_groups[category][level] += 1
+            if not error_groups[category]["sample"]:
+                error_groups[category]["sample"] = message[:50]
+
+        # Format output with emojis
+        lines = []
+        for category, counts in sorted(error_groups.items()):
+            total_errors = counts["error"]
+            total_warnings = counts["warning"]
+            total_info = counts["info"]
+
+            if total_errors > 0:
+                emoji = "🔴"
+                display_count = total_errors
+                level_text = "errors"
+            elif total_warnings > 0:
+                emoji = "🟡"
+                display_count = total_warnings
+                level_text = "warnings"
+            else:
+                emoji = "🟢"
+                display_count = total_info
+                level_text = "info"
+
+            sample = counts["sample"]
+            line = f"{emoji} {category}: {display_count} {level_text}"
+            if sample:
+                line += f" ({sample})"
+            lines.append(line)
+
+        return "\n".join(lines) if lines else "None"
+    except Exception:
+        return "Error retrieving stats"
+
+
+def _track_feed_source(source: str) -> None:
+    """
+    Track feed source type and SEC filing type.
+
+    Args:
+        source: Source string (e.g., "sec_8k", "globenewswire_public", "twitter")
+    """
+    try:
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+
+        if not source:
+            return
+
+        source_lower = source.lower()
+
+        # Classify source type
+        if source_lower.startswith("sec_"):
+            FEED_SOURCE_STATS["sec"] = FEED_SOURCE_STATS.get("sec", 0) + 1
+
+            # Extract filing type (e.g., "sec_8k" -> "8k")
+            filing_type = source_lower.replace("sec_", "")
+            if filing_type:
+                SEC_FILING_TYPES[filing_type] = SEC_FILING_TYPES.get(filing_type, 0) + 1
+
+        elif any(social in source_lower for social in ["twitter", "reddit", "social"]):
+            FEED_SOURCE_STATS["social"] = FEED_SOURCE_STATS.get("social", 0) + 1
+        else:
+            # Default to RSS/news
+            FEED_SOURCE_STATS["rss"] = FEED_SOURCE_STATS.get("rss", 0) + 1
+
+    except Exception:
+        pass  # Silent fail - tracking is non-critical
+
+
+def _track_error(level: str, category: str, message: str) -> None:
+    """
+    Track error in global ERROR_TRACKER.
+
+    Args:
+        level: "error", "warning", or "info"
+        category: Error category (e.g., "API", "LLM", "Database")
+        message: Error message
+    """
+    try:
+        global ERROR_TRACKER
+        from datetime import datetime, timezone
+
+        ERROR_TRACKER.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "category": category,
+            "message": message,
+        })
+
+        # Keep only last 100 errors (circular buffer)
+        if len(ERROR_TRACKER) > 100:
+            ERROR_TRACKER = ERROR_TRACKER[-100:]
+
+    except Exception:
+        pass  # Silent fail - error tracking shouldn't cause errors
+
+
+def _reset_cycle_tracking() -> None:
+    """Reset feed source tracking at start of each cycle."""
+    try:
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+
+        FEED_SOURCE_STATS = {"rss": 0, "sec": 0, "social": 0}
+        SEC_FILING_TYPES = {}
+        # Note: ERROR_TRACKER persists across cycles
+
+    except Exception:
+        pass
 
 
 def _send_heartbeat(log, settings, reason: str = "boot") -> None:
@@ -582,6 +933,166 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             {"name": "Providers", "value": provider_order, "inline": True},
             {"name": "Features", "value": features_value, "inline": False},
         ]
+
+        # Enhanced Boot Heartbeat: Add system info, trading engine, signal enhancement, market status
+        if reason == "boot":
+            import socket
+            import sys
+
+            # System Info
+            embed_fields.append({
+                "name": "🖥️ System Info",
+                "value": (
+                    f"Hostname: {socket.gethostname()}\n"
+                    f"Python: {sys.version.split()[0]}\n"
+                    f"Bot Version: v2.5.1 (TradingEngine+)\n"
+                    f"Started: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')}"
+                ),
+                "inline": False,
+            })
+
+            # TradingEngine Status
+            te_data = _get_trading_engine_data()
+            feature_paper_trading = getattr(settings, "feature_paper_trading", False)
+            data_collection_mode = getattr(settings, "data_collection_mode", True)
+            trading_extended_hours = getattr(settings, "trading_extended_hours", True)
+
+            embed_fields.append({
+                "name": "💹 Paper Trading (TradingEngine)",
+                "value": (
+                    f"Status: {'✅ Enabled' if feature_paper_trading else '❌ Disabled'}\n"
+                    f"Mode: {'Data Collection' if data_collection_mode else 'Production'}\n"
+                    f"Open Positions: {te_data.get('position_count', '—')}\n"
+                    f"Portfolio Value: ${te_data.get('portfolio_value', '—')}\n"
+                    f"Extended Hours: {'✅ DAY limit orders' if trading_extended_hours else '❌ Disabled'}"
+                ),
+                "inline": False,
+            })
+
+            # Signal Enhancement Features
+            feature_google_trends = os.getenv("FEATURE_GOOGLE_TRENDS", "0") == "1"
+            feature_reddit = os.getenv("FEATURE_REDDIT_SENTIMENT", "0") == "1"
+            feature_news_sent = getattr(settings, "feature_news_sentiment", False)
+            feature_rvol = os.getenv("FEATURE_RVOL", "0") == "1"
+            feature_market_regime = os.getenv("FEATURE_MARKET_REGIME", "0") == "1"
+
+            embed_fields.append({
+                "name": "🎯 Signal Enhancement (NEW!)",
+                "value": (
+                    f"Google Trends: {'✅ Enabled (10% weight)' if feature_google_trends else '❌ Disabled'}\n"
+                    f"Reddit Sentiment: {'✅ Enabled (10% weight)' if (feature_reddit and feature_news_sent) else '❌ Disabled'}\n"
+                    f"RVOL Multiplier: {'✅ Enabled (0.8x-1.4x)' if feature_rvol else '❌ Disabled'}\n"
+                    f"Market Regime: {'✅ Enabled (0.5x-1.2x)' if feature_market_regime else '❌ Disabled'}"
+                ),
+                "inline": False,
+            })
+
+            # Market Status
+            market_status = _get_market_status_display()
+            embed_fields.append({
+                "name": "🕐 Market Status",
+                "value": (
+                    f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                    f"Next Event: {market_status['next_event']}\n"
+                    f"Scan Cycle: {market_status['cycle_time_sec']} sec ({market_status['market_hours_desc']})"
+                ),
+                "inline": False,
+            })
+
+        # Enhanced Interval Heartbeat: Add feed activity, LLM usage, trading activity, errors
+        if reason in ("interval", "endday"):
+            # Feed Activity Summary
+            feed_activity = _get_feed_activity_summary()
+            embed_fields.append({
+                "name": "📰 Feed Activity (Last Hour)",
+                "value": (
+                    f"RSS Feeds: {feed_activity['rss_count']:,} items\n"
+                    f"SEC Filings: {feed_activity['sec_count']} filings ({feed_activity['sec_breakdown']})\n"
+                    f"Twitter/Social: {feed_activity['social_count']:,} posts"
+                ),
+                "inline": False,
+            })
+
+            # Classification Summary (based on LAST_CYCLE_STATS)
+            try:
+                total_classified = int(items_cnt) if items_cnt != "—" else 0
+                deduped_count = int(dedup_cnt) if dedup_cnt != "—" else 0
+                skipped_count = int(skipped_cnt) if skipped_cnt != "—" else 0
+                above_threshold = int(alerted_cnt) if alerted_cnt != "—" else 0
+
+                if total_classified > 0:
+                    above_pct = (above_threshold / total_classified) * 100
+                    below_pct = ((total_classified - above_threshold) / total_classified) * 100
+                else:
+                    above_pct = 0.0
+                    below_pct = 0.0
+
+                embed_fields.append({
+                    "name": "🎯 Classification Summary",
+                    "value": (
+                        f"Total Classified: {total_classified:,}\n"
+                        f"Above MIN_SCORE: {above_threshold} ({above_pct:.1f}%)\n"
+                        f"Below Threshold: {total_classified - above_threshold:,} ({below_pct:.1f}%)\n"
+                        f"Deduped: {deduped_count}\n"
+                        f"Skipped: {skipped_count:,}"
+                    ),
+                    "inline": False,
+                })
+            except Exception:
+                embed_fields.append({
+                    "name": "🎯 Classification Summary",
+                    "value": "Data unavailable",
+                    "inline": False,
+                })
+
+            # Trading Activity
+            global TRADING_ACTIVITY_STATS
+            te_data = _get_trading_engine_data()
+
+            embed_fields.append({
+                "name": "💹 Trading Activity",
+                "value": (
+                    f"Signals Generated: {TRADING_ACTIVITY_STATS.get('signals_generated', 0)}\n"
+                    f"Trades Executed: {TRADING_ACTIVITY_STATS.get('trades_executed', 0)}\n"
+                    f"Open Positions: {te_data.get('position_count', '—')}\n"
+                    f"P&L (Today): ${te_data.get('daily_pnl', '—')}"
+                ),
+                "inline": False,
+            })
+
+            # LLM Usage
+            llm_usage = _get_llm_usage_hourly()
+            embed_fields.append({
+                "name": "🤖 LLM Usage (Last Hour)",
+                "value": (
+                    f"Requests: {llm_usage['total_requests']} (Gemini: {llm_usage['gemini_count']}, Claude: {llm_usage['claude_count']})\n"
+                    f"Tokens In: {llm_usage['input_tokens']:,}\n"
+                    f"Tokens Out: {llm_usage['output_tokens']:,}\n"
+                    f"Est. Cost (1hr): ${llm_usage['hourly_cost']:.2f}\n"
+                    f"Est. Cost (Today): ${llm_usage['daily_cost']:.2f}"
+                ),
+                "inline": False,
+            })
+
+            # Errors & Warnings
+            error_summary = _get_error_summary()
+            embed_fields.append({
+                "name": "⚠️ Errors & Warnings",
+                "value": error_summary,
+                "inline": False,
+            })
+
+            # Market Status (same as boot)
+            market_status = _get_market_status_display()
+            embed_fields.append({
+                "name": "🕐 Market Status",
+                "value": (
+                    f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                    f"Next Event: {market_status['next_event']}\n"
+                    f"Scan Cycle: {market_status['cycle_time_sec']} sec"
+                ),
+                "inline": False,
+            })
 
         # Add accumulator period summary for interval/endday heartbeats
         if acc_stats:
@@ -1089,6 +1600,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         market hours detection is enabled, features will be gated based on
         market status.
     """
+    # Enhanced Admin Heartbeat: Reset feed source tracking for this cycle
+    _reset_cycle_tracking()
+
     # Initialize seen store for this cycle (fixed: check-only, mark after success)
     seen_store = None
     try:
@@ -1362,6 +1876,10 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     sec_filings_skipped_seen = 0
     for it in deduped:
         source = it.get("source") or "unknown"
+
+        # Enhanced Admin Heartbeat: Track feed source type
+        _track_feed_source(source)
+
         if _is_sec_source(source):
             doc_text = it.get("summary") or it.get("title") or ""
             if doc_text and len(doc_text) > 50:  # Only process substantial text
