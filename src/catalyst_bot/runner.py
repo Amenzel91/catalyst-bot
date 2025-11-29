@@ -395,16 +395,51 @@ def _get_trading_engine_data() -> Dict[str, Any]:
                 "status": "Not Initialized",
             }
 
-        # Get portfolio metrics (async method - need to handle carefully)
-        # For now, return basic status - full metrics require async context
-        status = trading_engine.get_status() if hasattr(trading_engine, "get_status") else {}
+        # Initialize return values with defaults
+        portfolio_value = "—"
+        position_count = "—"
+        daily_pnl = "—"
+        status = "Initialized"
+
+        # Try to get position count (synchronous operation)
+        try:
+            if trading_engine.position_manager and hasattr(trading_engine.position_manager, "get_all_positions"):
+                positions = trading_engine.position_manager.get_all_positions()
+                position_count = len(positions)
+
+                # Calculate daily P&L from positions
+                total_pnl = sum(float(pos.unrealized_pnl) for pos in positions)
+                daily_pnl = f"${total_pnl:,.2f}"
+        except Exception:
+            pass  # Keep default values
+
+        # Try to get portfolio value (requires alpaca client)
+        try:
+            if trading_engine.broker and hasattr(trading_engine.broker, "session"):
+                # Can't call async method synchronously - use alpaca-py TradingClient directly
+                import os
+                from alpaca.trading.client import TradingClient
+
+                api_key = os.getenv("ALPACA_API_KEY", "").strip()
+                api_secret = os.getenv("ALPACA_SECRET", "").strip() or os.getenv("ALPACA_API_SECRET", "").strip()
+
+                if api_key and api_secret:
+                    # Create a sync client for this one-off call
+                    sync_client = TradingClient(api_key, api_secret, paper=True)
+                    account = sync_client.get_account()
+                    portfolio_value = f"${float(account.equity):,.2f}"
+        except Exception:
+            pass  # Keep default value
+
+        # Check circuit breaker status
+        circuit_breaker_status = "Active" if getattr(trading_engine, "circuit_breaker_active", False) else "Inactive"
 
         return {
-            "portfolio_value": "—",  # Requires async call to get_portfolio_metrics()
-            "position_count": "—",   # Requires async call
-            "daily_pnl": "—",        # Requires async call
-            "status": "Enabled" if status.get("trading_enabled") else "Disabled",
-            "circuit_breaker": "Active" if status.get("circuit_breaker_active") else "Inactive",
+            "portfolio_value": portfolio_value,
+            "position_count": position_count,
+            "daily_pnl": daily_pnl,
+            "status": status,
+            "circuit_breaker": circuit_breaker_status,
         }
     except Exception:
         return {
@@ -475,6 +510,27 @@ def _get_market_status_display() -> Dict[str, str]:
         market_info = get_market_info()
         status = market_info.get("status", "closed")
         cycle_seconds = market_info.get("cycle_seconds", 180)
+        is_holiday = market_info.get("is_holiday", False)
+        is_weekend = market_info.get("is_weekend", False)
+
+        # Check if market is closed due to holiday or weekend
+        if is_holiday:
+            return {
+                "status_emoji": "🔴",
+                "status_text": "Closed (Holiday)",
+                "next_event": "Reopens Next Trading Day",
+                "cycle_time_sec": cycle_seconds,
+                "market_hours_desc": "Market Closed for Holiday",
+            }
+
+        if is_weekend and status == "closed":
+            return {
+                "status_emoji": "🔴",
+                "status_text": "Closed (Weekend)",
+                "next_event": "Reopens Monday 9:30 AM ET",
+                "cycle_time_sec": cycle_seconds,
+                "market_hours_desc": "Market Closed for Weekend",
+            }
 
         # Map status to emoji and text
         status_map = {
@@ -591,7 +647,7 @@ def _get_error_summary() -> str:
         global ERROR_TRACKER
 
         if not ERROR_TRACKER:
-            return "None"
+            return "No errors or warnings"
 
         # Group errors by category
         error_groups: Dict[str, Dict[str, int]] = {}
@@ -633,7 +689,7 @@ def _get_error_summary() -> str:
                 line += f" ({sample})"
             lines.append(line)
 
-        return "\n".join(lines) if lines else "None"
+        return "\n".join(lines) if lines else "No errors or warnings"
     except Exception:
         return "Error retrieving stats"
 
@@ -3660,6 +3716,7 @@ def runner_main(
     once: bool = False, loop: bool = False, sleep_s: float | None = None
 ) -> int:
     global FEEDBACK_AVAILABLE
+    global trading_engine
 
     settings = get_settings()
     setup_logging(settings.log_level)
@@ -3699,9 +3756,8 @@ def runner_main(
         os.getenv("MIN_SENT_ABS", ""),
     )
 
-    # Send a simple "I'm alive" message to Discord (even in record-only),
-    # controlled by FEATURE_HEARTBEAT
-    _send_heartbeat(log, settings, reason="boot")
+    # Boot heartbeat moved to after TradingEngine initialization (see line ~3868)
+    # This ensures portfolio data is available when heartbeat is sent
 
     # Start position monitor if paper trading is enabled
     try:
@@ -3808,6 +3864,10 @@ def runner_main(
         except Exception as e:
             log.error("trading_engine_startup_failed err=%s", str(e), exc_info=True)
             trading_engine = None
+
+    # Send boot heartbeat AFTER TradingEngine initialization
+    # This ensures portfolio data is available when heartbeat is sent
+    _send_heartbeat(log, settings, reason="boot")
 
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
