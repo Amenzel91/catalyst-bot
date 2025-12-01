@@ -252,10 +252,10 @@ MIN_SENT_ABS=0.0
 # -----------------------------------------------------------------------------
 # Main webhook for posting alerts
 # Get from Discord: Server Settings > Integrations > Webhooks
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1426207943837225106/NR7aJc0oy3Eul6NxLN2qxQWj3WglrcJvjFEj9reBzL-EOYyhfNWup9qaCElVqTAu5J8z
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
 
 # Optional: Separate webhook for admin messages (errors, reports, heartbeats)
-DISCORD_ADMIN_WEBHOOK=https://discord.com/api/webhooks/1426208119352197261/a2Hfh-unzJAzNkgPD4DrJK4vMWwDyviohPtmI6PHNurwr52lOzeFVZIBtDOxkXB2G7Vu
+DISCORD_ADMIN_WEBHOOK=https://discord.com/api/webhooks/YOUR_ADMIN_WEBHOOK_ID/YOUR_ADMIN_WEBHOOK_TOKEN
 
 # -----------------------------------------------------------------------------
 # Market Data Providers
