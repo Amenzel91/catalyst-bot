@@ -10,6 +10,15 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Security: Explicit permissions for Claude Code workflow
+# Claude needs write access to respond to issues/PRs
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
 jobs:
   claude:
     if: |

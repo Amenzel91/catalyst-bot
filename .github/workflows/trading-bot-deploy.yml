@@ -23,6 +23,12 @@ on:
         type: boolean
         default: false
 
+# Security: Explicit permissions (principle of least privilege)
+# Deployment workflow needs write access for packages (Docker images)
+permissions:
+  contents: read
+  packages: write
+
 env:
   DOCKER_REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/catalyst-trading-bot

@@ -11,6 +11,10 @@ on:
   push:
     branches: [develop]
 
+# Security: Explicit permissions (principle of least privilege)
+permissions:
+  contents: read  # Read-only access to repository contents
+
 env:
   PYTHON_VERSION: '3.10'
   POETRY_VERSION: '1.7.0'

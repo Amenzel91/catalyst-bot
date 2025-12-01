@@ -6,9 +6,15 @@ on:
   pull_request:
     branches: [ "**" ]
 
+# Security: Explicit permissions (principle of least privilege)
+permissions:
+  contents: read  # Only read access to repository contents
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read  # Read-only access for checking out code
 
     steps:
       - name: Checkout
