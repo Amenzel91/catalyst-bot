@@ -36,6 +36,15 @@ except ImportError:
     from models import NewsItem  # type: ignore
     from sec_parser import FilingSection, extract_distress_keywords  # type: ignore
 
+try:
+    from .logging_utils import get_logger
+
+    log = get_logger("sec_filing_adapter")
+except ImportError:
+    import logging
+
+    log = logging.getLogger("sec_filing_adapter")
+
 
 def filing_to_newsitem(
     filing_section: FilingSection,

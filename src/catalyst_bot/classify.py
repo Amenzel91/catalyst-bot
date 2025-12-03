@@ -1346,17 +1346,8 @@ def enrich_scored_item(
     ScoredItem
         Enriched scored item with enriched=True
     """
+    import os
     import time
-
-    ticker = getattr(item, "ticker", None)
-    if not ticker or not ticker.strip():
-        # No ticker, can't enrich with these data sources
-        _set_attr(scored, "enriched", True)
-        _set_attr(scored, "enrichment_timestamp", time.time())
-        return scored
-
-    # Get current total_score from scored item
-    total_score = _get_score(scored)
 
     # Helper to set attributes
     def _set_attr(obj, key, value):
@@ -1367,6 +1358,16 @@ def enrich_scored_item(
                 setattr(obj, key, value)
             except Exception:
                 pass
+
+    ticker = getattr(item, "ticker", None)
+    if not ticker or not ticker.strip():
+        # No ticker, can't enrich with these data sources
+        _set_attr(scored, "enriched", True)
+        _set_attr(scored, "enrichment_timestamp", time.time())
+        return scored
+
+    # Get current total_score from scored item
+    total_score = _get_score(scored)
 
     # --- RVOL (RELATIVE VOLUME) BOOST ---
     # PHASE 1 FIX (2025-11-27): Feature flag check ADDED

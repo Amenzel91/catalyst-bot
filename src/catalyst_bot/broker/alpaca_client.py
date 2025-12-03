@@ -971,8 +971,6 @@ if __name__ == "__main__":
     This demonstrates how to use the Alpaca broker client.
     """
 
-    import asyncio
-
     async def demo():
         """Demo function showing Alpaca broker usage"""
 

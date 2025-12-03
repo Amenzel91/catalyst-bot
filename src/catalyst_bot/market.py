@@ -855,8 +855,8 @@ def batch_get_prices(
 
         for ticker in failed_tickers:
             try:
-                # get_price() has built-in provider chain (tiingo -> av -> yf)
-                fallback_price, fallback_change = get_price(ticker)
+                # get_last_price_change() has built-in provider chain (tiingo -> av -> yf)
+                fallback_price, fallback_change = get_last_price_change(ticker)
                 if fallback_price is not None:
                     results[ticker] = (fallback_price, fallback_change)
                     log.debug(

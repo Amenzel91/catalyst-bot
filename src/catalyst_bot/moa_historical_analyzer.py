@@ -22,7 +22,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .llm_usage_monitor import get_monitor
 from .logging_utils import get_logger

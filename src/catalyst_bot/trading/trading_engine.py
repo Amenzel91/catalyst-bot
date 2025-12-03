@@ -943,7 +943,6 @@ if __name__ == "__main__":
     Example usage of TradingEngine.
     """
 
-    import asyncio
     from decimal import Decimal
 
     async def demo():

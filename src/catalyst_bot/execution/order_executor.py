@@ -875,7 +875,6 @@ if __name__ == "__main__":
     This demonstrates how to execute trading signals.
     """
 
-    import asyncio
     from decimal import Decimal
 
     from ..broker.alpaca_client import AlpacaBrokerClient
