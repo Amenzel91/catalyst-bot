@@ -3496,12 +3496,22 @@ def _build_discord_embed(
             "inline": False
         })
 
+    # CRITICAL FIX: Filter out any fields with empty/invalid values
+    # Discord rejects embeds with empty field names or values
+    valid_fields = []
+    for field in fields:
+        fname = field.get("name", "")
+        fvalue = field.get("value", "")
+        # Ensure both name and value are non-empty strings
+        if fname and isinstance(fname, str) and fvalue and isinstance(fvalue, str):
+            valid_fields.append(field)
+
     embed = {
         "title": alert_title,
         "url": link,
         "color": color,
         "timestamp": ts,  # Discord will show this as relative time
-        "fields": fields,
+        "fields": valid_fields,  # Use filtered fields
         "footer": {"text": footer_text},
     }
 

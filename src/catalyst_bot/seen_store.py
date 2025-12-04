@@ -143,6 +143,7 @@ class SeenStore:
     def mark_seen(self, item_id: str, ts: Optional[int] = None) -> None:
         """Mark item as seen (thread-safe)."""
         ts = int(time.time()) if ts is None else int(ts)
+
         with self._lock:
             try:
                 cur = self._conn.cursor()
@@ -151,7 +152,7 @@ class SeenStore:
                     (item_id, ts),
                 )
                 self._conn.commit()
-                log.debug("marked_seen item_id=%s", item_id)
+                log.debug("marked_seen item_id=%s", item_id[:80])
             except Exception as e:  # pragma: no cover - non-fatal
                 log.error("mark_seen_error item_id=%s err=%s", item_id, str(e), exc_info=True)
                 raise  # Re-raise for caller to handle
