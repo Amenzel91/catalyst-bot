@@ -74,7 +74,7 @@ from .breakout_feedback import (  # Real-time outcome tracking
 )
 from .classify import classify, fast_classify, load_dynamic_keyword_weights
 from .config import get_settings
-from .enrichment_worker import enqueue_for_enrichment  # WAVE 3: Async enrichment
+from .enrichment_worker import enqueue_for_enrichment, get_enriched_item  # WAVE 3: Async enrichment
 from .config_extras import LOG_REPORT_CATEGORIES
 from .health_endpoint import start_health_server, update_health_status
 from .llm_usage_monitor import get_monitor
@@ -2918,9 +2918,10 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     pass  # Don't crash on logging failures
                 continue
 
-        # WAVE 3: Item passed all filters - Queue for async enrichment
-        # Enrichment (RVOL, float, VWAP, divergence) will happen in background
-        # This allows immediate alert without waiting for slow market data APIs
+        # WAVE 3: Item passed all filters - Queue for async enrichment and WAIT for it
+        # Enrichment (RVOL, float, VWAP, divergence) must complete before alert
+        # This ensures alerts show all market data fields
+        enriched_scored = scored  # Default to non-enriched if enrichment fails
         try:
             news_item = market.NewsItem.from_feed_dict(it)  # type: ignore[attr-defined]
             enrichment_task_id = enqueue_for_enrichment(scored, news_item)
@@ -2929,21 +2930,39 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 ticker,
                 enrichment_task_id
             )
+
+            # CRITICAL: Wait for enrichment to complete before sending alert
+            # This allows alerts to show Price, Float, Volume, RVol, RSI, etc.
+            enriched_result = get_enriched_item(enrichment_task_id, timeout=5.0)
+            if enriched_result:
+                enriched_scored = enriched_result
+                log.debug(
+                    "enrichment_completed ticker=%s task_id=%s",
+                    ticker,
+                    enrichment_task_id
+                )
+            else:
+                log.warning(
+                    "enrichment_timeout ticker=%s task_id=%s timeout=5.0s",
+                    ticker,
+                    enrichment_task_id
+                )
         except Exception as enrich_err:
-            # Don't block alerts if enrichment queueing fails
+            # Don't block alerts if enrichment fails - send with basic data
             log.warning(
-                "enrichment_queue_failed ticker=%s err=%s",
+                "enrichment_failed ticker=%s err=%s",
                 ticker,
                 str(enrich_err)
             )
 
         # Build a payload the new alerts API understands
+        # Use enriched_scored (which has market data) instead of scored
         alert_payload = {
             "item": it,
             "scored": (
-                scored._asdict()
-                if hasattr(scored, "_asdict")
-                else (scored.dict() if hasattr(scored, "dict") else scored)
+                enriched_scored._asdict()
+                if hasattr(enriched_scored, "_asdict")
+                else (enriched_scored.dict() if hasattr(enriched_scored, "dict") else enriched_scored)
             ),
             "last_price": last_px,
             "last_change_pct": last_chg,
@@ -2965,7 +2984,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             try:
                 ok = send_alert_safe(
                     item_dict=it,
-                    scored=scored,
+                    scored=enriched_scored,  # Use enriched version
                     last_price=last_px,
                     last_change_pct=last_chg,
                     record_only=settings.feature_record_only,
