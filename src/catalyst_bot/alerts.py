@@ -1617,6 +1617,7 @@ def _build_discord_embed(
     tkr = (item_dict.get("ticker") or "").strip().upper()
     tickers = item_dict.get("tickers") or ([tkr] if tkr else [])
     primary = tkr or (tickers[0] if tickers else "")
+    ticker = primary  # Alias for compatibility (some code may reference ticker)
 
     # Price / change (treat 0/empty as missing to avoid "$0.00").
     if last_price in (None, "", 0, 0.0, "0", "0.0"):
