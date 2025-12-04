@@ -198,35 +198,31 @@ def _is_retrospective_article(title: str, summary: str) -> bool:
         retrospective_patterns = [
             # Category 1: Past-Tense Movements (11 patterns)
             # Why + stock movement
-            r"\bwhy\s+.{0,60}?\b(stock|shares)\s+(is|are|has|have|was|were)\s+(down|up|falling|rising|trading|moving|getting|lower|higher)",
-            r"\bwhy\s+.{0,60}?\b(stock|shares)\s+(dropped|fell|slid|dipped|rose|jumped|climbed|surged|plunged|tanked)",
+            r"\bwhy\s+.{0,60}?\b(stock|shares)\s+(is|are|has|have|was|were)\s+"
+            r"(down|up|falling|rising|trading|moving|getting|lower|higher)",
+            r"\bwhy\s+.{0,60}?\b(stock|shares)\s+"
+            r"(dropped|fell|slid|dipped|rose|jumped|climbed|surged|plunged|tanked)",
             r"\bhere'?s\s+why\b",
             r"\bwhat\s+happened\s+(to|with)\b",
-
             # Verb + percentage in headline
-            r"\b(falls|drops|soars|loses|gains|slips|slides|jumps|climbs|plunges|tanks)\s+\d+\.?\d*%",
+            r"\b(falls|drops|soars|loses|gains|slips|slides|jumps|climbs|plunges|tanks)\s+"
+            r"\d+\.?\d*%",
             r"\b(stock|shares)\s+(drops|falls|rises|jumps|soars|plunges|tanks)\s+\d+",
-
             # Getting obliterated/crushed/hammered
             r"\b(getting|got)\s+(obliterated|crushed|hammered|destroyed|wrecked)\b",
-
             # Category 2: Earnings Reports (4 patterns)
             # Reports Q3/Q1/etc
             r"\breports?\s+q\d\s+(loss|earnings|results)",
             r"\breports?\s+q\d\s+(in\s+line|beats?|misses?|tops?|lags?)",
-
             # Beats/Misses/Tops/Lags estimates
             r"\b(misses?|beats?|tops?|lags?)\s+(revenue|earnings|sales)\s+estimates",
             r"\b(misses?|beats?|tops?|lags?)\s+q\d\s+(expectations|estimates)",
-
             # Category 3: Earnings Snapshots (1 pattern)
             r"\bearnings?\s+snapshot\b",
-
             # Category 4: Speculative Pre-Earnings (3 patterns)
             r"\b(will|may|could)\s+.{0,40}?\breport\s+(negative|positive)\s+earnings",
             r"\bwhat\s+to\s+(look\s+out\s+for|expect|know)\b",
             r"\bknow\s+the\s+trend\s+ahead\s+of\b",
-
             # Category 5: Price Percentages in Headlines (1 pattern)
             # [TICKER] Stock Name (TICKER) Soars/Drops X%
             r"^\[?\w+\]?\s+.{0,60}?\b(up|down|gains?|loses?)\s+\d+\.?\d*%",
@@ -243,7 +239,9 @@ def _is_retrospective_article(title: str, summary: str) -> bool:
         return False
 
 
-def _filter_by_freshness(items: List[Dict], max_age_minutes: int = 10) -> Tuple[List[Dict], int]:
+def _filter_by_freshness(
+    items: List[Dict], max_age_minutes: int = 10
+) -> Tuple[List[Dict], int]:
     """Filter out articles older than max_age_minutes.
 
     Parameters
@@ -280,7 +278,7 @@ def _filter_by_freshness(items: List[Dict], max_age_minutes: int = 10) -> Tuple[
             continue
 
         try:
-            ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
             if ts >= cutoff:
                 fresh_items.append(item)
             else:
@@ -382,7 +380,8 @@ def _apply_refined_dedup(items: List[Dict]) -> List[Dict]:
             title = it.get("title") or ""
             link = it.get("link") or it.get("canonical_url") or ""
             src = (it.get("source_host") or it.get("source") or "").lower()
-            sig = signature_from(title, link)
+            ticker = it.get("ticker") or ""
+            sig = signature_from(title, link, ticker)
             prev = idx.get(sig)
             w = _source_weight(src)
             if prev is None:
@@ -819,6 +818,17 @@ def _to_utc_iso(dt_str: Optional[str]) -> Optional[str]:
 
 
 def _stable_id(source: str, link: str, guid: Optional[str]) -> str:
+    # For SEC filings, use accession number to prevent duplicates across different feeds
+    if source and source.lower().startswith("sec_"):
+        from .dedupe import _extract_sec_accession_number
+
+        accession = _extract_sec_accession_number(link or guid or "")
+        if accession:
+            # Use accession number instead of URL/GUID for SEC filings
+            raw = accession + f"|{source}"
+            return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    # Non-SEC items: use original logic
     raw = (guid or link or "") + f"|{source}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
@@ -1422,7 +1432,9 @@ def fetch_pr_feeds() -> List[Dict]:
     # has inherent delays (filings can take hours to appear in the Atom feed).
     # SEC filings are official documents and remain actionable longer than news.
     max_age_min = int(os.getenv("NEWS_MAX_AGE_MINUTES", "10"))
-    sec_max_age_min = int(os.getenv("SEC_MAX_AGE_MINUTES", "480"))  # 8 hours default for SEC
+    sec_max_age_min = int(
+        os.getenv("SEC_MAX_AGE_MINUTES", "480")
+    )  # 8 hours default for SEC
 
     # Separate SEC items from news items for different freshness windows
     sec_items = [it for it in all_items if it.get("source", "").startswith("sec_")]
@@ -1430,11 +1442,15 @@ def fetch_pr_feeds() -> List[Dict]:
 
     # Apply freshness filter to news items (strict 10-min window)
     items_before_freshness = len(news_items)
-    news_items, rejected_news = _filter_by_freshness(news_items, max_age_minutes=max_age_min)
+    news_items, rejected_news = _filter_by_freshness(
+        news_items, max_age_minutes=max_age_min
+    )
 
     # Apply separate freshness filter to SEC items (longer window)
     sec_before = len(sec_items)
-    sec_items, rejected_sec = _filter_by_freshness(sec_items, max_age_minutes=sec_max_age_min)
+    sec_items, rejected_sec = _filter_by_freshness(
+        sec_items, max_age_minutes=sec_max_age_min
+    )
 
     # Combine filtered items
     all_items = news_items + sec_items
@@ -1442,7 +1458,8 @@ def fetch_pr_feeds() -> List[Dict]:
 
     if rejected_old > 0:
         log.info(
-            "freshness_filter_applied rejected=%d kept=%d max_age_min=%d sec_max_age_min=%d sec_kept=%d",
+            "freshness_filter_applied rejected=%d kept=%d max_age_min=%d "
+            "sec_max_age_min=%d sec_kept=%d",
             rejected_old,
             len(all_items),
             max_age_min,
@@ -2625,7 +2642,7 @@ def _fetch_finviz_news_from_env() -> list[dict]:
             # details.
             if _is_finviz_noise(title, (low.get("summary") or "")):
                 continue
-            
+
             # Skip retrospective/summary articles that explain past moves
             # instead of providing actionable catalysts. Examples: "Why XYZ
             # Stock Dropped 14%", "Here\'s why investors aren\'t happy",
@@ -2804,7 +2821,7 @@ def _fetch_finviz_news_export(url: str) -> list[dict]:
         try:
             if _is_finviz_noise(title, ""):
                 continue
-        # Also filter retrospective/summary articles
+            # Also filter retrospective/summary articles
             if _is_retrospective_article(title, ""):
                 continue
         except Exception:
