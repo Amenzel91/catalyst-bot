@@ -3505,16 +3505,27 @@ def _build_discord_embed(
         fvalue = field.get("value", "")
         # Ensure both name and value are non-empty strings
         if fname and isinstance(fname, str) and fvalue and isinstance(fvalue, str):
+            # Ensure inline is a proper boolean (Discord is strict about this)
+            if "inline" not in field or not isinstance(field.get("inline"), bool):
+                field["inline"] = False
             valid_fields.append(field)
 
+    # Ensure title is never empty (Discord requirement)
+    if not alert_title or not isinstance(alert_title, str) or not alert_title.strip():
+        alert_title = "Market Alert"
+
+    # Build embed with validated fields
     embed = {
-        "title": alert_title,
-        "url": link,
+        "title": alert_title[:256],  # Discord limit: 256 chars
+        "url": link if link else None,  # Remove empty URLs
         "color": color,
-        "timestamp": ts,  # Discord will show this as relative time
         "fields": valid_fields,  # Use filtered fields
         "footer": {"text": footer_text},
     }
+
+    # Only add timestamp if it's valid ISO 8601 format
+    if ts and isinstance(ts, str) and len(ts) > 10:
+        embed["timestamp"] = ts
 
     # Add description when summary is available (appears below title in Discord)
     if summary_text:
