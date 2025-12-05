@@ -3888,6 +3888,19 @@ def runner_main(
     # This ensures portfolio data is available when heartbeat is sent
     _send_heartbeat(log, settings, reason="boot")
 
+    # Send startup test alert to verify alert pipeline is working
+    # This runs through the full pipeline: scoring, enrichment, embed building
+    # Uses a synthetic ticker and never gets marked as "seen" so it fires on every restart
+    test_alert_enabled = os.getenv("STARTUP_TEST_ALERT", "1").strip() == "1"
+    if test_alert_enabled and settings.feature_alerts and main_webhook:
+        try:
+            from .startup_test_alert import send_startup_test_alert
+
+            log.info("startup_test_alert_triggering")
+            send_startup_test_alert(webhook_url=main_webhook)
+        except Exception as test_err:
+            log.error("startup_test_alert_exception err=%s", str(test_err), exc_info=True)
+
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
 
