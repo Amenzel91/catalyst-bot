@@ -3517,18 +3517,24 @@ def _build_discord_embed(
     # Build embed with validated fields
     embed = {
         "title": alert_title[:256],  # Discord limit: 256 chars
-        "url": link if link else None,  # Remove empty URLs
         "color": color,
         "fields": valid_fields,  # Use filtered fields
-        "footer": {"text": footer_text},
     }
+
+    # Only add footer if footer_text is valid (Discord rejects null/empty values)
+    if footer_text and isinstance(footer_text, str) and footer_text.strip():
+        embed["footer"] = {"text": footer_text}
+
+    # Only add URL if it exists (Discord rejects null values in optional fields)
+    if link and isinstance(link, str) and link.strip():
+        embed["url"] = link
 
     # Only add timestamp if it's valid ISO 8601 format
     if ts and isinstance(ts, str) and len(ts) > 10:
         embed["timestamp"] = ts
 
     # Add description when summary is available (appears below title in Discord)
-    if summary_text:
+    if summary_text and isinstance(summary_text, str) and summary_text.strip():
         embed["description"] = summary_text
     # Optionally add intraday indicators (VWAP/RSI14)
     try:
@@ -3548,7 +3554,12 @@ def _build_discord_embed(
                     # QuickChart integration: fetch a hosted chart URL
                     try:
                         qc_url = get_quickchart_url(t)
-                        if qc_url:
+                        # Validate URL format (Discord rejects invalid URLs)
+                        if (
+                            qc_url
+                            and isinstance(qc_url, str)
+                            and qc_url.startswith(("http://", "https://"))
+                        ):
                             embed["image"] = {"url": qc_url}
                             img_attached = True
                     except Exception:
@@ -3556,10 +3567,12 @@ def _build_discord_embed(
                 # Only attempt local charts when QuickChart is disabled.  When
                 # QuickChart is enabled but fails, skip mplfinance and fall
                 # back to Finviz instead of raising repeated import errors.
+                # IMPORTANT: Respect FEATURE_ADVANCED_CHARTS master switch
                 if (
                     not img_attached
                     and not getattr(s, "feature_quickchart", False)
                     and getattr(s, "feature_rich_alerts", False)
+                    and getattr(s, "feature_advanced_charts", False)
                     and CHARTS_OK
                 ):
                     try:
@@ -3598,4 +3611,9 @@ def _build_discord_embed(
             pass
     except Exception:
         pass
+
+    # DEBUG: Log embed structure before returning
+    import json
+    log.info("embed_structure=%s", json.dumps(embed, indent=2, default=str))
+
     return embed
