@@ -2722,6 +2722,43 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # END EARLY CATEGORY FILTERING
         # ========================================================================
 
+        # ========================================================================
+        # EARLY OTC FILTERING - Reject OTC tickers before expensive ML inference
+        # OTC stocks (OTCQB, OTCQX, Pink Sheets) are illiquid and unsuitable for
+        # day trading alerts. Filtering early saves processing time and API calls.
+        # ========================================================================
+        if ticker:
+            try:
+                from .ticker_validation import TickerValidator
+                validator = TickerValidator()
+                if validator.is_otc(ticker):
+                    log.info(
+                        "early_otc_skip ticker=%s source=%s reason=otc_market",
+                        ticker,
+                        source,
+                    )
+                    # MOA Phase 1: Log rejected OTC item for analysis
+                    try:
+                        log_rejected_item(
+                            item=it,
+                            rejection_reason="OTC_TICKER",
+                            price=last_px,
+                            score=None,
+                            sentiment=None,
+                            keywords=[],
+                            scored=None,
+                        )
+                    except Exception:
+                        pass  # Don't crash on logging failures
+                    skipped_cat_gate += 1  # Count as category skip
+                    continue
+            except Exception as e:
+                # Don't crash on OTC validation failures - allow item to proceed
+                log.debug("otc_check_failed ticker=%s err=%s", ticker, str(e))
+        # ========================================================================
+        # END EARLY OTC FILTERING
+        # ========================================================================
+
         # WAVE 3: Fast classify (keywords, sentiment, ML) - NO market enrichment
         # Market data (RVOL, float, VWAP, divergence) deferred until after filtering
         try:
