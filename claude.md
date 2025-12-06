@@ -1,5 +1,9 @@
 # Catalyst-Bot - AI Development Context
 
+> **For AI Agents**: This document is your primary reference for working on Catalyst-Bot. Read it fully before making changes. When in doubt, refer back here.
+
+---
+
 ## Mission Statement
 
 **Generate high-quality, actionable catalyst alerts with minimal false positives in tickers under $10.**
@@ -169,6 +173,26 @@ Before ending a session or after context compacting:
 - **Price**: Under $10 (enforced via `PRICE_CEILING`)
 - **Focus**: Small-cap momentum plays with material catalysts
 - **Quality**: High signal-to-noise ratio, actionable information
+
+---
+
+## Documentation Updates
+
+When making significant changes, update the relevant documentation:
+
+| Change Type | Update |
+|-------------|--------|
+| New feature | Add to `CHANGELOG.md`, update relevant `/docs/` guide |
+| Config change | Update `CONFIGURATION_GUIDE.md` |
+| API integration | Update API table in this file |
+| Breaking change | Document migration steps in `CHANGELOG.md` |
+| Bug fix | Note in `CHANGELOG.md` |
+
+**This file (`claude.md`)** should be updated when:
+- Priorities change
+- New protected components are added
+- New patterns become standard
+- Test count or pass rate changes significantly
 
 ---
 
