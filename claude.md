@@ -78,7 +78,7 @@ These components require explicit user approval before changes:
 - **Don't forget planned steps** - Always check the todo list before marking work complete
 - **Don't modify protected components** without asking first
 - **Don't add complexity without clear benefit** - Simple > clever
-- **Don't break existing tests** - Current pass rate: 97.5% (366 tests)
+- **Don't break existing tests** - Target: 100% pass rate (currently 97.5%, 366 tests)
 
 ---
 
@@ -133,7 +133,8 @@ Run tests before completing work:
 pytest tests/ -v
 ```
 
-**Current state**: 366 tests, 97.5% pass rate
+**Target**: 100% pass rate (no exceptions)
+**Current state**: 366 tests, 97.5% - needs improvement
 
 ---
 
