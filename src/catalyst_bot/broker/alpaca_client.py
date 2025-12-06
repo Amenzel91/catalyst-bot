@@ -947,9 +947,10 @@ class AlpacaBrokerClient(BrokerInterface):
         if result["connected"]:
             try:
                 # Measure latency with account request
-                start = asyncio.get_event_loop().time()
+                loop = asyncio.get_running_loop()
+                start = loop.time()
                 await self.get_account()
-                end = asyncio.get_event_loop().time()
+                end = loop.time()
 
                 result["authenticated"] = True
                 result["latency_ms"] = (end - start) * 1000

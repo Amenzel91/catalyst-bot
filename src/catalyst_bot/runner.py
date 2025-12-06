@@ -35,6 +35,7 @@ from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.ticker_validation import TickerValidator
 from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title, ticker_from_summary
 from catalyst_bot.multi_ticker_handler import analyze_multi_ticker_article
+from catalyst_bot.utils.event_loop_manager import EventLoopManager, run_async
 
 # Be nice to operators: give a clear error when a runtime dep is missing,
 # instead of a scary "<frozen runpy>" stacktrace.
@@ -2032,6 +2033,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         try:
             item_id = it.get("id") or ""
             if item_id and seen_store and seen_store.is_seen(item_id):
+                log.info("skipped_seen item_id=%s ticker=%s source=%s", item_id[:16], ticker, source)
                 skipped_seen += 1
                 continue
         except Exception:
@@ -3044,7 +3046,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 item_id = it.get("id") or ""
                 if item_id and seen_store:
                     seen_store.mark_seen(item_id)
-                    log.debug("marked_seen item_id=%s ticker=%s", item_id, ticker)
+                    log.info("marked_seen item_id=%s ticker=%s", item_id, ticker)
             except Exception as mark_err:
                 # Don't crash if marking fails, but log it
                 log.warning("mark_seen_failed item_id=%s err=%s", item_id, str(mark_err))
@@ -3863,23 +3865,22 @@ def runner_main(
     trading_engine = None
     if TRADING_ENGINE_AVAILABLE and getattr(settings, "feature_paper_trading", False):
         try:
-            import asyncio
+            # Start persistent event loop for trading engine
+            started = EventLoopManager.get_instance().start()
+            if started:
+                log.info("event_loop_manager_started for trading engine")
+            else:
+                log.warning("event_loop_manager_already_running")
 
             trading_engine = TradingEngine()
 
-            # Initialize async (use asyncio.run since we're in sync context)
-            try:
-                loop = asyncio.get_running_loop()
-                # Already in async context - shouldn't happen in runner_main
-                log.warning("trading_engine_init_in_async_context")
-            except RuntimeError:
-                # No loop exists, safe to use asyncio.run()
-                success = asyncio.run(trading_engine.initialize())
-                if success:
-                    log.info("trading_engine_initialized successfully")
-                else:
-                    log.error("trading_engine_init_failed")
-                    trading_engine = None
+            # Initialize async using run_async (persistent event loop)
+            success = run_async(trading_engine.initialize(), timeout=30.0)
+            if success:
+                log.info("trading_engine_initialized successfully")
+            else:
+                log.error("trading_engine_init_failed")
+                trading_engine = None
         except Exception as e:
             log.error("trading_engine_startup_failed err=%s", str(e), exc_info=True)
             trading_engine = None
@@ -4075,23 +4076,15 @@ def runner_main(
         # Paper Trading Integration - Update positions at end of cycle
         if trading_engine and getattr(settings, "FEATURE_PAPER_TRADING", False):
             try:
-                import asyncio
-
-                # Run async position update in sync context
-                try:
-                    loop = asyncio.get_running_loop()
-                    # Already in async context - shouldn't happen
-                    log.warning("position_update_in_async_context")
-                except RuntimeError:
-                    # No loop exists, safe to use asyncio.run()
-                    metrics = asyncio.run(trading_engine.update_positions())
-                    if metrics.get("positions", 0) > 0:
-                        log.info(
-                            "portfolio_update positions=%d exposure=$%.2f pnl=$%.2f",
-                            metrics.get("positions", 0),
-                            metrics.get("exposure", 0.0),
-                            metrics.get("pnl", 0.0),
-                        )
+                # Run async position update using run_async (persistent event loop)
+                metrics = run_async(trading_engine.update_positions(), timeout=10.0)
+                if metrics.get("positions", 0) > 0:
+                    log.info(
+                        "portfolio_update positions=%d exposure=$%.2f pnl=$%.2f",
+                        metrics.get("positions", 0),
+                        metrics.get("exposure", 0.0),
+                        metrics.get("pnl", 0.0),
+                    )
             except Exception as e:
                 # Never crash the bot - just log position update errors
                 log.error("position_update_error err=%s", str(e), exc_info=True)
@@ -4143,17 +4136,13 @@ def runner_main(
     # Paper Trading Integration - Shutdown TradingEngine gracefully
     if trading_engine:
         try:
-            import asyncio
-
             log.info("trading_engine_shutdown_started")
-            try:
-                loop = asyncio.get_running_loop()
-                # Already in async context - shouldn't happen
-                log.warning("trading_engine_shutdown_in_async_context")
-            except RuntimeError:
-                # No loop exists, safe to use asyncio.run()
-                asyncio.run(trading_engine.shutdown())
-                log.info("trading_engine_shutdown_complete")
+            run_async(trading_engine.shutdown(), timeout=10.0)
+            log.info("trading_engine_shutdown_complete")
+
+            # Shutdown event loop manager
+            EventLoopManager.get_instance().stop(timeout=5.0)
+            log.info("event_loop_manager_stopped")
         except Exception as e:
             log.error("trading_engine_shutdown_failed err=%s", str(e), exc_info=True)
 

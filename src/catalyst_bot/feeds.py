@@ -37,6 +37,7 @@ from . import market
 # affecting the name bound in this module.  get_volatility is still
 # imported directly because it is not monkeypatched by tests.
 from .classify_bridge import classify_text
+from .utils.event_loop_manager import run_async
 
 # Import both the cached settings accessor and the dataclass itself.  The
 # dataclass allows us to instantiate a fresh Settings object to pick up
@@ -1336,8 +1337,9 @@ def fetch_pr_feeds() -> List[Dict]:
     # PERFORMANCE: Use async concurrent fetching for 10-20x speedup
     if AIOHTTP_AVAILABLE:
         try:
-            feed_items, feed_summary = asyncio.run(
-                _fetch_feeds_async_concurrent(FEEDS, ENV_URL_OVERRIDES)
+            feed_items, feed_summary = run_async(
+                _fetch_feeds_async_concurrent(FEEDS, ENV_URL_OVERRIDES),
+                timeout=30.0
             )
             all_items.extend(feed_items)
             summary["by_source"].update(feed_summary)

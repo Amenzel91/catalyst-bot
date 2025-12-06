@@ -17,6 +17,7 @@ from typing import Optional
 from ..models import ScoredItem
 from ..logging_utils import get_logger
 from .signal_adapter import SignalAdapter, SignalAdapterConfig
+from ..utils.event_loop_manager import run_async
 
 logger = get_logger(__name__)
 
@@ -86,8 +87,11 @@ def execute_with_trading_engine(
         # Get or create TradingEngine instance
         trading_engine = _get_trading_engine_instance(settings)
 
-        # Execute signal using TradingEngine (async call wrapped in asyncio.run)
-        position = asyncio.run(trading_engine._execute_signal(signal))
+        # Execute signal using TradingEngine (async call wrapped in run_async)
+        position = run_async(
+            trading_engine._execute_signal(signal),
+            timeout=60.0  # Allow 60s for order execution
+        )
 
         # Return True if position was successfully created
         if position:
@@ -140,8 +144,11 @@ def _get_trading_engine_instance(settings=None):
             }
         )
 
-        # Initialize the engine (async operation wrapped in sync call)
-        initialized = asyncio.run(engine.initialize())
+        # Initialize the engine (async operation wrapped in run_async)
+        initialized = run_async(
+            engine.initialize(),
+            timeout=30.0  # Allow 30s for broker connection
+        )
 
         if not initialized:
             raise RuntimeError("Failed to initialize TradingEngine")
