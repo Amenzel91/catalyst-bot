@@ -60,7 +60,10 @@
       "WebFetch(domain:arxiv.org)",
       "WebFetch(domain:ai.google.dev)",
       "Bash(NUL)",
-      "Bash(Select-Object -First 100)"
+      "Bash(Select-Object -First 100)",
+      "Bash(ping:*)",
+      "Bash(del analyze_embed2.py analyze_embed4.py)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []
