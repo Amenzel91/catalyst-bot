@@ -1,9 +1,10 @@
 # Prometheus Metrics Implementation Guide
 
-**Version:** 1.0
+**Version:** 2.0
 **Created:** December 2025
+**Updated:** December 2025
 **Priority:** CRITICAL
-**Estimated Implementation Time:** 4-6 hours
+**Estimated Implementation Time:** 3-4 hours
 **Target Files:** `src/catalyst_bot/monitoring/metrics.py`, `src/catalyst_bot/monitoring/metrics_server.py`
 
 ---
@@ -11,15 +12,14 @@
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Prerequisites](#prerequisites)
-3. [Architecture](#architecture)
-4. [Implementation Files](#implementation-files)
-5. [Core Metrics Module](#core-metrics-module)
-6. [Metrics Server Module](#metrics-server-module)
-7. [Integration Points](#integration-points)
+2. [Implementation Strategy](#implementation-strategy)
+3. [Prerequisites](#prerequisites)
+4. [Phase A: Core Metrics Module](#phase-a-core-metrics-module)
+5. [Phase B: Integration](#phase-b-integration)
+6. [Phase C: Local Visibility](#phase-c-local-visibility)
+7. [Phase D: Cloud Migration (Future)](#phase-d-cloud-migration-future)
 8. [Coding Tickets](#coding-tickets)
 9. [Testing & Verification](#testing--verification)
-10. [Deployment Configuration](#deployment-configuration)
 
 ---
 
@@ -34,29 +34,79 @@ The Catalyst-Bot has comprehensive monitoring documentation in `docs/deployment/
 | Component | Status | Location |
 |-----------|--------|----------|
 | Health endpoints | ✅ Exists | `src/catalyst_bot/health_endpoint.py` (port 8080) |
+| Admin heartbeat | ✅ Exists | `src/catalyst_bot/runner.py` (Discord messages) |
 | LLM usage tracking | ✅ Exists | `src/catalyst_bot/llm_usage_monitor.py` |
 | JSON logging | ✅ Exists | `src/catalyst_bot/logging_utils.py` |
 | **Prometheus metrics** | ❌ Missing | `src/catalyst_bot/monitoring/metrics.py` |
 | **Metrics HTTP server** | ❌ Missing | `src/catalyst_bot/monitoring/metrics_server.py` |
 
-### Missing Metrics Categories
+### What We're Building
 
-1. **Portfolio Metrics** - portfolio_value, cash, buying_power
-2. **Performance Metrics** - daily_pnl, cumulative_pnl, sharpe_ratio, max_drawdown, win_rate
-3. **Trading Activity** - orders_total, trades_total, order_success_rate
-4. **Latency Histograms** - order_latency, api_latency, signal_processing_time
-5. **Error Counters** - errors_total, api_errors_total
-6. **System Metrics** - CPU, memory, disk usage
+A lightweight metrics system that:
+1. **Works locally** without Docker or external services
+2. **Enhances existing Discord heartbeat** with performance data
+3. **Exposes `/metrics` endpoint** for future Grafana Cloud integration
+4. **Adds zero operational overhead** - no new services to manage
 
-### Data Benefit
+---
 
-Real-time visibility into performance, latency trends, error patterns, and system health - enabling proactive optimization and alerting.
+## Implementation Strategy
+
+### Cloud-Ready Local Approach
+
+```
+NOW (Local Development)                    LATER (Hosted Production)
+┌────────────────────────────────┐         ┌────────────────────────────────┐
+│  Catalyst Bot                  │         │  Catalyst Bot                  │
+│  + monitoring/metrics.py       │         │  + monitoring/metrics.py       │
+│  + /metrics endpoint (9090)    │   ───►  │  + /metrics endpoint (9090)    │
+│  + Enhanced Discord heartbeat  │         │  + Enhanced Discord heartbeat  │
+│                                │         │                                │
+│  View metrics via:             │         │  View metrics via:             │
+│  • curl localhost:9090/metrics │         │  • Grafana Cloud (free tier)   │
+│  • Discord heartbeat (hourly)  │         │  • Discord heartbeat (hourly)  │
+│  • /health/detailed endpoint   │         │  • /health/detailed endpoint   │
+└────────────────────────────────┘         └────────────────────────────────┘
+
+No Docker required                         Just add Grafana Cloud credentials
+No Prometheus server                       5-minute migration
+No Grafana locally                         Same codebase, no changes needed
+```
+
+### What Gets Built vs What Gets Skipped
+
+| Component | Build Now? | Reason |
+|-----------|------------|--------|
+| `metrics.py` (core definitions) | ✅ Yes | Required foundation |
+| `metrics_server.py` (port 9090) | ✅ Yes | Cloud-ready endpoint |
+| Enhanced Discord heartbeat | ✅ Yes | Immediate visibility |
+| Health endpoint bridge | ✅ Yes | Quick metrics check |
+| Docker Compose setup | ❌ Skip | Not needed locally |
+| Local Prometheus server | ❌ Skip | Use Grafana Cloud later |
+| Local Grafana instance | ❌ Skip | Use Grafana Cloud later |
 
 ---
 
 ## Prerequisites
 
-### 1. Install Python Dependencies
+### 1. Check Port Availability
+
+Before starting, verify port 9090 is available:
+
+```bash
+# Linux/Mac
+netstat -tuln 2>/dev/null | grep :9090 || ss -tuln 2>/dev/null | grep :9090 || echo "Port 9090 is FREE"
+
+# Windows (PowerShell)
+netstat -an | findstr ":9090" || Write-Host "Port 9090 is FREE"
+
+# Alternative: Python one-liner
+python -c "import socket; s=socket.socket(); result=s.connect_ex(('localhost',9090)); print('Port 9090 is FREE' if result != 0 else 'Port 9090 is IN USE'); s.close()"
+```
+
+If port 9090 is in use, set `METRICS_PORT` environment variable to a different port.
+
+### 2. Install Python Dependencies
 
 Add to `requirements.txt`:
 
@@ -71,7 +121,7 @@ Install:
 pip install prometheus-client==0.19.0 psutil
 ```
 
-### 2. Create Monitoring Directory
+### 3. Create Monitoring Directory
 
 ```bash
 mkdir -p src/catalyst_bot/monitoring
@@ -80,69 +130,17 @@ touch src/catalyst_bot/monitoring/__init__.py
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Catalyst-Bot Application                                               │
-│  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │  runner.py (main loop)                                             │ │
-│  │  Lines 3959-4153                                                   │ │
-│  │  • Calls metrics.update_cycle_metrics() after each cycle           │ │
-│  │  • Calls metrics.update_system_metrics() every 15s                 │ │
-│  └───────────────────┬────────────────────────────────────────────────┘ │
-│                      │                                                   │
-│  ┌───────────────────┴────────────────────────────────────────────────┐ │
-│  │  trading_engine.py                                                  │ │
-│  │  Lines 271-606                                                      │ │
-│  │  • Records order/trade metrics in _execute_signal()                 │ │
-│  │  • Updates portfolio metrics in update_positions()                  │ │
-│  │  • Tracks latency with context managers                            │ │
-│  └───────────────────┬────────────────────────────────────────────────┘ │
-│                      │                                                   │
-│  ┌───────────────────┴────────────────────────────────────────────────┐ │
-│  │  monitoring/metrics.py                                              │ │
-│  │  • All Prometheus Gauge, Counter, Histogram definitions            │ │
-│  │  • Helper functions for updating metrics                           │ │
-│  └───────────────────┬────────────────────────────────────────────────┘ │
-│                      │                                                   │
-│  ┌───────────────────┴────────────────────────────────────────────────┐ │
-│  │  monitoring/metrics_server.py                                       │ │
-│  │  • HTTP server on port 9090                                        │ │
-│  │  • /metrics endpoint for Prometheus scraping                       │ │
-│  └───────────────────┬────────────────────────────────────────────────┘ │
-└──────────────────────┼──────────────────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Prometheus Server (scrapes every 15s)                                  │
-│  → Grafana Dashboards                                                   │
-│  → AlertManager                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Implementation Files
+## Phase A: Core Metrics Module
 
 ### File Structure
 
 ```
 src/catalyst_bot/
 ├── monitoring/
-│   ├── __init__.py           # NEW: Package init with exports
-│   ├── metrics.py            # NEW: All Prometheus metrics definitions
-│   └── metrics_server.py     # NEW: HTTP server for /metrics endpoint
-├── runner.py                 # MODIFY: Add metrics integration
-├── trading/
-│   └── trading_engine.py     # MODIFY: Add trading metrics
-├── health_monitor.py         # MODIFY: Bridge to Prometheus metrics
-└── health_endpoint.py        # EXISTING: Keep as-is (port 8080)
+│   ├── __init__.py           # Package exports
+│   ├── metrics.py            # Prometheus metrics definitions
+│   └── metrics_server.py     # HTTP server for /metrics
 ```
-
----
-
-## Core Metrics Module
 
 ### File: `src/catalyst_bot/monitoring/__init__.py`
 
@@ -151,6 +149,7 @@ src/catalyst_bot/
 Catalyst-Bot Monitoring Package
 
 Provides Prometheus metrics instrumentation for observability.
+Designed for local development with easy cloud migration path.
 """
 
 from .metrics import (
@@ -158,77 +157,60 @@ from .metrics import (
     portfolio_value,
     portfolio_cash,
     portfolio_buying_power,
-
-    # Position metrics
     open_positions_count,
-    position_value,
-    position_pnl,
 
     # Performance metrics
     daily_pnl,
-    cumulative_pnl,
-    sharpe_ratio,
-    max_drawdown,
     win_rate,
 
     # Trading activity
     orders_total,
     trades_total,
-    order_success_rate,
 
     # Latency metrics
     order_latency,
     api_latency,
-    signal_processing_time,
     cycle_duration,
 
     # Error metrics
     errors_total,
     api_errors_total,
 
-    # System metrics
-    system_cpu_percent,
-    system_memory_mb,
-    system_disk_usage_percent,
-
     # Cycle metrics
     cycles_total,
     alerts_total,
-    items_processed,
-    items_deduped,
 
     # Helper functions
     update_portfolio_metrics,
-    update_position_metrics,
-    update_performance_metrics,
     record_order,
     record_trade,
     record_error,
-    record_api_call,
     record_cycle,
+    record_alert,
     measure_api_call,
-    measure_signal_processing,
-    update_system_metrics,
+    get_metrics_summary,
 )
 
-from .metrics_server import start_metrics_server, stop_metrics_server
+from .metrics_server import (
+    start_metrics_server,
+    stop_metrics_server,
+    is_metrics_server_running,
+)
 
 __all__ = [
     # Metrics
     'portfolio_value', 'portfolio_cash', 'portfolio_buying_power',
-    'open_positions_count', 'position_value', 'position_pnl',
-    'daily_pnl', 'cumulative_pnl', 'sharpe_ratio', 'max_drawdown', 'win_rate',
-    'orders_total', 'trades_total', 'order_success_rate',
-    'order_latency', 'api_latency', 'signal_processing_time', 'cycle_duration',
+    'open_positions_count', 'daily_pnl', 'win_rate',
+    'orders_total', 'trades_total',
+    'order_latency', 'api_latency', 'cycle_duration',
     'errors_total', 'api_errors_total',
-    'system_cpu_percent', 'system_memory_mb', 'system_disk_usage_percent',
-    'cycles_total', 'alerts_total', 'items_processed', 'items_deduped',
+    'cycles_total', 'alerts_total',
 
     # Functions
-    'update_portfolio_metrics', 'update_position_metrics', 'update_performance_metrics',
-    'record_order', 'record_trade', 'record_error', 'record_api_call', 'record_cycle',
-    'measure_api_call', 'measure_signal_processing', 'update_system_metrics',
-    'start_metrics_server', 'stop_metrics_server',
+    'update_portfolio_metrics', 'record_order', 'record_trade',
+    'record_error', 'record_cycle', 'record_alert',
+    'measure_api_call', 'get_metrics_summary',
+    'start_metrics_server', 'stop_metrics_server', 'is_metrics_server_running',
 ]
 ```
 
@@ -238,32 +220,22 @@ __all__ = [
 """
 Prometheus metrics for Catalyst-Bot paper trading system.
 
-This module defines all Prometheus metrics for monitoring the bot's:
-- Portfolio performance
-- Trading activity
-- API latencies
-- System resources
-- Error rates
+Focused on actionable metrics:
+- Portfolio performance (what matters for trading)
+- Trading activity (orders, trades, outcomes)
+- Latency (API performance)
+- Errors (problems to fix)
 
 Reference: docs/deployment/monitoring.md (lines 78-305)
 """
 
 from __future__ import annotations
 
-import os
 import time
 from contextlib import contextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from prometheus_client import Counter, Gauge, Histogram, Summary
-
-# Try to import psutil for system metrics
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-
+from prometheus_client import Counter, Gauge, Histogram, REGISTRY
 
 # =============================================================================
 # Metric Prefix
@@ -272,7 +244,7 @@ METRIC_PREFIX = "catalyst_bot"
 
 
 # =============================================================================
-# Portfolio Metrics (docs/deployment/monitoring.md:89-102)
+# Portfolio Metrics (Most Important)
 # =============================================================================
 portfolio_value = Gauge(
     f'{METRIC_PREFIX}_portfolio_value',
@@ -286,52 +258,17 @@ portfolio_cash = Gauge(
 
 portfolio_buying_power = Gauge(
     f'{METRIC_PREFIX}_portfolio_buying_power',
-    'Total buying power (including leverage)'
+    'Total buying power (including margin)'
 )
 
-
-# =============================================================================
-# Position Metrics (docs/deployment/monitoring.md:104-122)
-# =============================================================================
 open_positions_count = Gauge(
     f'{METRIC_PREFIX}_open_positions',
     'Number of currently open positions'
 )
 
-position_value = Gauge(
-    f'{METRIC_PREFIX}_position_value',
-    'Value of individual position',
-    ['ticker', 'side']  # Labels: ticker=AAPL, side=long/short
-)
-
-position_pnl = Gauge(
-    f'{METRIC_PREFIX}_position_pnl',
-    'Unrealized P&L for individual position',
-    ['ticker', 'side']
-)
-
-
-# =============================================================================
-# Performance Metrics (docs/deployment/monitoring.md:127-151)
-# =============================================================================
 daily_pnl = Gauge(
     f'{METRIC_PREFIX}_daily_pnl',
     'Daily profit/loss in USD'
-)
-
-cumulative_pnl = Gauge(
-    f'{METRIC_PREFIX}_cumulative_pnl',
-    'Cumulative profit/loss since inception'
-)
-
-sharpe_ratio = Gauge(
-    f'{METRIC_PREFIX}_sharpe_ratio',
-    'Rolling 30-day Sharpe ratio'
-)
-
-max_drawdown = Gauge(
-    f'{METRIC_PREFIX}_max_drawdown',
-    'Maximum drawdown from peak (negative value, e.g., -0.10 = -10%)'
 )
 
 win_rate = Gauge(
@@ -341,46 +278,35 @@ win_rate = Gauge(
 
 
 # =============================================================================
-# Trading Activity Metrics (docs/deployment/monitoring.md:155-171)
+# Trading Activity Metrics
 # =============================================================================
 orders_total = Counter(
     f'{METRIC_PREFIX}_orders_total',
     'Total orders placed',
-    ['side', 'status']  # side: buy/sell, status: filled/rejected/cancelled/pending
+    ['side', 'status']  # side: buy/sell, status: filled/rejected/cancelled
 )
 
 trades_total = Counter(
     f'{METRIC_PREFIX}_trades_total',
-    'Total trades executed',
-    ['ticker', 'side', 'result']  # result: win/loss/breakeven
-)
-
-order_success_rate = Gauge(
-    f'{METRIC_PREFIX}_order_success_rate',
-    'Percentage of successfully filled orders (0-100)'
+    'Total trades closed',
+    ['result']  # result: win/loss/breakeven
 )
 
 
 # =============================================================================
-# Latency Metrics (docs/deployment/monitoring.md:175-193)
+# Latency Metrics
 # =============================================================================
 order_latency = Histogram(
     f'{METRIC_PREFIX}_order_latency_seconds',
-    'Order execution latency (time from signal to fill)',
+    'Order execution latency (signal to fill)',
     buckets=[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
 )
 
 api_latency = Histogram(
     f'{METRIC_PREFIX}_api_latency_seconds',
     'External API call latency',
-    ['api_name'],  # api_name: alpaca, tiingo, gemini, finnhub, discord
+    ['api_name'],  # alpaca, tiingo, gemini, discord
     buckets=[0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
-)
-
-signal_processing_time = Histogram(
-    f'{METRIC_PREFIX}_signal_processing_seconds',
-    'Time to process trading signal (from scored item to order placement)',
-    buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
 )
 
 cycle_duration = Histogram(
@@ -391,361 +317,168 @@ cycle_duration = Histogram(
 
 
 # =============================================================================
-# Error Metrics (docs/deployment/monitoring.md:197-208)
+# Error Metrics
 # =============================================================================
 errors_total = Counter(
     f'{METRIC_PREFIX}_errors_total',
     'Total errors by type',
     ['error_type', 'component']
-    # error_type: api_error, validation_error, execution_error, timeout, etc.
-    # component: runner, trading_engine, broker, enrichment, etc.
 )
 
 api_errors_total = Counter(
     f'{METRIC_PREFIX}_api_errors_total',
     'API errors by provider',
     ['api_name', 'status_code']
-    # api_name: alpaca, tiingo, gemini, finnhub, discord
-    # status_code: 429, 500, 503, timeout, etc.
 )
 
 
 # =============================================================================
-# Cycle Metrics (Catalyst-Bot specific)
+# Cycle Metrics
 # =============================================================================
 cycles_total = Counter(
     f'{METRIC_PREFIX}_cycles_total',
-    'Total number of main loop cycles completed'
+    'Total main loop cycles completed'
 )
 
 alerts_total = Counter(
     f'{METRIC_PREFIX}_alerts_sent_total',
     'Total alerts sent to Discord',
-    ['category']  # category: breakout, sec_filing, earnings, catalyst, etc.
+    ['category']  # breakout, sec_filing, earnings, catalyst
 )
 
 items_processed = Counter(
     f'{METRIC_PREFIX}_items_processed_total',
     'Total feed items processed',
-    ['source']  # source: rss, sec, social
-)
-
-items_deduped = Counter(
-    f'{METRIC_PREFIX}_items_deduped_total',
-    'Total items filtered by deduplication'
+    ['source']  # rss, sec, social
 )
 
 
 # =============================================================================
-# System Metrics (docs/deployment/monitoring.md:227-240)
+# Internal Tracking (for summary calculations)
 # =============================================================================
-system_cpu_percent = Gauge(
-    f'{METRIC_PREFIX}_cpu_percent',
-    'CPU usage percentage (process)'
-)
-
-system_memory_mb = Gauge(
-    f'{METRIC_PREFIX}_memory_mb',
-    'Memory usage in MB (process RSS)'
-)
-
-system_disk_usage_percent = Gauge(
-    f'{METRIC_PREFIX}_disk_usage_percent',
-    'Disk usage percentage for data directory'
-)
+_orders_filled = 0
+_orders_total = 0
+_trades_won = 0
+_trades_total = 0
+_errors_last_hour = []
 
 
 # =============================================================================
-# LLM Metrics (Integration with llm_usage_monitor.py)
-# =============================================================================
-llm_requests_total = Counter(
-    f'{METRIC_PREFIX}_llm_requests_total',
-    'Total LLM API requests',
-    ['provider', 'model']  # provider: gemini, anthropic, local
-)
-
-llm_tokens_total = Counter(
-    f'{METRIC_PREFIX}_llm_tokens_total',
-    'Total LLM tokens used',
-    ['provider', 'direction']  # direction: input, output
-)
-
-llm_cost_total = Counter(
-    f'{METRIC_PREFIX}_llm_cost_dollars',
-    'Total LLM cost in dollars',
-    ['provider']
-)
-
-llm_latency = Histogram(
-    f'{METRIC_PREFIX}_llm_latency_seconds',
-    'LLM API call latency',
-    ['provider'],
-    buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
-)
-
-
-# =============================================================================
-# Circuit Breaker Metrics
-# =============================================================================
-circuit_breaker_status = Gauge(
-    f'{METRIC_PREFIX}_circuit_breaker_active',
-    'Circuit breaker status (1 = active/trading disabled, 0 = inactive)'
-)
-
-circuit_breaker_triggers = Counter(
-    f'{METRIC_PREFIX}_circuit_breaker_triggers_total',
-    'Total circuit breaker activations',
-    ['reason']  # reason: daily_loss, max_drawdown, error_rate
-)
-
-
-# =============================================================================
-# Helper Functions (docs/deployment/monitoring.md:245-305)
+# Helper Functions
 # =============================================================================
 
-def update_portfolio_metrics(portfolio_data: Dict[str, Any]) -> None:
+def update_portfolio_metrics(data: Dict[str, Any]) -> None:
     """
-    Update portfolio-related metrics.
+    Update portfolio metrics.
 
     Args:
-        portfolio_data: Dictionary with keys:
-            - portfolio_value (float): Total portfolio value
-            - cash (float): Available cash
-            - buying_power (float): Total buying power
-            - daily_pnl (float): Today's P&L
-            - cumulative_pnl (float): All-time P&L
-
-    Example:
-        >>> update_portfolio_metrics({
-        ...     'portfolio_value': 105432.50,
-        ...     'cash': 50000.00,
-        ...     'buying_power': 100000.00,
-        ...     'daily_pnl': 1250.50,
-        ...     'cumulative_pnl': 5432.50,
-        ... })
+        data: Dict with portfolio_value, cash, buying_power, daily_pnl, positions
 
     Integration Point:
+        runner.py - After trading_engine.update_positions()
         trading_engine.py:update_positions() - Line 372-384
     """
-    portfolio_value.set(portfolio_data.get('portfolio_value', 0))
-    portfolio_cash.set(portfolio_data.get('cash', 0))
-    portfolio_buying_power.set(portfolio_data.get('buying_power', 0))
-    daily_pnl.set(portfolio_data.get('daily_pnl', 0))
-    cumulative_pnl.set(portfolio_data.get('cumulative_pnl', 0))
-
-
-def update_position_metrics(positions: List[Dict[str, Any]]) -> None:
-    """
-    Update position-related metrics.
-
-    Args:
-        positions: List of position dictionaries, each with:
-            - ticker (str): Stock symbol
-            - side (str): 'long' or 'short'
-            - market_value (float): Current position value
-            - unrealized_pnl (float): Unrealized P&L
-
-    Example:
-        >>> update_position_metrics([
-        ...     {'ticker': 'AAPL', 'side': 'long', 'market_value': 15000.0, 'unrealized_pnl': 500.0},
-        ...     {'ticker': 'TSLA', 'side': 'long', 'market_value': 8000.0, 'unrealized_pnl': -200.0},
-        ... ])
-
-    Integration Point:
-        trading_engine.py:update_positions() - Line 349-355
-    """
-    # Update total count
-    open_positions_count.set(len(positions))
-
-    # Update per-position metrics
-    for pos in positions:
-        ticker = pos.get('ticker', 'UNKNOWN')
-        side = pos.get('side', 'long')
-
-        position_value.labels(ticker=ticker, side=side).set(
-            pos.get('market_value', 0)
-        )
-        position_pnl.labels(ticker=ticker, side=side).set(
-            pos.get('unrealized_pnl', 0)
-        )
-
-
-def update_performance_metrics(
-    win_rate_pct: float,
-    sharpe: float,
-    drawdown: float,
-) -> None:
-    """
-    Update performance-related metrics.
-
-    Args:
-        win_rate_pct: Win rate as percentage (0-100)
-        sharpe: Sharpe ratio (typically 0-3)
-        drawdown: Max drawdown as negative decimal (e.g., -0.10 for -10%)
-
-    Example:
-        >>> update_performance_metrics(
-        ...     win_rate_pct=62.5,
-        ...     sharpe=1.85,
-        ...     drawdown=-0.08,
-        ... )
-
-    Integration Point:
-        trading_engine.py:get_portfolio_metrics() - Line 887-916
-    """
-    win_rate.set(win_rate_pct)
-    sharpe_ratio.set(sharpe)
-    max_drawdown.set(drawdown)
+    if 'portfolio_value' in data:
+        portfolio_value.set(data['portfolio_value'])
+    if 'cash' in data:
+        portfolio_cash.set(data['cash'])
+    if 'buying_power' in data:
+        portfolio_buying_power.set(data['buying_power'])
+    if 'daily_pnl' in data:
+        daily_pnl.set(data['daily_pnl'])
+    if 'positions' in data:
+        open_positions_count.set(data['positions'])
 
 
 def record_order(side: str, status: str) -> None:
     """
-    Record order execution.
+    Record an order.
 
     Args:
         side: 'buy' or 'sell'
-        status: 'filled', 'rejected', 'cancelled', 'pending', 'expired'
+        status: 'filled', 'rejected', 'cancelled'
 
-    Example:
-        >>> record_order('buy', 'filled')
-        >>> record_order('sell', 'rejected')
-
-    Integration Points:
+    Integration Point:
         trading_engine.py:_execute_signal() - Line 567-571
-        execution/order_executor.py - After order submission
     """
+    global _orders_filled, _orders_total
     orders_total.labels(side=side, status=status).inc()
-
-    # Update success rate
-    # Note: This is a simplified calculation; for accuracy,
-    # track filled/total in a separate counter
-    _update_order_success_rate()
+    _orders_total += 1
+    if status == 'filled':
+        _orders_filled += 1
 
 
-def _update_order_success_rate() -> None:
-    """Internal: Recalculate order success rate."""
-    # This would need access to the counter values
-    # For now, this is a placeholder - actual implementation
-    # should track filled vs total orders
-    pass
-
-
-def record_trade(ticker: str, side: str, result: str) -> None:
+def record_trade(result: str) -> None:
     """
-    Record completed trade.
+    Record a closed trade.
 
     Args:
-        ticker: Stock symbol
-        side: 'buy' or 'sell'
         result: 'win', 'loss', or 'breakeven'
-
-    Example:
-        >>> record_trade('AAPL', 'sell', 'win')
-        >>> record_trade('TSLA', 'sell', 'loss')
 
     Integration Point:
         trading_engine.py:_handle_close_signal() - Line 631-636
-        portfolio/position_manager.py - On position close
     """
-    trades_total.labels(ticker=ticker, side=side, result=result).inc()
+    global _trades_won, _trades_total
+    trades_total.labels(result=result).inc()
+    _trades_total += 1
+    if result == 'win':
+        _trades_won += 1
+
+    # Update win rate
+    if _trades_total > 0:
+        win_rate.set((_trades_won / _trades_total) * 100)
 
 
 def record_error(error_type: str, component: str) -> None:
     """
-    Record an error occurrence.
+    Record an error.
 
     Args:
-        error_type: Type of error (api_error, validation_error, etc.)
-        component: Component where error occurred (runner, trading_engine, etc.)
-
-    Example:
-        >>> record_error('api_error', 'trading_engine')
-        >>> record_error('timeout', 'broker')
-
-    Integration Points:
-        runner.py:_cycle() - In exception handlers
-        trading_engine.py - All except blocks
-    """
-    errors_total.labels(error_type=error_type, component=component).inc()
-
-
-def record_api_call(api_name: str, status_code: str, latency_seconds: float) -> None:
-    """
-    Record an API call with latency and status.
-
-    Args:
-        api_name: API provider (alpaca, tiingo, gemini, finnhub, discord)
-        status_code: HTTP status or 'success', 'timeout', 'error'
-        latency_seconds: Call duration in seconds
-
-    Example:
-        >>> record_api_call('alpaca', 'success', 0.35)
-        >>> record_api_call('tiingo', '429', 1.2)
-
-    Integration Points:
-        broker/alpaca_client.py - All API methods
-        feeds.py - Data fetching calls
-    """
-    api_latency.labels(api_name=api_name).observe(latency_seconds)
-
-    # Record errors for non-success calls
-    if status_code not in ('success', '200', '201', '204'):
-        api_errors_total.labels(api_name=api_name, status_code=status_code).inc()
-
-
-def record_cycle(
-    duration_seconds: float,
-    items: int,
-    deduped: int,
-    alerts: int,
-    source_breakdown: Optional[Dict[str, int]] = None,
-) -> None:
-    """
-    Record cycle completion metrics.
-
-    Args:
-        duration_seconds: Cycle duration
-        items: Total items processed
-        deduped: Items filtered by dedup
-        alerts: Alerts sent
-        source_breakdown: Optional dict with {'rss': N, 'sec': N, 'social': N}
-
-    Example:
-        >>> record_cycle(
-        ...     duration_seconds=15.5,
-        ...     items=150,
-        ...     deduped=45,
-        ...     alerts=3,
-        ...     source_breakdown={'rss': 100, 'sec': 30, 'social': 20},
-        ... )
+        error_type: api_error, validation_error, timeout, etc.
+        component: runner, trading_engine, broker, etc.
 
     Integration Point:
-        runner.py - After _cycle() completes, around Line 4099-4100
+        All exception handlers throughout codebase
+    """
+    import time
+    errors_total.labels(error_type=error_type, component=component).inc()
+    _errors_last_hour.append(time.time())
+
+    # Clean old errors (keep last hour only)
+    cutoff = time.time() - 3600
+    while _errors_last_hour and _errors_last_hour[0] < cutoff:
+        _errors_last_hour.pop(0)
+
+
+def record_cycle(duration_seconds: float, items: int, deduped: int, alerts: int,
+                 source_breakdown: Optional[Dict[str, int]] = None) -> None:
+    """
+    Record cycle completion.
+
+    Args:
+        duration_seconds: How long the cycle took
+        items: Items processed
+        deduped: Items filtered
+        alerts: Alerts sent
+        source_breakdown: Optional {'rss': N, 'sec': N, 'social': N}
+
+    Integration Point:
+        runner.py - After _cycle() completes, Line 4099-4100
     """
     cycles_total.inc()
     cycle_duration.observe(duration_seconds)
 
-    # Note: For counters, we increment by the count
-    items_deduped.inc(deduped)
-
-    # Track source breakdown
     if source_breakdown:
         for source, count in source_breakdown.items():
             items_processed.labels(source=source).inc(count)
-    else:
-        items_processed.labels(source='unknown').inc(items)
 
 
 def record_alert(category: str = 'general') -> None:
     """
-    Record an alert sent to Discord.
+    Record alert sent.
 
     Args:
-        category: Alert category (breakout, sec_filing, earnings, catalyst, etc.)
-
-    Example:
-        >>> record_alert('breakout')
-        >>> record_alert('sec_filing')
+        category: breakout, sec_filing, earnings, catalyst, general
 
     Integration Point:
         alerts.py:send_alert_safe() - After successful send
@@ -756,18 +489,14 @@ def record_alert(category: str = 'general') -> None:
 @contextmanager
 def measure_api_call(api_name: str):
     """
-    Context manager to measure API call latency.
-
-    Args:
-        api_name: API provider name
+    Context manager to measure API latency.
 
     Example:
-        >>> with measure_api_call('alpaca'):
-        ...     response = broker.get_account()
+        with measure_api_call('alpaca'):
+            response = client.get_account()
 
-    Integration Points:
-        broker/alpaca_client.py - Wrap all API calls
-        feeds.py - Wrap external API calls
+    Integration Point:
+        broker/alpaca_client.py - Wrap API calls
     """
     start = time.time()
     status = 'success'
@@ -783,150 +512,78 @@ def measure_api_call(api_name: str):
             api_errors_total.labels(api_name=api_name, status_code=status).inc()
 
 
-@contextmanager
-def measure_signal_processing():
+def get_metrics_summary() -> Dict[str, Any]:
     """
-    Context manager to measure signal processing time.
+    Get a summary of current metrics for heartbeat/health endpoint.
 
-    Example:
-        >>> with measure_signal_processing():
-        ...     signal = generator.generate_signal(scored_item)
-        ...     position = await executor.execute(signal)
+    Returns:
+        Dict with key metrics formatted for display
 
-    Integration Point:
-        trading_engine.py:process_scored_item() - Line 290-324
+    Usage:
+        summary = get_metrics_summary()
+        # Use in Discord heartbeat or /health/detailed
     """
-    start = time.time()
+    # Calculate order success rate
+    order_success = 0
+    if _orders_total > 0:
+        order_success = round((_orders_filled / _orders_total) * 100, 1)
+
+    # Get latency percentiles from histogram
+    # Note: This is approximate - histograms don't store individual values
+    avg_latency = "N/A"
+
+    return {
+        'portfolio': {
+            'value': _get_gauge_value(portfolio_value),
+            'cash': _get_gauge_value(portfolio_cash),
+            'daily_pnl': _get_gauge_value(daily_pnl),
+            'positions': int(_get_gauge_value(open_positions_count)),
+        },
+        'trading': {
+            'orders_filled': _orders_filled,
+            'orders_rejected': _orders_total - _orders_filled,
+            'order_success_pct': order_success,
+            'trades_won': _trades_won,
+            'trades_lost': _trades_total - _trades_won,
+            'win_rate_pct': round(_get_gauge_value(win_rate), 1),
+        },
+        'health': {
+            'cycles_total': int(_get_counter_value(cycles_total)),
+            'errors_last_hour': len(_errors_last_hour),
+            'alerts_sent': _get_counter_total(alerts_total),
+        },
+    }
+
+
+def _get_gauge_value(gauge: Gauge) -> float:
+    """Extract current value from a Gauge."""
     try:
-        yield
-    finally:
-        duration = time.time() - start
-        signal_processing_time.observe(duration)
-
-
-@contextmanager
-def measure_order_execution():
-    """
-    Context manager to measure order execution latency.
-
-    Example:
-        >>> with measure_order_execution():
-        ...     result = await executor.execute_signal(signal)
-
-    Integration Point:
-        trading_engine.py:_execute_signal() - Line 560-566
-    """
-    start = time.time()
-    try:
-        yield
-    finally:
-        duration = time.time() - start
-        order_latency.observe(duration)
-
-
-def update_system_metrics() -> None:
-    """
-    Update system resource metrics.
-
-    Should be called periodically (e.g., every 15-30 seconds).
-
-    Example:
-        >>> update_system_metrics()  # Call in background thread or main loop
-
-    Integration Point:
-        runner.py:runner_main() - In main loop, every N cycles
-    """
-    if not PSUTIL_AVAILABLE:
-        return
-
-    try:
-        # CPU usage (for this process)
-        process = psutil.Process(os.getpid())
-        cpu_percent = process.cpu_percent(interval=0.1)
-        system_cpu_percent.set(cpu_percent)
-
-        # Memory usage (RSS in MB)
-        memory_info = process.memory_info()
-        memory_mb = memory_info.rss / 1024 / 1024
-        system_memory_mb.set(memory_mb)
-
-        # Disk usage (for data directory)
-        data_dir = os.getenv('DATA_DIR', 'data')
-        if os.path.exists(data_dir):
-            disk = psutil.disk_usage(data_dir)
-            system_disk_usage_percent.set(disk.percent)
-        else:
-            # Fall back to root
-            disk = psutil.disk_usage('/')
-            system_disk_usage_percent.set(disk.percent)
-
+        return gauge._value.get()
     except Exception:
-        # Don't crash on metrics collection errors
-        pass
+        return 0.0
 
 
-def update_circuit_breaker(active: bool, reason: Optional[str] = None) -> None:
-    """
-    Update circuit breaker status.
-
-    Args:
-        active: True if circuit breaker is active (trading disabled)
-        reason: Reason for activation (daily_loss, max_drawdown, error_rate)
-
-    Example:
-        >>> update_circuit_breaker(True, 'daily_loss')
-        >>> update_circuit_breaker(False)
-
-    Integration Point:
-        trading_engine.py:_update_circuit_breaker() - Line 506-514
-    """
-    circuit_breaker_status.set(1 if active else 0)
-    if active and reason:
-        circuit_breaker_triggers.labels(reason=reason).inc()
+def _get_counter_value(counter: Counter) -> float:
+    """Extract current value from a Counter without labels."""
+    try:
+        return counter._value.get()
+    except Exception:
+        return 0.0
 
 
-def record_llm_usage(
-    provider: str,
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cost: float,
-    latency_seconds: float,
-) -> None:
-    """
-    Record LLM API usage metrics.
-
-    Args:
-        provider: LLM provider (gemini, anthropic, local)
-        model: Model name
-        input_tokens: Input token count
-        output_tokens: Output token count
-        cost: Cost in dollars
-        latency_seconds: API call latency
-
-    Example:
-        >>> record_llm_usage(
-        ...     provider='gemini',
-        ...     model='gemini-2.5-flash',
-        ...     input_tokens=1500,
-        ...     output_tokens=500,
-        ...     cost=0.0025,
-        ...     latency_seconds=2.3,
-        ... )
-
-    Integration Point:
-        llm_usage_monitor.py:log_usage() - Line 199-278
-    """
-    llm_requests_total.labels(provider=provider, model=model).inc()
-    llm_tokens_total.labels(provider=provider, direction='input').inc(input_tokens)
-    llm_tokens_total.labels(provider=provider, direction='output').inc(output_tokens)
-    llm_cost_total.labels(provider=provider).inc(cost)
-    llm_latency.labels(provider=provider).observe(latency_seconds)
+def _get_counter_total(counter: Counter) -> int:
+    """Sum all label values for a Counter."""
+    try:
+        total = 0
+        for metric in REGISTRY.collect():
+            if metric.name == counter._name:
+                for sample in metric.samples:
+                    if sample.name.endswith('_total'):
+                        total += int(sample.value)
+        return total
+    except Exception:
+        return 0
 ```
-
----
-
-## Metrics Server Module
 
 ### File: `src/catalyst_bot/monitoring/metrics_server.py`
 
@@ -934,20 +591,24 @@ def record_llm_usage(
 """
 Prometheus metrics HTTP server for Catalyst-Bot.
 
-Exposes metrics on port 9090 (configurable via METRICS_PORT env var).
-Runs in a daemon thread alongside the main bot.
+Exposes /metrics endpoint on port 9090 (configurable).
+Designed for local development with cloud migration path.
 
-Reference: docs/deployment/monitoring.md (lines 307-339)
+Usage:
+    from catalyst_bot.monitoring import start_metrics_server
+    start_metrics_server(port=9090)
+
+    # Check: curl http://localhost:9090/metrics
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import threading
+import socket
 from typing import Optional
 
-from prometheus_client import start_http_server, REGISTRY
+from prometheus_client import start_http_server
 
 # Get logger
 try:
@@ -956,76 +617,75 @@ try:
 except Exception:
     logger = logging.getLogger(__name__)
 
-
-# Global server state
-_server_thread: Optional[threading.Thread] = None
+# Server state
 _server_started = False
+
+
+def is_port_available(port: int) -> bool:
+    """
+    Check if a port is available for binding.
+
+    Args:
+        port: Port number to check
+
+    Returns:
+        True if port is available, False if in use
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            result = s.connect_ex(('localhost', port))
+            return result != 0  # 0 means connection succeeded (port in use)
+    except Exception:
+        return True  # Assume available if check fails
 
 
 def start_metrics_server(port: Optional[int] = None) -> bool:
     """
-    Start Prometheus metrics HTTP server in background thread.
+    Start Prometheus metrics HTTP server.
 
     Args:
-        port: Port to listen on (default: 9090, or METRICS_PORT env var)
+        port: Port to listen on (default: 9090 or METRICS_PORT env var)
 
     Returns:
-        True if server started successfully, False otherwise
-
-    Example:
-        >>> from catalyst_bot.monitoring import start_metrics_server
-        >>> start_metrics_server(port=9090)
-        True
+        True if started successfully, False otherwise
 
     Integration Point:
-        runner.py:runner_main() - After health server start, around Line 3844
+        runner.py:runner_main() - After health server, Line 3848
     """
-    global _server_thread, _server_started
+    global _server_started
 
     if _server_started:
-        logger.warning("metrics_server_already_started")
+        logger.debug("metrics_server_already_started")
         return True
 
     if port is None:
         port = int(os.getenv("METRICS_PORT", "9090"))
 
+    # Check port availability first
+    if not is_port_available(port):
+        logger.warning(
+            "metrics_server_port_in_use port=%d - try setting METRICS_PORT env var",
+            port
+        )
+        return False
+
     try:
-        # Start Prometheus HTTP server
-        # This creates a daemon thread internally
         start_http_server(port)
         _server_started = True
-
         logger.info(
             "metrics_server_started port=%d endpoint=http://localhost:%d/metrics",
             port, port
         )
         return True
 
-    except OSError as e:
-        if "Address already in use" in str(e):
-            logger.warning(
-                "metrics_server_port_in_use port=%d - another instance may be running",
-                port
-            )
-        else:
-            logger.error("metrics_server_start_failed port=%d err=%s", port, str(e))
-        return False
     except Exception as e:
         logger.error("metrics_server_start_failed port=%d err=%s", port, str(e))
         return False
 
 
 def stop_metrics_server() -> None:
-    """
-    Stop the metrics server (if running).
-
-    Note: The prometheus_client start_http_server() creates a daemon thread
-    that will automatically stop when the main process exits. This function
-    is provided for explicit cleanup if needed.
-
-    Integration Point:
-        runner.py:runner_main() - At end of main loop, around Line 4160
-    """
+    """Mark metrics server as stopped."""
     global _server_started
     _server_started = False
     logger.info("metrics_server_stopped")
@@ -1034,363 +694,320 @@ def stop_metrics_server() -> None:
 def is_metrics_server_running() -> bool:
     """Check if metrics server is running."""
     return _server_started
-
-
-# Standalone test
-if __name__ == "__main__":
-    import time
-    from .metrics import update_system_metrics, record_cycle
-
-    print("Starting metrics server on port 9090...")
-    print("Try: curl http://localhost:9090/metrics")
-
-    start_metrics_server(9090)
-
-    # Simulate metrics updates
-    cycle = 0
-    while True:
-        cycle += 1
-        update_system_metrics()
-        record_cycle(
-            duration_seconds=15.0 + (cycle % 10),
-            items=100 + cycle,
-            deduped=20,
-            alerts=cycle % 3,
-        )
-        print(f"Cycle {cycle} - Metrics updated")
-        time.sleep(10)
 ```
 
 ---
 
-## Integration Points
+## Phase B: Integration
 
-### 1. runner.py - Main Loop Integration
+### 1. runner.py - Start Metrics Server
 
 **File:** `src/catalyst_bot/runner.py`
-
-#### Line 3835-3848: Start Metrics Server (After Health Server)
+**Location:** After Line 3848 (after health server start)
 
 ```python
-# EXISTING CODE (Line 3835-3848):
-# Start health check server if enabled
-if os.getenv("FEATURE_HEALTH_ENDPOINT", "1").strip().lower() in (
-    "1", "true", "yes", "on",
-):
-    try:
-        health_port = int(os.getenv("HEALTH_CHECK_PORT", "8080"))
-        start_health_server(port=health_port)
-        log.info("health_endpoint_enabled port=%d", health_port)
-        update_health_status(status="starting")
-    except Exception as e:
-        log.warning("health_endpoint_failed err=%s", str(e))
+# ADD AFTER LINE 3848 (after health server start):
 
-# ADD AFTER LINE 3848:
 # Start Prometheus metrics server if enabled
-if os.getenv("FEATURE_PROMETHEUS_METRICS", "1").strip().lower() in (
-    "1", "true", "yes", "on",
-):
+if os.getenv("FEATURE_PROMETHEUS_METRICS", "1").strip().lower() in ("1", "true", "yes", "on"):
     try:
         from .monitoring import start_metrics_server
         metrics_port = int(os.getenv("METRICS_PORT", "9090"))
         if start_metrics_server(port=metrics_port):
             log.info("prometheus_metrics_enabled port=%d", metrics_port)
+    except ImportError:
+        log.debug("prometheus_metrics_module_not_available")
     except Exception as e:
         log.warning("prometheus_metrics_failed err=%s", str(e))
 ```
 
-#### Line 4097-4100: Record Cycle Metrics
+### 2. runner.py - Record Cycle Metrics
+
+**File:** `src/catalyst_bot/runner.py`
+**Location:** After Line 4100 (after CYCLE_DONE log)
 
 ```python
-# EXISTING CODE (Line 4097-4100):
-t0 = time.time()
-_cycle(log, settings, market_info=current_market_info)
-cycle_time = time.time() - t0
-log.info("CYCLE_DONE took=%.2fs", cycle_time)
+# ADD AFTER LINE 4100 (after log.info("CYCLE_DONE...")):
 
-# ADD AFTER LINE 4100:
 # Record Prometheus cycle metrics
 try:
-    from .monitoring import record_cycle, update_system_metrics
+    from .monitoring import record_cycle
     record_cycle(
         duration_seconds=cycle_time,
         items=LAST_CYCLE_STATS.get('items', 0),
         deduped=LAST_CYCLE_STATS.get('deduped', 0),
         alerts=LAST_CYCLE_STATS.get('alerts', 0),
-        source_breakdown=FEED_SOURCE_STATS.copy(),
+        source_breakdown=FEED_SOURCE_STATS.copy() if FEED_SOURCE_STATS else None,
     )
-    # Update system metrics every cycle
-    update_system_metrics()
 except Exception:
     pass  # Never crash on metrics
 ```
 
-#### Line 4102-4111: Update Health and Portfolio Metrics
+### 3. runner.py - Update Portfolio Metrics
+
+**File:** `src/catalyst_bot/runner.py`
+**Location:** After Line 4127 (after trading_engine.update_positions())
 
 ```python
-# EXISTING CODE (Line 4102-4111):
-# Update health status after successful cycle
-try:
-    update_health_status(
-        status="healthy",
-        last_cycle_time=datetime.now(timezone.utc),
-        total_cycles=TOTAL_STATS.get("items", 0),
-        total_alerts=TOTAL_STATS.get("alerts", 0),
-    )
-except Exception:
-    pass
+# MODIFY the existing trading_engine block (Lines 4113-4127):
 
-# ADD AFTER LINE 4111:
-# Update Prometheus portfolio metrics if trading engine active
-if trading_engine and getattr(trading_engine, "_initialized", False):
+if trading_engine and getattr(settings, "FEATURE_PAPER_TRADING", False):
     try:
-        from .monitoring import update_portfolio_metrics, update_position_metrics
-        metrics = run_async(trading_engine.get_portfolio_metrics(), timeout=5.0)
-        if metrics:
-            update_portfolio_metrics({
-                'portfolio_value': metrics.get('account_value', 0),
-                'cash': metrics.get('cash', 0),
-                'buying_power': metrics.get('buying_power', 0),
-                'daily_pnl': metrics.get('total_unrealized_pnl', 0),
-                'cumulative_pnl': 0,  # TODO: Track cumulative
-            })
-    except Exception:
-        pass
+        metrics = run_async(trading_engine.update_positions(), timeout=10.0)
+        if metrics.get("positions", 0) > 0:
+            log.info(
+                "portfolio_update positions=%d exposure=$%.2f pnl=$%.2f",
+                metrics.get("positions", 0),
+                metrics.get("exposure", 0.0),
+                metrics.get("pnl", 0.0),
+            )
+
+        # ADD: Update Prometheus portfolio metrics
+        try:
+            from .monitoring import update_portfolio_metrics
+            portfolio_metrics = run_async(trading_engine.get_portfolio_metrics(), timeout=5.0)
+            if portfolio_metrics:
+                update_portfolio_metrics({
+                    'portfolio_value': portfolio_metrics.get('account_value', 0),
+                    'cash': portfolio_metrics.get('cash', 0),
+                    'buying_power': portfolio_metrics.get('buying_power', 0),
+                    'daily_pnl': portfolio_metrics.get('total_unrealized_pnl', 0),
+                    'positions': portfolio_metrics.get('total_positions', 0),
+                })
+        except Exception:
+            pass
+
+    except Exception as e:
+        log.error("position_update_error err=%s", str(e), exc_info=True)
 ```
 
----
-
-### 2. trading_engine.py - Trading Metrics Integration
+### 4. trading_engine.py - Record Orders
 
 **File:** `src/catalyst_bot/trading/trading_engine.py`
-
-#### Line 17-25: Add Import
+**Location:** After Line 25 (imports) and in _execute_signal()
 
 ```python
-# EXISTING IMPORTS (Line 17-25):
-import asyncio
-import json
-import logging
-import os
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from decimal import Decimal
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+# ADD AFTER LINE 25 (after existing imports):
 
-# ADD AFTER LINE 25:
 # Prometheus metrics integration
 try:
-    from ..monitoring import (
-        record_order,
-        record_trade,
-        record_error,
-        measure_signal_processing,
-        measure_order_execution,
-        update_portfolio_metrics,
-        update_position_metrics,
-        update_circuit_breaker,
-    )
+    from ..monitoring import record_order, record_trade, record_error
     METRICS_AVAILABLE = True
 except ImportError:
     METRICS_AVAILABLE = False
-```
 
-#### Line 290-324: Wrap process_scored_item with Metrics
 
-```python
-# MODIFY METHOD: process_scored_item() - Line 271-333
-async def process_scored_item(
-    self,
-    scored_item: ScoredItem,
-    ticker: str,
-    current_price: Decimal,
-) -> Optional[str]:
-    """Main entry point from runner.py."""
-    try:
-        # 1. Check if trading enabled
-        if not self._check_trading_enabled():
-            return None
+# MODIFY _execute_signal() - After Line 567:
 
-        # ADD: Wrap signal processing with metrics
-        if METRICS_AVAILABLE:
-            from ..monitoring import measure_signal_processing
-            with measure_signal_processing():
-                return await self._process_scored_item_internal(
-                    scored_item, ticker, current_price
-                )
-        else:
-            return await self._process_scored_item_internal(
-                scored_item, ticker, current_price
-            )
-
-    except Exception as e:
-        # ADD: Record error metric
-        if METRICS_AVAILABLE:
-            record_error('execution_error', 'trading_engine')
-        self.logger.error(
-            f"execution_failed ticker={ticker} err={str(e)}",
-            exc_info=True
-        )
-        return None
-```
-
-#### Line 560-571: Record Order Metrics in _execute_signal
-
-```python
-# MODIFY: _execute_signal() - Around Line 560-571
-# ADD after line 566 (after execute_signal call):
-
-if METRICS_AVAILABLE:
-    with measure_order_execution():
-        result: ExecutionResult = await self.order_executor.execute_signal(
-            signal=signal,
-            use_bracket_order=True,
-            extended_hours=use_extended_hours,
-        )
-else:
-    result: ExecutionResult = await self.order_executor.execute_signal(
-        signal=signal,
-        use_bracket_order=True,
-        extended_hours=use_extended_hours,
-    )
-
-# ADD after Line 571:
 if not result.success:
     if METRICS_AVAILABLE:
         record_order(signal.action, 'rejected')
-    self.logger.warning(
-        f"Order execution failed for {signal.ticker}: {result.error_message}"
-    )
+    self.logger.warning(f"Order execution failed: {result.error_message}")
     return None
-else:
-    if METRICS_AVAILABLE:
-        record_order(signal.action, 'filled')
-```
 
-#### Line 506-514: Update Circuit Breaker Metrics
-
-```python
-# MODIFY: _update_circuit_breaker() - Line 506-514
-# After triggering circuit breaker:
-
-if daily_pnl_pct < -self.config.max_daily_loss_pct:
-    if not self.circuit_breaker_active:
-        self.circuit_breaker_active = True
-        self.circuit_breaker_triggered_at = datetime.now()
-
-        # ADD: Update circuit breaker metric
-        if METRICS_AVAILABLE:
-            update_circuit_breaker(True, 'daily_loss')
-
-        self.logger.error(
-            f"CIRCUIT BREAKER TRIGGERED: Daily loss {daily_pnl_pct:.2f}% "
-            f"exceeds limit {self.config.max_daily_loss_pct}%"
-        )
-```
-
-#### Line 372-384: Update Position Metrics in update_positions
-
-```python
-# MODIFY: update_positions() - Around Line 372-384
-# After calculating metrics:
-
-# 7. Return metrics
-account = await self.broker.get_account()
-metrics = self.position_manager.calculate_portfolio_metrics(account.equity)
-
-# ADD: Update Prometheus position metrics
+# After successful order fill (around Line 598):
 if METRICS_AVAILABLE:
-    positions = self.position_manager.get_all_positions()
-    update_position_metrics([
-        {
-            'ticker': pos.ticker,
-            'side': pos.side.value,
-            'market_value': float(pos.market_value),
-            'unrealized_pnl': float(pos.unrealized_pnl),
-        }
-        for pos in positions
-    ])
-    update_portfolio_metrics({
-        'portfolio_value': float(account.equity),
-        'cash': float(account.cash),
-        'buying_power': float(account.buying_power),
-        'daily_pnl': float(metrics.total_unrealized_pnl),
-        'cumulative_pnl': 0,  # TODO: Track cumulative P&L
-    })
+    record_order(signal.action, 'filled')
 ```
 
----
-
-### 3. alerts.py - Alert Metrics Integration
+### 5. alerts.py - Record Alerts
 
 **File:** `src/catalyst_bot/alerts.py`
+**Location:** In send_alert_safe() after successful send
 
 ```python
 # ADD at top of file (after imports):
 try:
-    from .monitoring import record_alert
-    METRICS_AVAILABLE = True
+    from .monitoring import record_alert as _record_alert
+    _METRICS_AVAILABLE = True
 except ImportError:
-    METRICS_AVAILABLE = False
+    _METRICS_AVAILABLE = False
 
-# MODIFY: send_alert_safe() - After successful Discord post
-# Find the success path and add:
-
-if METRICS_AVAILABLE:
-    # Determine category from alert content
+# ADD in send_alert_safe() after successful webhook post:
+if _METRICS_AVAILABLE:
     category = 'general'
-    if 'SEC' in str(alert_data.get('title', '')):
+    title = str(alert_data.get('title', '')).lower()
+    if 'sec' in title or '8-k' in title or '424' in title:
         category = 'sec_filing'
-    elif 'breakout' in str(alert_data.get('title', '').lower()):
+    elif 'breakout' in title:
         category = 'breakout'
-    elif 'earnings' in str(alert_data.get('title', '').lower()):
+    elif 'earning' in title:
         category = 'earnings'
-    record_alert(category)
+    _record_alert(category)
 ```
 
 ---
 
-### 4. llm_usage_monitor.py - LLM Metrics Bridge
+## Phase C: Local Visibility
 
-**File:** `src/catalyst_bot/llm_usage_monitor.py`
+### 1. Enhanced Admin Heartbeat
+
+Add metrics summary to your existing Discord heartbeat. This provides visibility without any new services.
+
+**File:** `src/catalyst_bot/runner.py`
+**Location:** In `_send_heartbeat()` function
 
 ```python
-# MODIFY: log_usage() method - Around Line 199-278
-# ADD at end of method, after logging to JSONL:
+# ADD to _send_heartbeat() function - include metrics summary in embed
 
-# Bridge to Prometheus metrics
-try:
-    from .monitoring import record_llm_usage
-    record_llm_usage(
-        provider=provider,
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cost=cost,
-        latency_seconds=latency_seconds,
-    )
-except ImportError:
-    pass  # Metrics module not available
+def _build_heartbeat_embed(log, settings, reason: str, stats: dict) -> dict:
+    """Build heartbeat embed with metrics summary."""
+
+    # Get metrics summary if available
+    metrics_section = ""
+    try:
+        from .monitoring import get_metrics_summary
+        summary = get_metrics_summary()
+
+        # Only show if we have trading data
+        if summary['portfolio']['value'] > 0:
+            metrics_section = (
+                f"\n\n📊 **Performance**\n"
+                f"├─ Portfolio: ${summary['portfolio']['value']:,.2f}\n"
+                f"├─ Daily P&L: ${summary['portfolio']['daily_pnl']:+,.2f}\n"
+                f"├─ Positions: {summary['portfolio']['positions']}\n"
+                f"└─ Win Rate: {summary['trading']['win_rate_pct']:.1f}%"
+            )
+
+        # Always show order stats if any orders placed
+        if summary['trading']['orders_filled'] + summary['trading']['orders_rejected'] > 0:
+            metrics_section += (
+                f"\n\n📈 **Orders**\n"
+                f"├─ Filled: {summary['trading']['orders_filled']}\n"
+                f"├─ Rejected: {summary['trading']['orders_rejected']}\n"
+                f"└─ Success: {summary['trading']['order_success_pct']:.1f}%"
+            )
+
+        # Show errors if any in last hour
+        if summary['health']['errors_last_hour'] > 0:
+            metrics_section += (
+                f"\n\n⚠️ **Errors** (last hour): {summary['health']['errors_last_hour']}"
+            )
+
+    except ImportError:
+        pass  # Metrics module not available
+    except Exception:
+        pass  # Don't crash heartbeat on metrics error
+
+    # Build embed with existing fields + metrics
+    embed = {
+        "title": f"💓 Heartbeat ({reason})",
+        "description": f"Cycles: {stats.get('cycles', '—')} | Alerts: {stats.get('alerts', '—')}{metrics_section}",
+        # ... rest of existing embed fields
+    }
+
+    return embed
 ```
+
+### 2. Health Endpoint Bridge
+
+Add metrics summary to `/health/detailed` endpoint.
+
+**File:** `src/catalyst_bot/health_endpoint.py`
+**Location:** In `_handle_detailed()` method
+
+```python
+# MODIFY _handle_detailed() to include metrics summary:
+
+def _handle_detailed(self):
+    """Detailed health endpoint with metrics summary."""
+    try:
+        health = get_health_status()
+
+        # ADD: Include metrics summary if available
+        try:
+            from .monitoring import get_metrics_summary
+            health['metrics'] = get_metrics_summary()
+        except ImportError:
+            pass  # Metrics module not available
+        except Exception:
+            health['metrics'] = {'error': 'Failed to collect metrics'}
+
+        status_code = 200 if health.get("status") == "healthy" else 503
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(health, indent=2).encode())
+
+    except Exception as e:
+        # ... existing error handling
+```
+
+### 3. Quick CLI Check
+
+Test metrics locally:
+
+```bash
+# View raw Prometheus metrics
+curl -s http://localhost:9090/metrics | grep catalyst_bot
+
+# View formatted health summary
+curl -s http://localhost:8080/health/detailed | python -m json.tool
+
+# One-liner to check key metrics
+curl -s http://localhost:9090/metrics | grep -E "(portfolio_value|daily_pnl|orders_total|errors_total)"
+```
+
+---
+
+## Phase D: Cloud Migration (Future)
+
+When ready to deploy to hosted platform (1-2 months), add Grafana Cloud:
+
+### Option 1: Grafana Cloud Free Tier
+
+1. Sign up at https://grafana.com (free tier includes 10k metrics)
+2. Get your Prometheus remote_write URL and credentials
+3. Add Grafana Cloud Agent to push metrics:
+
+```bash
+# Install Grafana Agent
+# Linux
+curl -O -L "https://github.com/grafana/agent/releases/latest/download/grafana-agent-linux-amd64.zip"
+
+# Or Docker
+docker run grafana/agent:latest
+```
+
+4. Configure agent to scrape your `/metrics` endpoint:
+
+```yaml
+# agent-config.yaml
+metrics:
+  configs:
+    - name: catalyst-bot
+      scrape_configs:
+        - job_name: catalyst-bot
+          static_configs:
+            - targets: ['localhost:9090']
+      remote_write:
+        - url: https://prometheus-us-central1.grafana.net/api/prom/push
+          basic_auth:
+            username: YOUR_GRAFANA_CLOUD_USER
+            password: YOUR_GRAFANA_CLOUD_API_KEY
+```
+
+### Option 2: Other Cloud Providers
+
+The `/metrics` endpoint works with any Prometheus-compatible service:
+- Datadog
+- New Relic
+- AWS CloudWatch (via Prometheus agent)
+- Azure Monitor
+
+**No code changes needed** - just point the cloud service at your `/metrics` endpoint.
 
 ---
 
 ## Coding Tickets
 
-### Phase 1: Core Infrastructure (Priority: CRITICAL)
+### Phase A: Core Infrastructure
 
-#### Ticket 1.1: Create Monitoring Package
+#### Ticket A.1: Create Monitoring Package
 ```
-Title: Create monitoring package with Prometheus metrics definitions
+Title: Create monitoring package with Prometheus metrics
 Priority: Critical
 Estimate: 1-2 hours
-
-Tasks:
-1. Create directory: src/catalyst_bot/monitoring/
-2. Create __init__.py with exports
-3. Create metrics.py with all metric definitions
-4. Create metrics_server.py with HTTP server
 
 Files to Create:
 - src/catalyst_bot/monitoring/__init__.py
@@ -1398,362 +1015,206 @@ Files to Create:
 - src/catalyst_bot/monitoring/metrics_server.py
 
 Acceptance Criteria:
-- [ ] All metrics from monitoring.md (lines 89-240) defined
-- [ ] Helper functions implemented
-- [ ] Context managers working
-- [ ] Server starts on port 9090
-- [ ] curl http://localhost:9090/metrics returns valid Prometheus format
+- [ ] Port check function works
+- [ ] Metrics server starts on port 9090
+- [ ] curl http://localhost:9090/metrics returns valid output
+- [ ] get_metrics_summary() returns formatted dict
 ```
 
-#### Ticket 1.2: Add Dependencies
+#### Ticket A.2: Add Dependencies
 ```
-Title: Add prometheus-client and psutil to requirements.txt
+Title: Add prometheus-client to requirements.txt
 Priority: Critical
 Estimate: 5 minutes
 
 Tasks:
-1. Add to requirements.txt:
-   prometheus-client==0.19.0
-   psutil>=5.9.0
-
-2. Run: pip install -r requirements.txt
+1. Add prometheus-client==0.19.0 to requirements.txt
+2. Add psutil>=5.9.0 to requirements.txt
+3. pip install -r requirements.txt
 ```
 
-### Phase 2: Runner Integration (Priority: HIGH)
+### Phase B: Integration
 
-#### Ticket 2.1: Start Metrics Server in runner.py
+#### Ticket B.1: Integrate with runner.py
 ```
-Title: Start Prometheus metrics server on bot startup
-Priority: High
-Estimate: 30 minutes
-
-File: src/catalyst_bot/runner.py
-Lines to Modify: After 3848
-
-Tasks:
-1. Add FEATURE_PROMETHEUS_METRICS env var check
-2. Import start_metrics_server
-3. Start server after health endpoint
-4. Add error handling
-
-Acceptance Criteria:
-- [ ] Server starts automatically on boot
-- [ ] Respects FEATURE_PROMETHEUS_METRICS=0 to disable
-- [ ] METRICS_PORT env var configures port
-- [ ] Startup logged to bot.jsonl
-```
-
-#### Ticket 2.2: Record Cycle Metrics
-```
-Title: Record cycle duration and item counts
-Priority: High
-Estimate: 30 minutes
-
-File: src/catalyst_bot/runner.py
-Lines to Modify: After 4100
-
-Tasks:
-1. Import record_cycle, update_system_metrics
-2. Call record_cycle() after _cycle() completes
-3. Call update_system_metrics() every cycle
-4. Pass LAST_CYCLE_STATS and FEED_SOURCE_STATS
-
-Acceptance Criteria:
-- [ ] catalyst_bot_cycles_total increments each cycle
-- [ ] catalyst_bot_cycle_duration_seconds histogram populated
-- [ ] catalyst_bot_items_processed_total by source
-- [ ] System metrics (CPU, memory) updated
-```
-
-### Phase 3: Trading Engine Integration (Priority: HIGH)
-
-#### Ticket 3.1: Import Metrics in trading_engine.py
-```
-Title: Add metrics imports to trading engine
-Priority: High
-Estimate: 15 minutes
-
-File: src/catalyst_bot/trading/trading_engine.py
-Lines to Modify: After 25
-
-Tasks:
-1. Add try/except import block for metrics
-2. Set METRICS_AVAILABLE flag
-3. Import all needed functions
-
-Acceptance Criteria:
-- [ ] Graceful fallback if metrics module unavailable
-- [ ] No import errors on startup
-```
-
-#### Ticket 3.2: Instrument Order Execution
-```
-Title: Add order and trade metrics to trading engine
-Priority: High
-Estimate: 1 hour
-
-File: src/catalyst_bot/trading/trading_engine.py
-Lines to Modify: 560-606, 631-636
-
-Tasks:
-1. Wrap _execute_signal with measure_order_execution
-2. Record order status (filled/rejected)
-3. Record trade results (win/loss) on close
-4. Track signal processing time
-
-Acceptance Criteria:
-- [ ] catalyst_bot_orders_total counts all orders
-- [ ] catalyst_bot_order_latency_seconds histogram
-- [ ] catalyst_bot_trades_total on position close
-- [ ] catalyst_bot_signal_processing_seconds histogram
-```
-
-#### Ticket 3.3: Instrument Portfolio Metrics
-```
-Title: Update portfolio and position metrics
+Title: Add metrics collection to main loop
 Priority: High
 Estimate: 45 minutes
 
-File: src/catalyst_bot/trading/trading_engine.py
-Lines to Modify: 372-384, 887-916
+File: src/catalyst_bot/runner.py
+Lines: 3848, 4100, 4127
 
 Tasks:
-1. Call update_portfolio_metrics() in update_positions()
-2. Call update_position_metrics() with position list
-3. Update circuit breaker metrics
+1. Start metrics server after health endpoint
+2. Record cycle metrics after _cycle()
+3. Update portfolio metrics after trading_engine.update_positions()
 
 Acceptance Criteria:
-- [ ] catalyst_bot_portfolio_value gauge updates
-- [ ] catalyst_bot_open_positions gauge accurate
-- [ ] catalyst_bot_position_pnl per-ticker
-- [ ] catalyst_bot_circuit_breaker_active toggles
+- [ ] Metrics server starts on bot boot
+- [ ] catalyst_bot_cycles_total increments each cycle
+- [ ] Portfolio metrics update when trading engine active
 ```
 
-### Phase 4: Alert and API Metrics (Priority: MEDIUM)
-
-#### Ticket 4.1: Alert Metrics in alerts.py
+#### Ticket B.2: Integrate with trading_engine.py
 ```
-Title: Record alert metrics by category
-Priority: Medium
+Title: Add order/trade metrics to trading engine
+Priority: High
 Estimate: 30 minutes
+
+File: src/catalyst_bot/trading/trading_engine.py
+
+Tasks:
+1. Import metrics functions with graceful fallback
+2. Call record_order() on order fill/reject
+3. Call record_trade() on position close
+
+Acceptance Criteria:
+- [ ] catalyst_bot_orders_total increments on orders
+- [ ] catalyst_bot_trades_total increments on closes
+- [ ] No crashes if metrics module unavailable
+```
+
+#### Ticket B.3: Integrate with alerts.py
+```
+Title: Track alerts by category
+Priority: Medium
+Estimate: 15 minutes
 
 File: src/catalyst_bot/alerts.py
 
 Tasks:
-1. Import record_alert
-2. Categorize alerts (sec_filing, breakout, earnings, etc.)
-3. Call record_alert() on successful send
+1. Import record_alert with fallback
+2. Categorize alerts by content
+3. Call record_alert() after successful send
 
 Acceptance Criteria:
 - [ ] catalyst_bot_alerts_sent_total increments
-- [ ] Category labels populated
+- [ ] Categories: sec_filing, breakout, earnings, general
 ```
 
-#### Ticket 4.2: Bridge LLM Usage to Prometheus
+### Phase C: Local Visibility
+
+#### Ticket C.1: Enhance Admin Heartbeat
 ```
-Title: Export LLM usage to Prometheus metrics
+Title: Add metrics summary to Discord heartbeat
 Priority: Medium
 Estimate: 30 minutes
 
-File: src/catalyst_bot/llm_usage_monitor.py
-Lines to Modify: End of log_usage() method (~278)
+File: src/catalyst_bot/runner.py
 
 Tasks:
-1. Import record_llm_usage
-2. Call at end of log_usage()
+1. Call get_metrics_summary() in heartbeat builder
+2. Format metrics for Discord embed
+3. Only show sections with data
 
 Acceptance Criteria:
-- [ ] catalyst_bot_llm_requests_total by provider
-- [ ] catalyst_bot_llm_tokens_total by direction
-- [ ] catalyst_bot_llm_cost_dollars accumulates
+- [ ] Heartbeat shows portfolio value if trading active
+- [ ] Heartbeat shows order success rate if orders placed
+- [ ] Heartbeat shows error count if errors occurred
+- [ ] Graceful fallback if metrics unavailable
 ```
 
-### Phase 5: Deployment Configuration (Priority: MEDIUM)
-
-#### Ticket 5.1: Update Docker Compose
+#### Ticket C.2: Bridge to Health Endpoint
 ```
-Title: Add Prometheus and Grafana services to docker-compose.yml
+Title: Add metrics to /health/detailed
 Priority: Medium
-Estimate: 1 hour
+Estimate: 15 minutes
 
-File: docker-compose.yml
+File: src/catalyst_bot/health_endpoint.py
 
 Tasks:
-1. Add prometheus service
-2. Add grafana service
-3. Configure volumes for persistence
-4. Expose ports 9091 (Prometheus) and 3000 (Grafana)
+1. Import get_metrics_summary
+2. Add 'metrics' key to health response
+3. Handle import/runtime errors gracefully
 
-See: docs/deployment/docker-setup.md for reference config
-```
-
-#### Ticket 5.2: Create Prometheus Config
-```
-Title: Create Prometheus scrape configuration
-Priority: Medium
-Estimate: 30 minutes
-
-File: config/prometheus/prometheus.yml
-
-Tasks:
-1. Configure scrape_interval (15s)
-2. Add catalyst-trading-bot job
-3. Configure alert rules
-4. Set retention (90 days)
-
-See: docs/deployment/monitoring.md lines 367-408
-```
-
-#### Ticket 5.3: Import Grafana Dashboard
-```
-Title: Configure Grafana dashboard for Catalyst-Bot
-Priority: Medium
-Estimate: 30 minutes
-
-File: config/grafana/dashboards/trading-bot-overview.json
-
-Tasks:
-1. Create dashboard JSON
-2. Add portfolio value panel
-3. Add daily P&L panel
-4. Add positions panel
-5. Add latency heatmap
-
-See: docs/deployment/monitoring.md lines 513-625
+Acceptance Criteria:
+- [ ] /health/detailed includes metrics object
+- [ ] No errors if metrics module unavailable
 ```
 
 ---
 
 ## Testing & Verification
 
-### 1. Unit Test: Metrics Module
+### 1. Quick Smoke Test
+
+```bash
+# 1. Check port availability
+python -c "import socket; s=socket.socket(); print('Port 9090:', 'FREE' if s.connect_ex(('localhost',9090)) != 0 else 'IN USE'); s.close()"
+
+# 2. Start bot with metrics
+FEATURE_PROMETHEUS_METRICS=1 python -m catalyst_bot.runner --once
+
+# 3. Check metrics endpoint
+curl -s http://localhost:9090/metrics | head -20
+
+# 4. Check health endpoint
+curl -s http://localhost:8080/health/detailed | python -m json.tool
+```
+
+### 2. Verify Key Metrics
+
+```bash
+# After running a few cycles, verify:
+curl -s http://localhost:9090/metrics | grep -E "^catalyst_bot"
+
+# Expected output includes:
+# catalyst_bot_cycles_total 5
+# catalyst_bot_portfolio_value 100000
+# catalyst_bot_alerts_sent_total{category="general"} 2
+```
+
+### 3. Unit Test
 
 ```python
 # tests/test_metrics.py
 import pytest
-from src.catalyst_bot.monitoring.metrics import (
-    record_order,
-    record_cycle,
-    update_portfolio_metrics,
-    orders_total,
-    cycles_total,
-    portfolio_value,
-)
 
-def test_record_order():
-    """Test order metrics recording."""
-    initial = orders_total.labels(side='buy', status='filled')._value.get()
-    record_order('buy', 'filled')
-    assert orders_total.labels(side='buy', status='filled')._value.get() == initial + 1
+def test_metrics_import():
+    """Verify metrics module imports cleanly."""
+    from catalyst_bot.monitoring import (
+        record_cycle,
+        record_order,
+        get_metrics_summary,
+        start_metrics_server,
+    )
+    assert callable(record_cycle)
+    assert callable(get_metrics_summary)
 
-def test_record_cycle():
-    """Test cycle metrics recording."""
-    initial = cycles_total._value.get()
-    record_cycle(duration_seconds=10.0, items=100, deduped=20, alerts=3)
-    assert cycles_total._value.get() == initial + 1
-
-def test_update_portfolio_metrics():
-    """Test portfolio gauge updates."""
-    update_portfolio_metrics({
-        'portfolio_value': 100000.0,
-        'cash': 50000.0,
-        'buying_power': 100000.0,
-        'daily_pnl': 1000.0,
-        'cumulative_pnl': 5000.0,
-    })
-    assert portfolio_value._value.get() == 100000.0
-```
-
-### 2. Integration Test: Metrics Server
-
-```bash
-# Start bot with metrics enabled
-FEATURE_PROMETHEUS_METRICS=1 METRICS_PORT=9090 python -m catalyst_bot.runner --once
-
-# Verify metrics endpoint
-curl -s http://localhost:9090/metrics | grep catalyst_bot
-
-# Expected output:
-# catalyst_bot_portfolio_value 0.0
-# catalyst_bot_cycles_total 1.0
-# catalyst_bot_cpu_percent 5.2
-# ...
-```
-
-### 3. Prometheus Scrape Test
-
-```bash
-# Start Prometheus
-docker run -d -p 9091:9090 -v $(pwd)/config/prometheus:/etc/prometheus prom/prometheus
-
-# Query metrics
-curl 'http://localhost:9091/api/v1/query?query=catalyst_bot_cycles_total'
+def test_metrics_summary():
+    """Verify summary returns expected structure."""
+    from catalyst_bot.monitoring import get_metrics_summary
+    summary = get_metrics_summary()
+    assert 'portfolio' in summary
+    assert 'trading' in summary
+    assert 'health' in summary
 ```
 
 ---
 
-## Deployment Configuration
-
-### Environment Variables
+## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FEATURE_PROMETHEUS_METRICS` | `1` | Enable/disable metrics server |
 | `METRICS_PORT` | `9090` | Port for /metrics endpoint |
-| `METRICS_UPDATE_INTERVAL` | `15` | System metrics update interval (seconds) |
-
-### Docker Compose Addition
-
-```yaml
-# Add to docker-compose.yml
-services:
-  catalyst-bot:
-    # ... existing config ...
-    ports:
-      - "8080:8080"   # Health endpoint
-      - "9090:9090"   # Prometheus metrics
-    environment:
-      - FEATURE_PROMETHEUS_METRICS=1
-      - METRICS_PORT=9090
-
-  prometheus:
-    image: prom/prometheus:v2.48.0
-    ports:
-      - "9091:9090"
-    volumes:
-      - ./config/prometheus:/etc/prometheus
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.retention.time=90d'
-
-  grafana:
-    image: grafana/grafana:10.2.2
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./config/grafana/provisioning:/etc/grafana/provisioning
-      - grafana-data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-
-volumes:
-  prometheus-data:
-  grafana-data:
-```
 
 ---
 
 ## Summary
 
-This implementation guide provides a complete roadmap for adding Prometheus metrics to the Catalyst-Bot. The key components are:
+This implementation provides:
 
-1. **Core Metrics Module** (`monitoring/metrics.py`) - All metric definitions
-2. **Metrics Server** (`monitoring/metrics_server.py`) - HTTP endpoint on port 9090
-3. **Integration Points** - Specific line numbers in runner.py, trading_engine.py
-4. **Coding Tickets** - Phased implementation with acceptance criteria
+1. **Immediate Value** - Metrics in Discord heartbeat without new services
+2. **Future Ready** - Standard `/metrics` endpoint for Grafana Cloud migration
+3. **Zero Overhead** - No Docker, no Prometheus server, no Grafana locally
+4. **Graceful Fallback** - Bot works fine if metrics module unavailable
 
-The total estimated implementation time is **4-6 hours** for a complete working system.
+**Implementation Order:**
+1. Phase A: Create monitoring package (1-2 hours)
+2. Phase B: Wire into runner.py and trading_engine.py (1 hour)
+3. Phase C: Enhance heartbeat and health endpoint (45 min)
+4. Phase D: Add Grafana Cloud when hosting (future, 30 min)
 
 ---
 
