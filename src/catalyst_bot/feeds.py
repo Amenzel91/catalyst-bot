@@ -1185,24 +1185,26 @@ async def _enrich_sec_items_batch(
 
         # CRITICAL OPTIMIZATION: Pre-filter already-seen filings BEFORE expensive LLM calls
         # This prevents reprocessing the same 100+ filings every cycle (saves 7-8 min/cycle)
-        # NOTE: seen_store has thread safety issues when called from async, so we skip for now
-        # The runner.py will still do dedup check in the main thread
-        items_to_enrich = sec_items
+        items_to_enrich = []
         skipped_seen = 0
 
-        # TODO: Re-enable once seen_store is made async-safe
-        # if seen_store:
-        #     for filing in sec_items:
-        #         filing_id = filing.get("id") or filing.get("link") or ""
-        #         try:
-        #             if filing_id and seen_store.is_seen(filing_id):
-        #                 skipped_seen += 1
-        #                 continue
-        #         except Exception:
-        #             pass
-        #         items_to_enrich.append(filing)
-        # else:
-        #     items_to_enrich = sec_items
+        # Pre-filter already-seen filings using async-safe seen_store
+        if seen_store:
+            for filing in sec_items:
+                filing_id = filing.get("id") or filing.get("link") or ""
+                try:
+                    if filing_id and seen_store.is_seen(filing_id):
+                        skipped_seen += 1
+                        continue
+                except Exception as e:
+                    log.warning(
+                        "seen_store_check_failed filing_id=%s err=%s",
+                        filing_id[:60] if filing_id else "",
+                        str(e),
+                    )
+                items_to_enrich.append(filing)
+        else:
+            items_to_enrich = sec_items
 
         log.info(
             "sec_llm_batch_start total_filings=%d skipped_seen=%d to_enrich=%d max_concurrent=%d",

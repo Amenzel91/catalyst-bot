@@ -63,47 +63,66 @@ class SeenStore:
         self.cfg = config
         self.cfg.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()  # Thread-safe access protection
-        self._conn = None
-        self._init_connection()
-        self._ensure_schema()
+        self._thread_local = threading.local()  # Thread-local storage for connections
+        self._init_schema()
         self.purge_expired()
 
-    def _init_connection(self) -> None:
-        """Initialize connection with WAL mode and optimized pragmas."""
-        from catalyst_bot.storage import init_optimized_connection
+    def _get_connection(self):
+        """
+        Get a thread-local SQLite connection.
 
-        self._conn = init_optimized_connection(str(self.cfg.path), timeout=30)
+        Creates a new connection for each thread on first access, ensuring
+        SQLite's "same-thread" requirement is always satisfied.
+        """
+        if not hasattr(self._thread_local, "conn") or self._thread_local.conn is None:
+            from catalyst_bot.storage import init_optimized_connection
 
-        # Note: check_same_thread is not needed with init_optimized_connection
-        # as cross-thread access is protected by self._lock
-
-        log.info("seen_store_initialized path=%s wal_mode=enabled", self.cfg.path)
-
-    def _ensure_schema(self) -> None:
-        cur = self._conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS seen (
-                id TEXT PRIMARY KEY,
-                ts INTEGER NOT NULL
+            self._thread_local.conn = init_optimized_connection(
+                str(self.cfg.path), timeout=30
             )
-            """
-        )
-        self._conn.commit()
+            log.debug(
+                "seen_store_thread_connection_created thread_id=%s",
+                threading.current_thread().ident,
+            )
+
+        return self._thread_local.conn
+
+    def _init_schema(self) -> None:
+        """Initialize database schema in the main thread."""
+        conn = self._get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS seen (
+                    id TEXT PRIMARY KEY,
+                    ts INTEGER NOT NULL
+                )
+                """
+            )
+            conn.commit()
+            log.info("seen_store_initialized path=%s wal_mode=enabled", self.cfg.path)
+        except Exception as e:
+            log.error("seen_store_schema_init_failed err=%s", str(e), exc_info=True)
+            raise
 
     def close(self) -> None:
-        """Explicitly close connection and truncate WAL file."""
-        if self._conn:
-            try:
-                # CRITICAL: Force WAL checkpoint and truncate to prevent WAL bloat
-                # Without this, WAL can grow to 70x database size, causing 4x slowdown
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                self._conn.close()
-                log.debug("seen_store_connection_closed wal_truncated=true")
-            except Exception as e:
-                log.warning("seen_store_close_error err=%s", str(e))
-            finally:
-                self._conn = None
+        """Close all thread-local connections and truncate WAL files."""
+        try:
+            if hasattr(self._thread_local, "conn") and self._thread_local.conn:
+                conn = self._thread_local.conn
+                try:
+                    # CRITICAL: Force WAL checkpoint and truncate to prevent WAL bloat
+                    # Without this, WAL can grow to 70x database size, causing 4x slowdown
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.close()
+                    log.debug("seen_store_connection_closed wal_truncated=true")
+                except Exception as e:
+                    log.warning("seen_store_close_error err=%s", str(e))
+                finally:
+                    self._thread_local.conn = None
+        except Exception as e:
+            log.warning("seen_store_close_cleanup_error err=%s", str(e))
 
     def __enter__(self):
         """Context manager entry."""
@@ -120,43 +139,54 @@ class SeenStore:
         cutoff = int(time.time()) - ttl_secs
         with self._lock:
             try:
-                cur = self._conn.cursor()
+                conn = self._get_connection()
+                cur = conn.cursor()
                 cur.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
-                self._conn.commit()
+                conn.commit()
                 log.debug("purge_expired_success cutoff=%d", cutoff)
             except Exception as e:  # pragma: no cover - non-fatal
                 log.warning("purge_expired_failed", extra={"error": str(e)})
 
     def is_seen(self, item_id: str) -> bool:
-        """Check if item is seen (thread-safe)."""
+        """Check if item is seen (thread-safe across async and sync contexts)."""
         with self._lock:
             try:
-                cur = self._conn.cursor()
+                conn = self._get_connection()
+                cur = conn.cursor()
                 cur.execute("SELECT 1 FROM seen WHERE id = ? LIMIT 1", (item_id,))
                 row = cur.fetchone()
                 return row is not None
             except Exception as e:  # pragma: no cover - non-fatal
                 log.error(
-                    "is_seen_error item_id=%s err=%s", item_id, str(e), exc_info=True
+                    "is_seen_error item_id=%s err=%s thread_id=%s",
+                    item_id,
+                    str(e),
+                    threading.current_thread().ident,
+                    exc_info=True,
                 )
                 return False  # Assume not seen on error (safer)
 
     def mark_seen(self, item_id: str, ts: Optional[int] = None) -> None:
-        """Mark item as seen (thread-safe)."""
+        """Mark item as seen (thread-safe across async and sync contexts)."""
         ts = int(time.time()) if ts is None else int(ts)
 
         with self._lock:
             try:
-                cur = self._conn.cursor()
+                conn = self._get_connection()
+                cur = conn.cursor()
                 cur.execute(
                     "INSERT OR REPLACE INTO seen(id, ts) VALUES(?, ?)",
                     (item_id, ts),
                 )
-                self._conn.commit()
+                conn.commit()
                 log.debug("marked_seen item_id=%s", item_id[:80])
             except Exception as e:  # pragma: no cover - non-fatal
                 log.error(
-                    "mark_seen_error item_id=%s err=%s", item_id, str(e), exc_info=True
+                    "mark_seen_error item_id=%s err=%s thread_id=%s",
+                    item_id,
+                    str(e),
+                    threading.current_thread().ident,
+                    exc_info=True,
                 )
                 raise  # Re-raise for caller to handle
 
@@ -172,10 +202,11 @@ class SeenStore:
         """
         with self._lock:
             try:
+                conn = self._get_connection()
                 cutoff = int(time.time()) - (days_old * 86400)
-                cursor = self._conn.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
+                cursor = conn.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
                 deleted = cursor.rowcount
-                self._conn.commit()
+                conn.commit()
                 log.info(
                     "seen_store_cleanup deleted=%d cutoff_days=%d", deleted, days_old
                 )
