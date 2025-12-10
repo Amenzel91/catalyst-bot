@@ -44,14 +44,13 @@ Database Schema:
 
 import asyncio
 import json
-import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from ..broker.broker_interface import (
     BracketOrder,
@@ -62,7 +61,6 @@ from ..broker.broker_interface import (
     Order,
     OrderRejectedError,
     OrderSide,
-    OrderStatus,
     OrderType,
     TimeInForce,
 )
@@ -226,7 +224,8 @@ class OrderExecutor:
 
             with sqlite3.connect(self.db_path) as conn:
                 # Create executed_orders table
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS executed_orders (
                         order_id TEXT PRIMARY KEY,
                         client_order_id TEXT,
@@ -248,21 +247,28 @@ class OrderExecutor:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
-                """)
+                """
+                )
 
                 # Create indexes
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_executed_orders_ticker
                     ON executed_orders(ticker)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_executed_orders_status
                     ON executed_orders(status)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_executed_orders_signal_id
                     ON executed_orders(signal_id)
-                """)
+                """
+                )
 
                 conn.commit()
                 self.logger.info("Database initialized successfully")
@@ -308,7 +314,11 @@ class OrderExecutor:
                         order.filled_quantity,
                         float(order.limit_price) if order.limit_price else None,
                         float(order.stop_price) if order.stop_price else None,
-                        float(order.filled_avg_price) if order.filled_avg_price else None,
+                        (
+                            float(order.filled_avg_price)
+                            if order.filled_avg_price
+                            else None
+                        ),
                         order.status.value,
                         order.submitted_at.isoformat() if order.submitted_at else None,
                         order.filled_at.isoformat() if order.filled_at else None,
@@ -357,7 +367,9 @@ class OrderExecutor:
             signal.position_size_pct,
             self.sizing_config.max_position_size_pct,
         )
-        shares_from_pct = int((account_value * Decimal(str(position_value_pct))) / current_price)
+        shares_from_pct = int(
+            (account_value * Decimal(str(position_value_pct))) / current_price
+        )
 
         # Method 2: Risk-based sizing
         shares_from_risk = self._calculate_risk_based_size(
@@ -377,7 +389,9 @@ class OrderExecutor:
         # Check minimum dollar amount
         position_value = shares * current_price
         if position_value < self.sizing_config.min_position_size_dollars:
-            shares = int(self.sizing_config.min_position_size_dollars / current_price) + 1
+            shares = (
+                int(self.sizing_config.min_position_size_dollars / current_price) + 1
+            )
 
         # Check maximum dollar amount
         if position_value > self.sizing_config.max_position_size_dollars:
@@ -427,7 +441,9 @@ class OrderExecutor:
             )
 
         # Calculate shares based on risk
-        max_risk_dollars = account_value * Decimal(str(self.sizing_config.risk_per_trade_pct))
+        max_risk_dollars = account_value * Decimal(
+            str(self.sizing_config.risk_per_trade_pct)
+        )
         shares = int(max_risk_dollars / risk_per_share)
 
         return shares
@@ -435,6 +451,30 @@ class OrderExecutor:
     # ========================================================================
     # Signal Execution
     # ========================================================================
+
+    def _round_price_for_alpaca(self, price: Optional[Decimal]) -> Optional[Decimal]:
+        """
+        Round price according to Alpaca's pricing rules.
+
+        Alpaca Rules:
+        - Stocks >= $1.00: Penny increments only (e.g., $8.83, not $8.829999)
+        - Stocks < $1.00: Sub-penny increments allowed (e.g., $0.8392)
+
+        Args:
+            price: Price to round (can be None)
+
+        Returns:
+            Rounded price, or None if input was None
+        """
+        if price is None:
+            return None
+
+        if price >= Decimal("1.00"):
+            # Stocks >= $1: Round to 2 decimal places (penny increment)
+            return price.quantize(Decimal("0.01"))
+        else:
+            # Stocks < $1: Round to 4 decimal places (sub-penny allowed)
+            return price.quantize(Decimal("0.0001"))
 
     async def execute_signal(
         self,
@@ -522,15 +562,24 @@ class OrderExecutor:
             # Execute order
             # Note: Alpaca doesn't support bracket orders during extended hours
             # Fall back to simple orders when trading pre-market/after-hours
-            if use_bracket_order and signal.stop_loss_price and signal.take_profit_price and not extended_hours:
-                result = await self._execute_bracket_order(signal, quantity, extended_hours=extended_hours)
+            if (
+                use_bracket_order
+                and signal.stop_loss_price
+                and signal.take_profit_price
+                and not extended_hours
+            ):
+                result = await self._execute_bracket_order(
+                    signal, quantity, extended_hours=extended_hours
+                )
             else:
                 if extended_hours and use_bracket_order:
                     self.logger.info(
                         f"Using simple order instead of bracket for {signal.ticker} "
                         "(extended hours trading - bracket orders not supported)"
                     )
-                result = await self._execute_simple_order(signal, quantity, extended_hours=extended_hours)
+                result = await self._execute_simple_order(
+                    signal, quantity, extended_hours=extended_hours
+                )
 
             # Log execution
             self.logger.info(
@@ -575,7 +624,8 @@ class OrderExecutor:
                 order_type = OrderType.LIMIT
                 time_in_force = TimeInForce.DAY
                 # Use current price as limit for extended hours limit order
-                limit_price = signal.current_price or signal.entry_price
+                raw_price = signal.current_price or signal.entry_price
+                limit_price = self._round_price_for_alpaca(raw_price)
             else:
                 order_type = OrderType.MARKET
                 time_in_force = TimeInForce.DAY
@@ -603,7 +653,8 @@ class OrderExecutor:
                 success=True,
                 order=order,
                 quantity=quantity,
-                estimated_cost=Decimal(str(quantity)) * (signal.current_price or Decimal("0")),
+                estimated_cost=Decimal(str(quantity))
+                * (signal.current_price or Decimal("0")),
                 signal_id=signal.signal_id,
             )
 
@@ -651,7 +702,9 @@ class OrderExecutor:
         try:
             # Validate bracket order parameters
             if not signal.stop_loss_price or not signal.take_profit_price:
-                raise ValueError("Stop loss and take profit prices required for bracket order")
+                raise ValueError(
+                    "Stop loss and take profit prices required for bracket order"
+                )
 
             # Generate client order ID
             client_order_id = f"bracket_{signal.signal_id}_{uuid.uuid4().hex[:8]}"
@@ -661,13 +714,18 @@ class OrderExecutor:
             if extended_hours:
                 # Extended hours: MUST use DAY limit orders
                 entry_type = OrderType.LIMIT
-                entry_limit_price = signal.entry_price or signal.current_price
+                raw_entry_price = signal.entry_price or signal.current_price
+                entry_limit_price = self._round_price_for_alpaca(raw_entry_price)
                 time_in_force = TimeInForce.DAY
             else:
                 # Regular hours: Can use GTC and market/limit orders
                 entry_type = OrderType.LIMIT if signal.entry_price else OrderType.MARKET
-                entry_limit_price = signal.entry_price
+                entry_limit_price = self._round_price_for_alpaca(signal.entry_price)
                 time_in_force = TimeInForce.GTC
+
+            # Round stop-loss and take-profit prices for Alpaca compliance
+            stop_loss_price = self._round_price_for_alpaca(signal.stop_loss_price)
+            take_profit_price = self._round_price_for_alpaca(signal.take_profit_price)
 
             # Create bracket order parameters
             params = BracketOrderParams(
@@ -676,8 +734,8 @@ class OrderExecutor:
                 quantity=quantity,
                 entry_type=entry_type,
                 entry_limit_price=entry_limit_price,
-                stop_loss_price=signal.stop_loss_price,
-                take_profit_price=signal.take_profit_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
                 time_in_force=time_in_force,
                 extended_hours=extended_hours,
                 client_order_id=client_order_id,
@@ -687,20 +745,33 @@ class OrderExecutor:
             bracket_order = await self.broker.place_bracket_order(params)
 
             # Save all orders to database
-            self._save_order_to_db(bracket_order.entry_order, signal_id=signal.signal_id)
-            self._save_order_to_db(bracket_order.stop_loss_order, signal_id=signal.signal_id)
-            self._save_order_to_db(bracket_order.take_profit_order, signal_id=signal.signal_id)
+            self._save_order_to_db(
+                bracket_order.entry_order, signal_id=signal.signal_id
+            )
+            self._save_order_to_db(
+                bracket_order.stop_loss_order, signal_id=signal.signal_id
+            )
+            self._save_order_to_db(
+                bracket_order.take_profit_order, signal_id=signal.signal_id
+            )
 
             # Track orders
-            self._pending_orders[bracket_order.entry_order.order_id] = bracket_order.entry_order
-            self._pending_orders[bracket_order.stop_loss_order.order_id] = bracket_order.stop_loss_order
-            self._pending_orders[bracket_order.take_profit_order.order_id] = bracket_order.take_profit_order
+            self._pending_orders[bracket_order.entry_order.order_id] = (
+                bracket_order.entry_order
+            )
+            self._pending_orders[bracket_order.stop_loss_order.order_id] = (
+                bracket_order.stop_loss_order
+            )
+            self._pending_orders[bracket_order.take_profit_order.order_id] = (
+                bracket_order.take_profit_order
+            )
 
             return ExecutionResult(
                 success=True,
                 bracket_order=bracket_order,
                 quantity=quantity,
-                estimated_cost=Decimal(str(quantity)) * (signal.entry_price or signal.current_price or Decimal("0")),
+                estimated_cost=Decimal(str(quantity))
+                * (signal.entry_price or signal.current_price or Decimal("0")),
                 signal_id=signal.signal_id,
             )
 
@@ -925,7 +996,7 @@ if __name__ == "__main__":
             use_bracket_order=True,
         )
 
-        print(f"\nExecution Result:")
+        print("\nExecution Result:")
         print(f"  Success: {result.success}")
         print(f"  Quantity: {result.quantity}")
         print(f"  Estimated Cost: ${result.estimated_cost}")
@@ -945,7 +1016,7 @@ if __name__ == "__main__":
 
         # Get execution stats
         stats = await executor.get_execution_stats(days=30)
-        print(f"\nExecution Statistics (30 days):")
+        print("\nExecution Statistics (30 days):")
         print(f"  Total Orders: {stats.get('total_orders', 0)}")
         print(f"  Fill Rate: {stats.get('fill_rate', 0)*100:.1f}%")
         print(f"  Total Volume: ${stats.get('total_volume', 0):.2f}")
