@@ -22,11 +22,9 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -71,6 +69,7 @@ class SECLLMCache:
         # Determine database path
         if db_path is None:
             from .config import get_settings
+
             settings = get_settings()
             self.db_path = settings.data_dir / "sec_llm_cache.db"
         else:
@@ -113,50 +112,81 @@ class SECLLMCache:
 
             cursor = conn.cursor()
 
-            # Create cache table
-            cursor.execute("""
+            # Check if migration needed (ticker column has NOT NULL constraint)
+            needs_migration = False
+            try:
+                cursor.execute("PRAGMA table_info(sec_llm_cache)")
+                columns = cursor.fetchall()
+                for col in columns:
+                    # col format: (cid, name, type, notnull, dflt_value, pk)
+                    if col[1] == "ticker" and col[3] == 1:  # notnull=1
+                        needs_migration = True
+                        _logger.info(
+                            "sec_llm_cache_migration_needed ticker_not_null=true"
+                        )
+                        break
+            except Exception:
+                pass  # Table doesn't exist yet
+
+            # If migration needed, drop and recreate table (it's just a cache)
+            if needs_migration:
+                _logger.info("sec_llm_cache_migrating dropping_old_table=true")
+                cursor.execute("DROP TABLE IF EXISTS sec_llm_cache")
+                conn.commit()
+
+            # Create cache table (ticker is now nullable)
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sec_llm_cache (
                     cache_key TEXT PRIMARY KEY,
                     filing_id TEXT NOT NULL,
-                    ticker TEXT NOT NULL,
+                    ticker TEXT,
                     filing_type TEXT NOT NULL,
                     analysis_result TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     expires_at REAL NOT NULL,
                     hit_count INTEGER DEFAULT 0
                 )
-            """)
+            """
+            )
 
             # Create indexes for common queries
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_ticker_filing_type
                 ON sec_llm_cache(ticker, filing_type)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_expires_at
                 ON sec_llm_cache(expires_at)
-            """)
+            """
+            )
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_filing_id
                 ON sec_llm_cache(filing_id)
-            """)
+            """
+            )
 
             conn.commit()
 
-        _logger.debug("sec_llm_cache_schema_initialized wal_mode=enabled")
+        _logger.debug(
+            "sec_llm_cache_schema_initialized wal_mode=enabled ticker_nullable=true"
+        )
 
     def close(self):
         """Close any open database connections (for cleanup in tests)."""
         # SQLite connections are created per-operation, so no persistent connection
         # This method is here for API compatibility
-        pass
 
     def _generate_cache_key(
         self,
         filing_id: str,
-        ticker: str,
+        ticker: Optional[str],
         filing_type: str,
         document_hash: Optional[str] = None,
     ) -> str:
@@ -167,8 +197,8 @@ class SECLLMCache:
         ----------
         filing_id : str
             Unique filing identifier (e.g., accession number)
-        ticker : str
-            Stock ticker
+        ticker : str, optional
+            Stock ticker (can be None for ticker-less filings)
         filing_type : str
             Type of filing (e.g., '8-K', '424B5')
         document_hash : str, optional
@@ -179,7 +209,7 @@ class SECLLMCache:
         str
             Cache key (MD5 hash)
         """
-        # Combine all identifiers
+        # Combine all identifiers (ticker can be None)
         key_content = f"{filing_id}|{ticker}|{filing_type}"
         if document_hash:
             key_content += f"|{document_hash}"
@@ -190,7 +220,7 @@ class SECLLMCache:
     def get_cached_sec_analysis(
         self,
         filing_id: str,
-        ticker: str,
+        ticker: Optional[str],
         filing_type: str,
         document_hash: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -217,7 +247,9 @@ class SECLLMCache:
         if not os.getenv("FEATURE_SEC_LLM_CACHE", "1") in ("1", "true", "yes", "on"):
             return None
 
-        cache_key = self._generate_cache_key(filing_id, ticker, filing_type, document_hash)
+        cache_key = self._generate_cache_key(
+            filing_id, ticker, filing_type, document_hash
+        )
 
         with self._lock:  # Thread-safe access
             self.stats["total_requests"] += 1
@@ -255,7 +287,10 @@ class SECLLMCache:
                     now = time.time()
                     if now >= expires_at:
                         # Expired - delete and return None
-                        cursor.execute("DELETE FROM sec_llm_cache WHERE cache_key = ?", (cache_key,))
+                        cursor.execute(
+                            "DELETE FROM sec_llm_cache WHERE cache_key = ?",
+                            (cache_key,),
+                        )
                         conn.commit()
 
                         self.stats["cache_misses"] += 1
@@ -290,14 +325,14 @@ class SECLLMCache:
                     "sec_llm_cache_get_error filing_id=%s err=%s",
                     filing_id,
                     str(e),
-                    exc_info=True
+                    exc_info=True,
                 )
                 return None  # Treat errors as cache miss
 
     def cache_sec_analysis(
         self,
         filing_id: str,
-        ticker: str,
+        ticker: Optional[str],
         filing_type: str,
         analysis_result: Dict[str, Any],
         document_hash: Optional[str] = None,
@@ -309,8 +344,8 @@ class SECLLMCache:
         ----------
         filing_id : str
             Unique filing identifier
-        ticker : str
-            Stock ticker
+        ticker : str, optional
+            Stock ticker (can be None for ticker-less filings)
         filing_type : str
             Type of filing
         analysis_result : dict
@@ -327,7 +362,9 @@ class SECLLMCache:
         if not os.getenv("FEATURE_SEC_LLM_CACHE", "1") in ("1", "true", "yes", "on"):
             return False
 
-        cache_key = self._generate_cache_key(filing_id, ticker, filing_type, document_hash)
+        cache_key = self._generate_cache_key(
+            filing_id, ticker, filing_type, document_hash
+        )
 
         with self._lock:  # Thread-safe access
             try:
@@ -344,10 +381,19 @@ class SECLLMCache:
                     cursor.execute(
                         """
                         INSERT OR REPLACE INTO sec_llm_cache
-                        (cache_key, filing_id, ticker, filing_type, analysis_result, created_at, expires_at, hit_count)
+                        (cache_key, filing_id, ticker, filing_type,
+                         analysis_result, created_at, expires_at, hit_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
                         """,
-                        (cache_key, filing_id, ticker, filing_type, analysis_json, now, expires_at),
+                        (
+                            cache_key,
+                            filing_id,
+                            ticker,
+                            filing_type,
+                            analysis_json,
+                            now,
+                            expires_at,
+                        ),
                     )
 
                     conn.commit()
@@ -367,7 +413,7 @@ class SECLLMCache:
                     "sec_llm_cache_store_error filing_id=%s err=%s",
                     filing_id,
                     str(e),
-                    exc_info=True
+                    exc_info=True,
                 )
                 return False
 
@@ -481,7 +527,8 @@ class SECLLMCache:
                 stats["cache_size"] = 0
 
             _logger.info(
-                "sec_llm_cache_stats requests=%d hits=%d misses=%d hit_rate=%.1f%% size=%d invalidations=%d",
+                "sec_llm_cache_stats requests=%d hits=%d misses=%d "
+                "hit_rate=%.1f%% size=%d invalidations=%d",
                 stats["total_requests"],
                 stats["cache_hits"],
                 stats["cache_misses"],
@@ -502,6 +549,7 @@ def get_sec_llm_cache() -> SECLLMCache:
     global _cache
     if _cache is None:
         from .config import get_settings
+
         settings = get_settings()
         ttl_hours = getattr(settings, "sec_llm_cache_ttl_hours", 72)
         _cache = SECLLMCache(ttl_hours=ttl_hours)
