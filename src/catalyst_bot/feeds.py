@@ -1042,21 +1042,58 @@ async def _enrich_sec_filing_with_llm(
     if source and source.lower().startswith("sec_"):
         filing_type = source[4:].upper().replace("_", "-")
 
+    # Extract filing_id for cache key (use id or link as fallback)
+    filing_id = filing.get("id") or filing.get("link") or ""
+
     try:
         # Import here to avoid circular dependency
+        import hashlib
+
         from .logging_utils import get_logger
         from .sec_llm_analyzer import analyze_sec_filing
+        from .sec_llm_cache import get_sec_llm_cache
 
         log = get_logger("feeds.sec_llm")
+        cache = get_sec_llm_cache()
 
         log.debug(
-            "sec_llm_enrich_start ticker=%s type=%s text_len=%d",
+            "sec_llm_enrich_start ticker=%s type=%s text_len=%d filing_id=%s",
             ticker,
             filing_type,
             len(raw_summary or ""),
+            filing_id,
         )
 
-        # Call LLM analyzer (sync function, but fast enough for our use)
+        # Check cache first (same pattern as batch path in sec_llm_analyzer.py)
+        doc_hash = ""
+        if raw_summary:
+            doc_hash = hashlib.md5(raw_summary[:1000].encode()).hexdigest()[:8]
+
+        cached_result = cache.get_cached_sec_analysis(
+            filing_id=filing_id,
+            ticker=ticker,
+            filing_type=filing_type,
+            document_hash=doc_hash,
+        )
+
+        if cached_result is not None:
+            # Cache hit - use cached result
+            log.info(
+                "sec_llm_cache_hit_rss ticker=%s filing_type=%s filing_id=%s",
+                ticker,
+                filing_type,
+                filing_id,
+            )
+
+            return {
+                **filing,
+                "summary": cached_result.get("summary", raw_summary),
+                "llm_sentiment": cached_result.get("llm_sentiment", 0.0),
+                "llm_confidence": cached_result.get("llm_confidence", 0.5),
+                "catalysts": cached_result.get("catalysts", []),
+            }
+
+        # Cache miss - call LLM analyzer
         result = analyze_sec_filing(
             title=title,
             filing_type=filing_type,
@@ -1066,10 +1103,20 @@ async def _enrich_sec_filing_with_llm(
 
         if result and result.get("summary"):
             log.info(
-                "sec_llm_enrich_success ticker=%s sentiment=%.2f summary_len=%d",
+                "sec_llm_enrich_success ticker=%s sentiment=%.2f summary_len=%d filing_id=%s",
                 ticker,
                 result.get("llm_sentiment", 0),
                 len(result.get("summary", "")),
+                filing_id,
+            )
+
+            # Cache the result
+            cache.cache_sec_analysis(
+                filing_id=filing_id,
+                ticker=ticker,
+                filing_type=filing_type,
+                analysis_result=result,
+                document_hash=doc_hash,
             )
 
             return {
