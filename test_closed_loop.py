@@ -1,4 +1,4 @@
-﻿"""
+"""
 Test the closed-loop keyword weight update system.
 
 Verifies:
@@ -10,13 +10,13 @@ Verifies:
 
 import json
 import sys
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Add src to path
+from catalyst_bot.moa_historical_analyzer import update_keyword_stats_file
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from catalyst_bot.moa_historical_analyzer import update_keyword_stats_file
 
 
 def test_schema_format():
@@ -30,7 +30,7 @@ def test_schema_format():
         print("[FAIL] FAIL: keyword_stats.json not found")
         return False
 
-    with open(stats_path, 'r') as f:
+    with open(stats_path, "r") as f:
         data = json.load(f)
 
     # Check for required top-level keys
@@ -72,60 +72,68 @@ def test_update_function():
             "keyword": "test_keyword_1",
             "recommended_weight": 1.5,
             "confidence": 0.8,
-            "reason": "High hit rate (75%)"
+            "reason": "High hit rate (75%)",
         },
         {
             "keyword": "test_keyword_2",
             "recommended_weight": 0.5,
             "confidence": 0.9,
-            "reason": "Low hit rate (25%)"
+            "reason": "Low hit rate (25%)",
         },
         {
             "keyword": "test_keyword_low_confidence",
             "recommended_weight": 2.0,
             "confidence": 0.4,  # Below threshold
-            "reason": "Should be skipped"
-        }
+            "reason": "Should be skipped",
+        },
     ]
 
     try:
         # Apply recommendations with min_confidence=0.6
-        stats_path = update_keyword_stats_file(
-            test_recommendations, min_confidence=0.6
-        )
+        stats_path = update_keyword_stats_file(test_recommendations, min_confidence=0.6)
 
-        print(f"[OK] Function executed successfully")
+        print("[OK] Function executed successfully")
         print(f"   - Updated file: {stats_path}")
 
         # Verify the updates
-        with open(stats_path, 'r') as f:
+        with open(stats_path, "r") as f:
             data = json.load(f)
 
         # Check that high-confidence recommendations were applied
-        if "test_keyword_1" in data["weights"] and data["weights"]["test_keyword_1"] == 1.5:
-            print(f"   - test_keyword_1: [OK] Applied (confidence 0.8 >= 0.6)")
+        if (
+            "test_keyword_1" in data["weights"]
+            and data["weights"]["test_keyword_1"] == 1.5
+        ):
+            print("   - test_keyword_1: [OK] Applied (confidence 0.8 >= 0.6)")
         else:
-            print(f"   - test_keyword_1: [FAIL] Not applied correctly")
+            print("   - test_keyword_1: [FAIL] Not applied correctly")
             return False
 
-        if "test_keyword_2" in data["weights"] and data["weights"]["test_keyword_2"] == 0.5:
-            print(f"   - test_keyword_2: [OK] Applied (confidence 0.9 >= 0.6)")
+        if (
+            "test_keyword_2" in data["weights"]
+            and data["weights"]["test_keyword_2"] == 0.5
+        ):
+            print("   - test_keyword_2: [OK] Applied (confidence 0.9 >= 0.6)")
         else:
-            print(f"   - test_keyword_2: [FAIL] Not applied correctly")
+            print("   - test_keyword_2: [FAIL] Not applied correctly")
             return False
 
         # Check that low-confidence recommendation was skipped
         if "test_keyword_low_confidence" not in data["weights"]:
-            print(f"   - test_keyword_low_confidence: [OK] Skipped (confidence 0.4 < 0.6)")
+            print(
+                "   - test_keyword_low_confidence: [OK] Skipped (confidence 0.4 < 0.6)"
+            )
         else:
-            print(f"   - test_keyword_low_confidence: [FAIL] Should have been skipped")
+            print("   - test_keyword_low_confidence: [FAIL] Should have been skipped")
             return False
 
         # Check metadata
         if data.get("updates_applied") == 2:
             print(f"   - updates_applied: [OK] {data['updates_applied']} (expected 2)")
         else:
-            print(f"   - updates_applied: [FAIL] {data.get('updates_applied')} (expected 2)")
+            print(
+                f"   - updates_applied: [FAIL] {data.get('updates_applied')} (expected 2)"
+            )
             return False
 
         print("[PASS] update_keyword_stats_file() works correctly")
@@ -134,6 +142,7 @@ def test_update_function():
     except Exception as e:
         print(f"[FAIL] FAIL: Exception occurred: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -155,18 +164,18 @@ def test_classify_integration():
 
         # Check that our test keywords are present
         if "test_keyword_1" in weights and weights["test_keyword_1"] == 1.5:
-            print(f"   - test_keyword_1: [OK] Loaded correctly (1.5)")
+            print("   - test_keyword_1: [OK] Loaded correctly (1.5)")
         else:
-            print(f"   - test_keyword_1: [FAIL] Not loaded correctly")
+            print("   - test_keyword_1: [FAIL] Not loaded correctly")
             return False
 
         if "test_keyword_2" in weights and weights["test_keyword_2"] == 0.5:
-            print(f"   - test_keyword_2: [OK] Loaded correctly (0.5)")
+            print("   - test_keyword_2: [OK] Loaded correctly (0.5)")
         else:
-            print(f"   - test_keyword_2: [FAIL] Not loaded correctly")
+            print("   - test_keyword_2: [FAIL] Not loaded correctly")
             return False
 
-        print(f"[OK] PASS: classify.py can load updated weights")
+        print("[OK] PASS: classify.py can load updated weights")
         print(f"   - Total keywords loaded: {len(weights)}")
 
         return True
@@ -174,6 +183,7 @@ def test_classify_integration():
     except Exception as e:
         print(f"[FAIL] FAIL: Exception occurred: {e}")
         import traceback
+
         traceback.print_exc()
         return False
 
@@ -185,13 +195,16 @@ def test_runner_integration():
     print("=" * 60)
 
     runner_path = Path("src/catalyst_bot/runner.py")
-    with open(runner_path, 'r', encoding='utf-8') as f:
+    with open(runner_path, "r", encoding="utf-8") as f:
         runner_content = f.read()
 
     # Check for key integration points
     checks = [
-        ("update_keyword_stats_file import", "from .moa_historical_analyzer import update_keyword_stats_file"),
-        ("Load analysis report", "report_path = Path(\"data/moa/analysis_report.json\")"),
+        (
+            "update_keyword_stats_file import",
+            "from .moa_historical_analyzer import update_keyword_stats_file",
+        ),
+        ("Load analysis report", 'report_path = Path("data/moa/analysis_report.json")'),
         ("Apply recommendations", "update_keyword_stats_file("),
         ("Min confidence threshold", "min_confidence=0.6"),
         ("Log success", "moa_keyword_weights_applied"),
@@ -220,7 +233,7 @@ def cleanup_test_keywords():
     print("=" * 60)
 
     stats_path = Path("data/analyzer/keyword_stats.json")
-    with open(stats_path, 'r') as f:
+    with open(stats_path, "r") as f:
         data = json.load(f)
 
     # Remove test keywords
@@ -236,7 +249,7 @@ def cleanup_test_keywords():
     data["source"] = "test_cleanup"
 
     # Save
-    with open(stats_path, 'w') as f:
+    with open(stats_path, "w") as f:
         json.dump(data, f, indent=2)
 
     print(f"[OK] Removed {len(removed)} test keywords: {removed}")
@@ -272,7 +285,9 @@ def main():
     print(f"\n{passed}/{total} tests passed")
 
     if passed == total:
-        print("\n[SUCCESS] ALL TESTS PASSED - Closed-loop system is ready for production!")
+        print(
+            "\n[SUCCESS] ALL TESTS PASSED - Closed-loop system is ready for production!"
+        )
         return 0
     else:
         print("\n[WARN]  SOME TESTS FAILED - Review errors above")
@@ -281,4 +296,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

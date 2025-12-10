@@ -45,7 +45,12 @@ def main(argv: Iterable[str] | None = None) -> None:
         raise FileNotFoundError(f"Input file not found: {input_path}")
     # Load alerts
     if input_path.suffix.lower() == ".csv":
-        df = pd.read_csv(input_path)
+        df = pd.read_csv(
+            input_path,
+            encoding="utf-8",
+            on_bad_lines="warn",  # Don't fail on malformed lines
+            dtype_backend="pyarrow",  # Optional: better performance
+        )
         alerts = df.to_dict(orient="records")
     else:
         # Assume JSON Lines (one JSON object per line)

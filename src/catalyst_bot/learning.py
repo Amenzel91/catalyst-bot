@@ -12,7 +12,7 @@ incrementally boost or diminish weights per category.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from .config import get_settings
@@ -51,7 +51,7 @@ def update_keyword_stats(trade_results: List[TradeSimResult], date_str: str) -> 
             weights[category] = settings.keyword_default_weight
     # Write updated stats
     stats = {
-        "last_updated": datetime.utcnow().isoformat(),
+        "last_updated": datetime.now(timezone.utc).isoformat(),
         "weights": weights,
     }
     try:

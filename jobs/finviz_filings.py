@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from catalyst_bot.alerts import send_alert_safe
 from catalyst_bot.finviz_elite import export_latest_filings
@@ -74,7 +74,7 @@ def main():
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(SCHEMA)
 
-    cutoff = datetime.utcnow() - timedelta(days=RECENT_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_DAYS)
 
     # Pull by major tickers, or empty (which returns general stream).
     # You can loop a watchlist here; for now do general + a couple of big names.

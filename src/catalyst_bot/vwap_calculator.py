@@ -17,15 +17,77 @@ Usage:
 """
 
 import logging
-from datetime import datetime, timezone, time
-from typing import Dict, Optional, Any
 import time as time_module
+from datetime import datetime, time, timezone
+from threading import Lock
+from typing import Any, Dict, Optional
 
 log = logging.getLogger(__name__)
 
-# In-memory cache with TTL
+# In-memory cache with TTL (thread-safe)
 _VWAP_CACHE: Dict[str, Dict[str, Any]] = {}
+_VWAP_CACHE_LOCK = Lock()
 _VWAP_CACHE_TTL_SEC = 300  # 5 minutes (configurable)
+
+
+def _cache_get(cache_key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
+    """Thread-safe cache retrieval with TTL check.
+
+    Args:
+        cache_key: Cache key to lookup
+        ttl_seconds: Time-to-live in seconds
+
+    Returns:
+        Cached data dict if valid, None if expired or not found
+    """
+    with _VWAP_CACHE_LOCK:
+        entry = _VWAP_CACHE.get(cache_key)
+        if entry is None:
+            return None
+
+        # Check TTL
+        age = time_module.time() - entry.get("cached_at", 0)
+        if age >= ttl_seconds:
+            # Expired - remove and return None
+            del _VWAP_CACHE[cache_key]
+            return None
+
+        # Return copy to prevent external mutation
+        return entry.get("data")
+
+
+def _cache_set(cache_key: str, data: Dict[str, Any]) -> None:
+    """Thread-safe cache storage.
+
+    Args:
+        cache_key: Cache key to store under
+        data: Data to cache
+    """
+    with _VWAP_CACHE_LOCK:
+        _VWAP_CACHE[cache_key] = {"data": data, "cached_at": time_module.time()}
+
+
+def _cache_clear_expired(ttl_seconds: int = _VWAP_CACHE_TTL_SEC) -> int:
+    """Remove expired entries from cache.
+
+    Args:
+        ttl_seconds: Time-to-live in seconds
+
+    Returns:
+        Count of expired entries removed
+    """
+    with _VWAP_CACHE_LOCK:
+        now = time_module.time()
+        expired_keys = [
+            key
+            for key, entry in _VWAP_CACHE.items()
+            if now - entry.get("cached_at", 0) >= ttl_seconds
+        ]
+
+        for key in expired_keys:
+            del _VWAP_CACHE[key]
+
+        return len(expired_keys)
 
 
 def calculate_vwap(ticker: str, period_days: int = 1) -> Optional[Dict[str, Any]]:
@@ -50,16 +112,16 @@ def calculate_vwap(ticker: str, period_days: int = 1) -> Optional[Dict[str, Any]
         Returns None if calculation fails or market is closed
     """
     from . import config
+
     settings = config.get_settings()
 
-    # Check cache first
+    # Check cache first (thread-safe)
     cache_key = f"{ticker}_{period_days}"
-    if cache_key in _VWAP_CACHE:
-        cached = _VWAP_CACHE[cache_key]
-        age = time_module.time() - cached["cached_at"]
-        if age < settings.vwap_cache_ttl_minutes * 60:
-            log.debug("vwap_cache_hit ticker=%s age=%.1fs", ticker, age)
-            return cached["data"]
+    ttl_seconds = settings.vwap_cache_ttl_minutes * 60
+    cached_data = _cache_get(cache_key, ttl_seconds)
+    if cached_data is not None:
+        log.debug("vwap_cache_hit ticker=%s", ticker)
+        return cached_data
 
     try:
         # Get intraday price data
@@ -76,14 +138,14 @@ def calculate_vwap(ticker: str, period_days: int = 1) -> Optional[Dict[str, Any]
             return None
 
         # Calculate typical price for each bar: (High + Low + Close) / 3
-        hist['TypicalPrice'] = (hist['High'] + hist['Low'] + hist['Close']) / 3
+        hist["TypicalPrice"] = (hist["High"] + hist["Low"] + hist["Close"]) / 3
 
         # Calculate price × volume
-        hist['PV'] = hist['TypicalPrice'] * hist['Volume']
+        hist["PV"] = hist["TypicalPrice"] * hist["Volume"]
 
         # Calculate cumulative sums
-        cumulative_pv = hist['PV'].sum()
-        cumulative_volume = hist['Volume'].sum()
+        cumulative_pv = hist["PV"].sum()
+        cumulative_volume = hist["Volume"].sum()
 
         # Calculate VWAP
         if cumulative_volume == 0:
@@ -93,7 +155,7 @@ def calculate_vwap(ticker: str, period_days: int = 1) -> Optional[Dict[str, Any]
         vwap = cumulative_pv / cumulative_volume
 
         # Get current price (last bar close)
-        current_price = float(hist['Close'].iloc[-1])
+        current_price = float(hist["Close"].iloc[-1])
 
         # Calculate distance from VWAP
         distance_from_vwap_pct = ((current_price - vwap) / vwap) * 100
@@ -120,20 +182,21 @@ def calculate_vwap(ticker: str, period_days: int = 1) -> Optional[Dict[str, Any]
             "is_above_vwap": is_above,
             "vwap_signal": vwap_signal,
             "cumulative_volume": int(cumulative_volume),
-            "typical_price": float(hist['TypicalPrice'].iloc[-1]),
+            "typical_price": float(hist["TypicalPrice"].iloc[-1]),
             "num_bars": len(hist),
             "calculated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Cache result
-        _VWAP_CACHE[cache_key] = {
-            "data": result,
-            "cached_at": time_module.time()
-        }
+        # Cache result (thread-safe)
+        _cache_set(cache_key, result)
 
         log.info(
             "vwap_calculated ticker=%s vwap=%.4f current_price=%.4f distance=%.2f%% signal=%s",
-            ticker, vwap, current_price, distance_from_vwap_pct, vwap_signal
+            ticker,
+            vwap,
+            current_price,
+            distance_from_vwap_pct,
+            vwap_signal,
         )
 
         return result
@@ -204,11 +267,11 @@ def get_vwap_multiplier(vwap_data: Dict[str, Any]) -> float:
     signal = vwap_data.get("vwap_signal", "NEUTRAL")
 
     multipliers = {
-        "STRONG_BULLISH": 1.2,   # >2% above VWAP
-        "BULLISH": 1.1,          # 0.5-2% above VWAP
-        "NEUTRAL": 1.0,          # Within ±0.5% of VWAP
-        "BEARISH": 0.9,          # 0.5-2% below VWAP
-        "STRONG_BEARISH": 0.7,   # >2% below VWAP (VWAP break)
+        "STRONG_BULLISH": 1.2,  # >2% above VWAP
+        "BULLISH": 1.1,  # 0.5-2% above VWAP
+        "NEUTRAL": 1.0,  # Within ±0.5% of VWAP
+        "BEARISH": 0.9,  # 0.5-2% below VWAP
+        "STRONG_BEARISH": 0.7,  # >2% below VWAP (VWAP break)
     }
 
     return multipliers.get(signal, 1.0)

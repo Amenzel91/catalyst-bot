@@ -51,9 +51,14 @@ def normalize_title(title: str) -> str:
 
 
 def hash_title(title: str) -> str:
-    """Compute a deterministic hash for a news headline."""
+    """Compute a deterministic hash for a news headline.
+
+    Uses SHA-256 for better collision resistance.
+    Truncated to 16 chars for storage efficiency (still 64 bits).
+    """
     normalized = normalize_title(title)
-    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+    full_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return full_hash[:16]  # First 16 chars = 64 bits (sufficient for dedup)
 
 
 def similarity(a: str, b: str) -> float:
@@ -268,9 +273,14 @@ def _extract_sec_accession_number(url: str) -> Optional[str]:
     return None
 
 
-def signature_from(title: str, url: str, ticker: str = "") -> str:
+def signature_from(
+    title: str,
+    url: str,
+    ticker: str = "",
+    extra_fields: Optional[Dict[str, str]] = None,
+) -> str:
     """
-    Compute a stable signature for a news item.
+    Generate deterministic signature for deduplication.
 
     Includes ticker to prevent cross-ticker deduplication.
     E.g., "AAPL announces earnings" vs "TSLA announces earnings" get different signatures.
@@ -283,54 +293,81 @@ def signature_from(title: str, url: str, ticker: str = "") -> str:
         title: News headline
         url: Article URL
         ticker: Stock ticker symbol (optional but recommended)
+        extra_fields: Additional fields to include in signature (optional)
 
     Returns:
-        SHA1 hash of normalized content
-    """
-    # Normalize title
-    normalized_title = normalize_title(title)
+        SHA-256 hash truncated to 20 chars (80 bits)
 
-    # Include ticker in signature to allow same news for different tickers
+    Note:
+        - All inputs are normalized for consistency
+        - Dict fields are sorted for determinism
+        - Empty values are represented as empty strings
+    """
+    # Normalize all inputs
     ticker_component = ticker.upper().strip() if ticker else ""
+    normalized_title = normalize_title(title)
 
     # For SEC filings, extract and use accession number as primary dedup key
     # This ensures same filing from different sources (RSS vs WebSocket) is caught as duplicate
     accession_number = _extract_sec_accession_number(url)
-    if accession_number:
-        # Use accession number instead of full URL for SEC filings
-        # Format: ticker|title|accession (not URL) to catch cross-source duplicates
-        core = ticker_component + "|" + normalized_title + "|" + accession_number
-    else:
-        # Non-SEC items: use original logic (ticker + title + URL)
-        core = ticker_component + "|" + normalized_title + "|" + (url or "")
 
-    return hashlib.sha1(core.encode("utf-8")).hexdigest()
+    # Build deterministic core string
+    parts = [
+        f"ticker={ticker_component}",
+        f"title={normalized_title}",
+        f"accession={accession_number or ''}",
+    ]
+
+    # For non-SEC items, include URL
+    if not accession_number:
+        parts.append(f"url={url or ''}")
+
+    # Add extra fields in sorted order (deterministic)
+    if extra_fields:
+        for key in sorted(extra_fields.keys()):
+            value = str(extra_fields.get(key, "")).strip()
+            parts.append(f"{key}={value}")
+
+    core = "|".join(parts)
+
+    # Use SHA-256 (truncated for efficiency)
+    full_hash = hashlib.sha256(core.encode("utf-8")).hexdigest()
+    return full_hash[:20]  # 20 chars = 80 bits
 
 
-def temporal_dedup_key(ticker: str, title: str, timestamp: int) -> str:
+def temporal_dedup_key(
+    ticker: str, title: str, timestamp: int, bucket_minutes: int = 30
+) -> str:
     """
-    Generate a dedup key that includes time bucket for sliding window dedup.
+    Generate time-bucketed dedup key.
 
-    Groups items into 30-minute buckets to prevent rapid-fire duplicates
+    Groups items into time buckets to prevent rapid-fire duplicates
     while allowing same news to re-alert after sufficient time has passed.
 
     Args:
         ticker: Stock ticker symbol
         title: News headline
         timestamp: Unix timestamp (seconds since epoch)
+        bucket_minutes: Time bucket size (default: 30 min)
 
     Returns:
-        Dedup key combining ticker, title, and 30-min time bucket
+        SHA-256 hash for the ticker+title within time bucket
+
+    Example:
+        Two articles about AAPL with same title within 30 minutes
+        will generate the same key, enabling deduplication.
     """
-    # Bucket timestamp into 30-minute windows
-    # This allows same news to alert again after 30 minutes
-    bucket_size = 30 * 60  # 30 minutes in seconds
+    # Bucket timestamp into time windows
+    bucket_size = bucket_minutes * 60
     time_bucket = (timestamp // bucket_size) * bucket_size
 
-    # Normalize title
-    normalized_title = normalize_title(title)
+    # Normalize inputs
+    ticker_normalized = ticker.upper().strip() if ticker else "UNKNOWN"
+    title_normalized = normalize_title(title)
 
-    # Combine ticker + title + time bucket
-    key = f"{ticker.upper()}|{normalized_title}|{time_bucket}"
+    # Deterministic key format
+    key = f"temporal|{ticker_normalized}|{title_normalized}|{time_bucket}"
 
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()
+    # SHA-256 truncated
+    full_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return full_hash[:20]

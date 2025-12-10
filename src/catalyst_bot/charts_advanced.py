@@ -11,7 +11,7 @@ Supports multiple timeframes (1D, 5D, 1M, 3M, 1Y) with dark theme styling.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -670,7 +670,7 @@ def generate_multi_panel_chart(
         out_path.mkdir(parents=True, exist_ok=True)
 
         # Generate filename
-        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         filename = f"{ticker}_{timeframe}_{timestamp}.png"
         save_path = out_path / filename
 
@@ -703,7 +703,12 @@ def generate_multi_panel_chart(
             "ylabel": "",  # Remove default ylabel, we'll customize it
             "warn_too_much_data": 1000,
             "tight_layout": True,  # Use mplfinance's tight_layout to minimize margins
-            "scale_padding": {"left": 0.02, "right": 2.15, "top": 0.02, "bottom": 0.25},  # Full padding for complete price decimals
+            "scale_padding": {
+                "left": 0.02,
+                "right": 2.15,
+                "top": 0.02,
+                "bottom": 0.25,
+            },  # Full padding for complete price decimals
         }
 
         # Only add addplot if we have indicators (avoids "None" validator error)
@@ -943,7 +948,9 @@ def generate_multi_panel_chart(
                         target,
                     )
             except Exception as e:
-                log.debug("trade_plan_annotations_failed ticker=%s err=%s", ticker, str(e))
+                log.debug(
+                    "trade_plan_annotations_failed ticker=%s err=%s", ticker, str(e)
+                )
 
         # Add VWAP value overlay on right axis
         if vwap is not None:
@@ -1095,7 +1102,7 @@ def generate_multi_panel_chart(
                     ax.yaxis.set_ticks_position("right")
 
                 # Remove top spine for cleaner, modern look (professional charts use minimal spines)
-                ax.spines['top'].set_visible(False)
+                ax.spines["top"].set_visible(False)
 
                 # Improve x-axis label formatting based on timeframe
                 if timeframe == "1Y":
@@ -1311,7 +1318,9 @@ def generate_multi_panel_chart(
             # top=0.98: 2% margin on top
             # bottom=0.10: 10% margin on bottom for x-axis time labels (looks good now)
             # hspace=0.03: minimal vertical space between panels
-            fig.subplots_adjust(left=0.02, right=0.33, top=0.98, bottom=0.10, hspace=0.03)
+            fig.subplots_adjust(
+                left=0.02, right=0.33, top=0.98, bottom=0.10, hspace=0.03
+            )
 
             log.debug("applied minimal-margin layout with label visibility")
         except Exception as e:

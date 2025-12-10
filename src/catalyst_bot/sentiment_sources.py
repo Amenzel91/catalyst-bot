@@ -521,7 +521,9 @@ def _fetch_reddit_sentiment(
     try:
         parts = api_key.split(":")
         if len(parts) < 3:
-            log.debug("reddit_sentiment_invalid_key format must be client_id:client_secret:user_agent")
+            log.debug(
+                "reddit_sentiment_invalid_key format must be client_id:client_secret:user_agent"
+            )
             return None
         client_id = parts[0]
         client_secret = parts[1]
@@ -540,6 +542,7 @@ def _fetch_reddit_sentiment(
     # Import VADER for sentiment analysis
     try:
         from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
         vader = SentimentIntensityAnalyzer()
     except ImportError:
         log.debug("reddit_sentiment_vader_not_available")
@@ -744,7 +747,7 @@ def _fetch_analyst_recommendations(
     recent_initiation = False
 
     try:
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(timezone.utc)
         # Parse period field (format: "YYYY-MM-DD" or "YYYY-MM-01")
         for i in range(min(len(data), 6)):  # Check last 6 months of data
             snapshot = data[i]
@@ -830,7 +833,11 @@ def _fetch_analyst_recommendations(
         "sell": sell,
         "strong_sell": strong_sell,
         "total_analysts": total_analysts,
-        "consensus": "Buy" if strong_buy + buy > sell + strong_sell else "Hold" if strong_buy + buy == sell + strong_sell else "Sell",
+        "consensus": (
+            "Buy"
+            if strong_buy + buy > sell + strong_sell
+            else "Hold" if strong_buy + buy == sell + strong_sell else "Sell"
+        ),
         "recent_upgrade": recent_upgrade,
         "recent_downgrade": recent_downgrade,
         "recent_initiation": recent_initiation,

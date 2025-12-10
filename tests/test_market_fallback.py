@@ -1,4 +1,4 @@
-﻿import importlib
+import importlib
 
 
 def _stub_empty_hist():

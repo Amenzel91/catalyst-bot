@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -120,7 +120,7 @@ def get_quickchart_png_path(
     stamp = (
         last_ts.strftime("%Y%m%d-%H%M")
         if last_ts is not None
-        else datetime.utcnow().strftime("%Y%m%d-%H%M")
+        else datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     )
     out_file = out_dir / f"{nt}_{stamp}.png"
 

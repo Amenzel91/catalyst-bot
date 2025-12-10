@@ -30,11 +30,15 @@ else:
         load_dotenv()
 
 from catalyst_bot.accepted_items_logger import log_accepted_item
+from catalyst_bot.multi_ticker_handler import analyze_multi_ticker_article
 from catalyst_bot.rejected_items_logger import log_rejected_item
 from catalyst_bot.ticker_map import cik_from_text, load_cik_to_ticker
 from catalyst_bot.ticker_validation import TickerValidator
-from catalyst_bot.title_ticker import extract_tickers_from_title, ticker_from_title, ticker_from_summary
-from catalyst_bot.multi_ticker_handler import analyze_multi_ticker_article
+from catalyst_bot.title_ticker import (
+    extract_tickers_from_title,
+    ticker_from_summary,
+    ticker_from_title,
+)
 from catalyst_bot.utils.event_loop_manager import EventLoopManager, run_async
 
 # Be nice to operators: give a clear error when a runtime dep is missing,
@@ -73,10 +77,13 @@ from .breakout_feedback import (  # Real-time outcome tracking
     register_alert_for_tracking,
     track_pending_outcomes,
 )
-from .classify import classify, fast_classify, load_dynamic_keyword_weights
+from .classify import fast_classify, load_dynamic_keyword_weights
 from .config import get_settings
-from .enrichment_worker import enqueue_for_enrichment, get_enriched_item  # WAVE 3: Async enrichment
 from .config_extras import LOG_REPORT_CATEGORIES
+from .enrichment_worker import (  # WAVE 3: Async enrichment
+    enqueue_for_enrichment,
+    get_enriched_item,
+)
 from .health_endpoint import start_health_server, update_health_status
 from .llm_usage_monitor import get_monitor
 from .log_reporter import deliver_report
@@ -88,10 +95,12 @@ from .moa_price_tracker import (
 )
 from .seen_store import SeenStore  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
+import requests
 
 # Paper Trading Integration - Import TradingEngine
 try:
     from .trading.trading_engine import TradingEngine
+
     TRADING_ENGINE_AVAILABLE = True
 except ImportError:
     TRADING_ENGINE_AVAILABLE = False
@@ -99,6 +108,8 @@ except ImportError:
 
 # WAVE 1.2: Feedback Loop imports
 try:
+    # Phase 2: Paper trading and position management
+    from . import paper_trader
     from .feedback import init_database, score_pending_alerts
     from .feedback.weekly_report import (
         send_weekly_report_if_scheduled as send_feedback_weekly_report,
@@ -107,8 +118,6 @@ try:
         analyze_keyword_performance,
         apply_weight_adjustments,
     )
-    # Phase 2: Paper trading and position management
-    from . import paper_trader
 
     FEEDBACK_AVAILABLE = True
 except Exception:
@@ -151,7 +160,9 @@ TRADING_ACTIVITY_STATS: Dict[str, Any] = {
     "signals_generated": 0,
     "trades_executed": 0,
 }
-ERROR_TRACKER: List[Dict[str, Any]] = []  # {"level": "error", "category": "API", "message": "..."}
+ERROR_TRACKER: List[Dict[str, Any]] = (
+    []
+)  # {"level": "error", "category": "API", "message": "..."}
 
 # MOA Nightly Scheduler: Track last run date to prevent duplicate runs
 # This is persisted to data/moa/last_scheduled_run.json to survive restarts
@@ -195,6 +206,7 @@ def _save_moa_last_run_date(run_date: date) -> bool:
         True if saved successfully
     """
     from .logging_utils import get_logger
+
     log = get_logger("runner")
 
     state_path = Path("data/moa/last_scheduled_run.json")
@@ -404,7 +416,9 @@ def _get_trading_engine_data() -> Dict[str, Any]:
 
         # Try to get position count (synchronous operation)
         try:
-            if trading_engine.position_manager and hasattr(trading_engine.position_manager, "get_all_positions"):
+            if trading_engine.position_manager and hasattr(
+                trading_engine.position_manager, "get_all_positions"
+            ):
                 positions = trading_engine.position_manager.get_all_positions()
                 position_count = len(positions)
 
@@ -419,10 +433,14 @@ def _get_trading_engine_data() -> Dict[str, Any]:
             if trading_engine.broker and hasattr(trading_engine.broker, "session"):
                 # Can't call async method synchronously - use alpaca-py TradingClient directly
                 import os
+
                 from alpaca.trading.client import TradingClient
 
                 api_key = os.getenv("ALPACA_API_KEY", "").strip()
-                api_secret = os.getenv("ALPACA_SECRET", "").strip() or os.getenv("ALPACA_API_SECRET", "").strip()
+                api_secret = (
+                    os.getenv("ALPACA_SECRET", "").strip()
+                    or os.getenv("ALPACA_API_SECRET", "").strip()
+                )
 
                 if api_key and api_secret:
                     # Create a sync client for this one-off call
@@ -433,7 +451,11 @@ def _get_trading_engine_data() -> Dict[str, Any]:
             pass  # Keep default value
 
         # Check circuit breaker status
-        circuit_breaker_status = "Active" if getattr(trading_engine, "circuit_breaker_active", False) else "Inactive"
+        circuit_breaker_status = (
+            "Active"
+            if getattr(trading_engine, "circuit_breaker_active", False)
+            else "Inactive"
+        )
 
         return {
             "portfolio_value": portfolio_value,
@@ -479,8 +501,10 @@ def _get_llm_usage_hourly() -> Dict[str, Any]:
             "gemini_count": gemini_count,
             "claude_count": claude_count,
             "local_count": local_count,
-            "input_tokens": hourly_stats.gemini.total_input_tokens + hourly_stats.anthropic.total_input_tokens,
-            "output_tokens": hourly_stats.gemini.total_output_tokens + hourly_stats.anthropic.total_output_tokens,
+            "input_tokens": hourly_stats.gemini.total_input_tokens
+            + hourly_stats.anthropic.total_input_tokens,
+            "output_tokens": hourly_stats.gemini.total_output_tokens
+            + hourly_stats.anthropic.total_output_tokens,
             "hourly_cost": hourly_stats.total_cost,
             "daily_cost": daily_stats.total_cost,
         }
@@ -552,14 +576,18 @@ def _get_market_status_display() -> Dict[str, str]:
             next_event_dt = datetime.combine(today, time(9, 30), tzinfo=et)
             if next_event_dt <= now_et:
                 # Already passed today, next open is tomorrow
-                next_event_dt = datetime.combine(today + timedelta(days=1), time(9, 30), tzinfo=et)
+                next_event_dt = datetime.combine(
+                    today + timedelta(days=1), time(9, 30), tzinfo=et
+                )
             event_name = "Open"
         else:
             # Next event is market close (4:00 PM ET)
             next_event_dt = datetime.combine(today, time(16, 0), tzinfo=et)
             if next_event_dt <= now_et:
                 # Already passed, show tomorrow's open
-                next_event_dt = datetime.combine(today + timedelta(days=1), time(9, 30), tzinfo=et)
+                next_event_dt = datetime.combine(
+                    today + timedelta(days=1), time(9, 30), tzinfo=et
+                )
                 event_name = "Open"
             else:
                 event_name = "Close"
@@ -616,7 +644,13 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
             breakdown_parts = []
             for filing_type, count in sorted(SEC_FILING_TYPES.items()):
                 # Format: "8k" -> "8-K"
-                formatted_type = filing_type.upper().replace("K", "-K").replace("Q", "-Q").replace("G", "-G").replace("D", "-D")
+                formatted_type = (
+                    filing_type.upper()
+                    .replace("K", "-K")
+                    .replace("Q", "-Q")
+                    .replace("G", "-G")
+                    .replace("D", "-D")
+                )
                 breakdown_parts.append(f"{formatted_type}: {count}")
             sec_breakdown = ", ".join(breakdown_parts)
         else:
@@ -658,7 +692,12 @@ def _get_error_summary() -> str:
             message = error.get("message", "")
 
             if category not in error_groups:
-                error_groups[category] = {"error": 0, "warning": 0, "info": 0, "sample": ""}
+                error_groups[category] = {
+                    "error": 0,
+                    "warning": 0,
+                    "info": 0,
+                    "sample": "",
+                }
 
             error_groups[category][level] += 1
             if not error_groups[category]["sample"]:
@@ -742,12 +781,14 @@ def _track_error(level: str, category: str, message: str) -> None:
         global ERROR_TRACKER
         from datetime import datetime, timezone
 
-        ERROR_TRACKER.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": level,
-            "category": category,
-            "message": message,
-        })
+        ERROR_TRACKER.append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "level": level,
+                "category": category,
+                "message": message,
+            }
+        )
 
         # Keep only last 100 errors (circular buffer)
         if len(ERROR_TRACKER) > 100:
@@ -997,16 +1038,18 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             import sys
 
             # System Info
-            embed_fields.append({
-                "name": "🖥️ System Info",
-                "value": (
-                    f"Hostname: {socket.gethostname()}\n"
-                    f"Python: {sys.version.split()[0]}\n"
-                    f"Bot Version: v2.5.1 (TradingEngine+)\n"
-                    f"Started: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')}"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "🖥️ System Info",
+                    "value": (
+                        f"Hostname: {socket.gethostname()}\n"
+                        f"Python: {sys.version.split()[0]}\n"
+                        f"Bot Version: v2.5.1 (TradingEngine+)\n"
+                        f"Started: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')}"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # TradingEngine Status
             te_data = _get_trading_engine_data()
@@ -1014,17 +1057,19 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             data_collection_mode = getattr(settings, "data_collection_mode", True)
             trading_extended_hours = getattr(settings, "trading_extended_hours", True)
 
-            embed_fields.append({
-                "name": "💹 Paper Trading (TradingEngine)",
-                "value": (
-                    f"Status: {'✅ Enabled' if feature_paper_trading else '❌ Disabled'}\n"
-                    f"Mode: {'Data Collection' if data_collection_mode else 'Production'}\n"
-                    f"Open Positions: {te_data.get('position_count', '—')}\n"
-                    f"Portfolio Value: ${te_data.get('portfolio_value', '—')}\n"
-                    f"Extended Hours: {'✅ DAY limit orders' if trading_extended_hours else '❌ Disabled'}"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "💹 Paper Trading (TradingEngine)",
+                    "value": (
+                        f"Status: {'✅ Enabled' if feature_paper_trading else '❌ Disabled'}\n"
+                        f"Mode: {'Data Collection' if data_collection_mode else 'Production'}\n"
+                        f"Open Positions: {te_data.get('position_count', '—')}\n"
+                        f"Portfolio Value: ${te_data.get('portfolio_value', '—')}\n"
+                        f"Extended Hours: {'✅ DAY limit orders' if trading_extended_hours else '❌ Disabled'}"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # Signal Enhancement Features
             feature_google_trends = os.getenv("FEATURE_GOOGLE_TRENDS", "0") == "1"
@@ -1033,42 +1078,48 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             feature_rvol = os.getenv("FEATURE_RVOL", "0") == "1"
             feature_market_regime = os.getenv("FEATURE_MARKET_REGIME", "0") == "1"
 
-            embed_fields.append({
-                "name": "🎯 Signal Enhancement (NEW!)",
-                "value": (
-                    f"Google Trends: {'✅ Enabled (10% weight)' if feature_google_trends else '❌ Disabled'}\n"
-                    f"Reddit Sentiment: {'✅ Enabled (10% weight)' if (feature_reddit and feature_news_sent) else '❌ Disabled'}\n"
-                    f"RVOL Multiplier: {'✅ Enabled (0.8x-1.4x)' if feature_rvol else '❌ Disabled'}\n"
-                    f"Market Regime: {'✅ Enabled (0.5x-1.2x)' if feature_market_regime else '❌ Disabled'}"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "🎯 Signal Enhancement (NEW!)",
+                    "value": (
+                        f"Google Trends: {'✅ Enabled (10% weight)' if feature_google_trends else '❌ Disabled'}\n"
+                        f"Reddit Sentiment: {'✅ Enabled (10% weight)' if (feature_reddit and feature_news_sent) else '❌ Disabled'}\n"
+                        f"RVOL Multiplier: {'✅ Enabled (0.8x-1.4x)' if feature_rvol else '❌ Disabled'}\n"
+                        f"Market Regime: {'✅ Enabled (0.5x-1.2x)' if feature_market_regime else '❌ Disabled'}"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # Market Status
             market_status = _get_market_status_display()
-            embed_fields.append({
-                "name": "🕐 Market Status",
-                "value": (
-                    f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
-                    f"Next Event: {market_status['next_event']}\n"
-                    f"Scan Cycle: {market_status['cycle_time_sec']} sec ({market_status['market_hours_desc']})"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "🕐 Market Status",
+                    "value": (
+                        f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                        f"Next Event: {market_status['next_event']}\n"
+                        f"Scan Cycle: {market_status['cycle_time_sec']} sec ({market_status['market_hours_desc']})"
+                    ),
+                    "inline": False,
+                }
+            )
 
         # Enhanced Interval Heartbeat: Add feed activity, LLM usage, trading activity, errors
         if reason in ("interval", "endday"):
             # Feed Activity Summary
             feed_activity = _get_feed_activity_summary()
-            embed_fields.append({
-                "name": "📰 Feed Activity (Last Hour)",
-                "value": (
-                    f"RSS Feeds: {feed_activity['rss_count']:,} items\n"
-                    f"SEC Filings: {feed_activity['sec_count']} filings ({feed_activity['sec_breakdown']})\n"
-                    f"Twitter/Social: {feed_activity['social_count']:,} posts"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "📰 Feed Activity (Last Hour)",
+                    "value": (
+                        f"RSS Feeds: {feed_activity['rss_count']:,} items\n"
+                        f"SEC Filings: {feed_activity['sec_count']} filings ({feed_activity['sec_breakdown']})\n"
+                        f"Twitter/Social: {feed_activity['social_count']:,} posts"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # Classification Summary (based on LAST_CYCLE_STATS)
             try:
@@ -1079,77 +1130,91 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
 
                 if total_classified > 0:
                     above_pct = (above_threshold / total_classified) * 100
-                    below_pct = ((total_classified - above_threshold) / total_classified) * 100
+                    below_pct = (
+                        (total_classified - above_threshold) / total_classified
+                    ) * 100
                 else:
                     above_pct = 0.0
                     below_pct = 0.0
 
-                embed_fields.append({
-                    "name": "🎯 Classification Summary",
-                    "value": (
-                        f"Total Classified: {total_classified:,}\n"
-                        f"Above MIN_SCORE: {above_threshold} ({above_pct:.1f}%)\n"
-                        f"Below Threshold: {total_classified - above_threshold:,} ({below_pct:.1f}%)\n"
-                        f"Deduped: {deduped_count}\n"
-                        f"Skipped: {skipped_count:,}"
-                    ),
-                    "inline": False,
-                })
+                embed_fields.append(
+                    {
+                        "name": "🎯 Classification Summary",
+                        "value": (
+                            f"Total Classified: {total_classified:,}\n"
+                            f"Above MIN_SCORE: {above_threshold} ({above_pct:.1f}%)\n"
+                            f"Below Threshold: {total_classified - above_threshold:,} ({below_pct:.1f}%)\n"
+                            f"Deduped: {deduped_count}\n"
+                            f"Skipped: {skipped_count:,}"
+                        ),
+                        "inline": False,
+                    }
+                )
             except Exception:
-                embed_fields.append({
-                    "name": "🎯 Classification Summary",
-                    "value": "Data unavailable",
-                    "inline": False,
-                })
+                embed_fields.append(
+                    {
+                        "name": "🎯 Classification Summary",
+                        "value": "Data unavailable",
+                        "inline": False,
+                    }
+                )
 
             # Trading Activity
             global TRADING_ACTIVITY_STATS
             te_data = _get_trading_engine_data()
 
-            embed_fields.append({
-                "name": "💹 Trading Activity",
-                "value": (
-                    f"Signals Generated: {TRADING_ACTIVITY_STATS.get('signals_generated', 0)}\n"
-                    f"Trades Executed: {TRADING_ACTIVITY_STATS.get('trades_executed', 0)}\n"
-                    f"Open Positions: {te_data.get('position_count', '—')}\n"
-                    f"P&L (Today): ${te_data.get('daily_pnl', '—')}"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "💹 Trading Activity",
+                    "value": (
+                        f"Signals Generated: {TRADING_ACTIVITY_STATS.get('signals_generated', 0)}\n"
+                        f"Trades Executed: {TRADING_ACTIVITY_STATS.get('trades_executed', 0)}\n"
+                        f"Open Positions: {te_data.get('position_count', '—')}\n"
+                        f"P&L (Today): ${te_data.get('daily_pnl', '—')}"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # LLM Usage
             llm_usage = _get_llm_usage_hourly()
-            embed_fields.append({
-                "name": "🤖 LLM Usage (Last Hour)",
-                "value": (
-                    f"Requests: {llm_usage['total_requests']} (Gemini: {llm_usage['gemini_count']}, Claude: {llm_usage['claude_count']})\n"
-                    f"Tokens In: {llm_usage['input_tokens']:,}\n"
-                    f"Tokens Out: {llm_usage['output_tokens']:,}\n"
-                    f"Est. Cost (1hr): ${llm_usage['hourly_cost']:.2f}\n"
-                    f"Est. Cost (Today): ${llm_usage['daily_cost']:.2f}"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "🤖 LLM Usage (Last Hour)",
+                    "value": (
+                        f"Requests: {llm_usage['total_requests']} (Gemini: {llm_usage['gemini_count']}, Claude: {llm_usage['claude_count']})\n"
+                        f"Tokens In: {llm_usage['input_tokens']:,}\n"
+                        f"Tokens Out: {llm_usage['output_tokens']:,}\n"
+                        f"Est. Cost (1hr): ${llm_usage['hourly_cost']:.2f}\n"
+                        f"Est. Cost (Today): ${llm_usage['daily_cost']:.2f}"
+                    ),
+                    "inline": False,
+                }
+            )
 
             # Errors & Warnings
             error_summary = _get_error_summary()
-            embed_fields.append({
-                "name": "⚠️ Errors & Warnings",
-                "value": error_summary,
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "⚠️ Errors & Warnings",
+                    "value": error_summary,
+                    "inline": False,
+                }
+            )
 
             # Market Status (same as boot)
             market_status = _get_market_status_display()
-            embed_fields.append({
-                "name": "🕐 Market Status",
-                "value": (
-                    f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
-                    f"Next Event: {market_status['next_event']}\n"
-                    f"Scan Cycle: {market_status['cycle_time_sec']} sec"
-                ),
-                "inline": False,
-            })
+            embed_fields.append(
+                {
+                    "name": "🕐 Market Status",
+                    "value": (
+                        f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                        f"Next Event: {market_status['next_event']}\n"
+                        f"Scan Cycle: {market_status['cycle_time_sec']} sec"
+                    ),
+                    "inline": False,
+                }
+            )
 
         # Add accumulator period summary for interval/endday heartbeats
         if acc_stats:
@@ -1664,13 +1729,20 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     seen_store = None
     try:
         import os
-        if os.getenv("FEATURE_PERSIST_SEEN", "true").strip().lower() in {"1", "true", "yes", "on"}:
+
+        if os.getenv("FEATURE_PERSIST_SEEN", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
             seen_store = SeenStore()
     except Exception:
         log.warning("seen_store_init_failed", exc_info=True)
 
     # Ingest + dedupe
-    items = feeds.fetch_pr_feeds()
+    # Pass seen_store to enable SEC filing pre-filtering before LLM enrichment
+    items = feeds.fetch_pr_feeds(seen_store=seen_store)
     deduped = feeds.dedupe(items)
 
     # ------------------------------------------------------------------
@@ -1684,13 +1756,14 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             log.error(
                 "feed_outage_detected consecutive_empty=%d max=%d",
                 _CONSECUTIVE_EMPTY_CYCLES,
-                _MAX_EMPTY_CYCLES
+                _MAX_EMPTY_CYCLES,
             )
             # Send admin alert about potential feed outage
             try:
                 admin_webhook = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
                 if admin_webhook:
                     from .alerts import post_discord_json
+
                     post_discord_json(
                         admin_webhook,
                         {
@@ -1699,15 +1772,20 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                                 f"No items fetched for **{_CONSECUTIVE_EMPTY_CYCLES}** consecutive cycles.\n"
                                 f"Check feed sources and network connectivity."
                             )
-                        }
+                        },
                     )
-                    log.info("feed_outage_alert_sent cycles=%d", _CONSECUTIVE_EMPTY_CYCLES)
+                    log.info(
+                        "feed_outage_alert_sent cycles=%d", _CONSECUTIVE_EMPTY_CYCLES
+                    )
             except Exception as e:
                 log.warning("failed_to_send_outage_alert err=%s", str(e))
     else:
         # Reset counter on successful fetch
         if _CONSECUTIVE_EMPTY_CYCLES > 0:
-            log.info("feed_recovery detected after=%d empty_cycles", _CONSECUTIVE_EMPTY_CYCLES)
+            log.info(
+                "feed_recovery detected after=%d empty_cycles",
+                _CONSECUTIVE_EMPTY_CYCLES,
+            )
         _CONSECUTIVE_EMPTY_CYCLES = 0
 
     # ------------------------------------------------------------------
@@ -1918,6 +1996,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     watchlist_tickers: set = set()
     try:
         from catalyst_bot.watchlist import load_watchlist_set
+
         wl_path = getattr(settings, "watchlist_csv", None) or ""
         if wl_path:
             watchlist_tickers = load_watchlist_set(str(wl_path))
@@ -1953,35 +2032,48 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     except Exception:
                         pass  # Fall through if seen check fails
 
-                ticker = (it.get("ticker") or "").strip()  # Extract ticker for pre-filter
-                sec_filings_to_process.append({
-                    "item_id": item_id,
-                    "document_text": doc_text,
-                    "title": it.get("title", ""),
-                    "filing_type": filing_type,
-                    "ticker": ticker,  # Pass ticker to integration layer
-                    "id": item_id,  # Add id field for seen store compatibility
-                })
+                ticker = (
+                    it.get("ticker") or ""
+                ).strip()  # Extract ticker for pre-filter
+                sec_filings_to_process.append(
+                    {
+                        "item_id": item_id,
+                        "document_text": doc_text,
+                        "title": it.get("title", ""),
+                        "filing_type": filing_type,
+                        "ticker": ticker,  # Pass ticker to integration layer
+                        "id": item_id,  # Add id field for seen store compatibility
+                    }
+                )
 
     # Batch process all SEC filings in parallel (one asyncio.run call for ALL filings)
     if sec_filings_to_process:
         try:
             import asyncio
+
             from .sec_integration import batch_extract_keywords_from_documents
 
-            log.info("sec_batch_processing_start count=%d skipped_seen=%d", len(sec_filings_to_process), sec_filings_skipped_seen)
+            log.info(
+                "sec_batch_processing_start count=%d skipped_seen=%d",
+                len(sec_filings_to_process),
+                sec_filings_skipped_seen,
+            )
 
             # WEEK 1 FIX: Check for existing event loop to prevent deadlock
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
                 # Already in async context, use await (defensive)
                 log.warning("async_loop_detected using_existing_loop=True")
                 # This shouldn't happen in current codebase, but safety first
                 # Note: This branch won't work unless _cycle() is async
-                sec_llm_cache = asyncio.run(batch_extract_keywords_from_documents(sec_filings_to_process))
+                sec_llm_cache = asyncio.run(
+                    batch_extract_keywords_from_documents(sec_filings_to_process)
+                )
             except RuntimeError:
                 # No loop exists, safe to use asyncio.run()
-                sec_llm_cache = asyncio.run(batch_extract_keywords_from_documents(sec_filings_to_process))
+                sec_llm_cache = asyncio.run(
+                    batch_extract_keywords_from_documents(sec_filings_to_process)
+                )
 
             log.info("sec_batch_processing_complete cached=%d", len(sec_llm_cache))
 
@@ -1997,7 +2089,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                             seen_store.mark_seen(filing_id)
                             sec_marked_count += 1
                     except Exception as mark_err:
-                        log.debug("sec_mark_seen_failed filing_id=%s err=%s", filing_id, str(mark_err))
+                        log.debug(
+                            "sec_mark_seen_failed filing_id=%s err=%s",
+                            filing_id,
+                            str(mark_err),
+                        )
                 log.info("sec_filings_marked_seen count=%d", sec_marked_count)
         except Exception as e:
             log.error("sec_batch_processing_failed err=%s", str(e), exc_info=True)
@@ -2018,7 +2114,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         "articles_sorted_by_timestamp total=%d newest=%s oldest=%s",
         len(sorted_items),
         sorted_items[0].get("ts", "unknown") if sorted_items else "none",
-        sorted_items[-1].get("ts", "unknown") if sorted_items else "none"
+        sorted_items[-1].get("ts", "unknown") if sorted_items else "none",
     )
 
     for it in sorted_items:  # Changed from 'deduped' to 'sorted_items'
@@ -2033,7 +2129,12 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         try:
             item_id = it.get("id") or ""
             if item_id and seen_store and seen_store.is_seen(item_id):
-                log.info("skipped_seen item_id=%s ticker=%s source=%s", item_id[:16], ticker, source)
+                log.info(
+                    "skipped_seen item_id=%s ticker=%s source=%s",
+                    item_id[:16],
+                    ticker,
+                    source,
+                )
                 skipped_seen += 1
                 continue
         except Exception:
@@ -2059,17 +2160,23 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         }
 
                         # Get configuration
-                        min_score = getattr(settings, "multi_ticker_min_relevance_score", 40)
+                        min_score = getattr(
+                            settings, "multi_ticker_min_relevance_score", 40
+                        )
                         max_primary = getattr(settings, "multi_ticker_max_primary", 2)
-                        score_diff = getattr(settings, "multi_ticker_score_diff_threshold", 30)
+                        score_diff = getattr(
+                            settings, "multi_ticker_score_diff_threshold", 30
+                        )
 
                         # Analyze article and select primary tickers
-                        primary_tickers, secondary_tickers, all_scores = analyze_multi_ticker_article(
-                            all_tickers,
-                            article_data,
-                            min_score=min_score,
-                            max_primary=max_primary,
-                            score_diff_threshold=score_diff,
+                        primary_tickers, secondary_tickers, all_scores = (
+                            analyze_multi_ticker_article(
+                                all_tickers,
+                                article_data,
+                                min_score=min_score,
+                                max_primary=max_primary,
+                                score_diff_threshold=score_diff,
+                            )
                         )
 
                         # If current ticker is not a primary ticker, skip it
@@ -2079,7 +2186,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                                 "ticker_low_relevance ticker=%s score=%.1f primary_tickers=%s title=%s",
                                 ticker,
                                 all_scores.get(ticker, 0.0),
-                                ",".join(primary_tickers) if primary_tickers else "none",
+                                (
+                                    ",".join(primary_tickers)
+                                    if primary_tickers
+                                    else "none"
+                                ),
                                 title[:50],
                             )
                             skipped_multi_ticker += 1  # Reuse counter for metrics
@@ -2135,13 +2246,16 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                             )
                         except Exception:
                             pass
-                        log.debug("skip_multi_ticker source=%s title=%s tickers=%s",
-                                 source, title[:50], ",".join(all_tickers))
+                        log.debug(
+                            "skip_multi_ticker source=%s title=%s tickers=%s",
+                            source,
+                            title[:50],
+                            ",".join(all_tickers),
+                        )
                         continue
         except Exception as e:
             # Don't crash on multi-ticker detection errors
             log.warning("multi_ticker_handler_error ticker=%s err=%s", ticker, str(e))
-            pass
 
         # Filter data presentation and conference/exhibit announcements (rarely lead to sustained movement)
         # These are conference presentations, exhibit announcements, interim data releases, etc. that lack novel catalysts
@@ -2213,7 +2327,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     )
                 except Exception:
                     pass
-                log.debug("skip_data_presentation source=%s title=%s", source, title[:50])
+                log.debug(
+                    "skip_data_presentation source=%s title=%s", source, title[:50]
+                )
                 continue
         except Exception:
             pass  # Don't crash on presentation detection errors
@@ -2278,7 +2394,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 except Exception:
                     pass
                 filter_reason = "cramer_mention" if is_cramer else "summary_article"
-                log.debug("skip_%s source=%s title=%s", filter_reason, source, title[:50])
+                log.debug(
+                    "skip_%s source=%s title=%s", filter_reason, source, title[:50]
+                )
                 continue
         except Exception:
             pass  # Don't crash on content filter errors
@@ -2314,7 +2432,6 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         except Exception as e:
             # Don't crash if filter fails - log and continue
             log.debug("non_substantive_filter_error err=%s", e.__class__.__name__)
-            pass
 
         # Skip whole sources if configured
         if skip_sources and source in skip_sources:
@@ -2352,6 +2469,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # Exception: If ticker is on user's watchlist, allow it through.
         # This prevents crypto news summaries from cluttering stock alerts.
         from catalyst_bot.validation import is_crypto_ticker
+
         if is_crypto_ticker(ticker, watchlist_tickers):
             skipped_crypto += 1
             log.info("crypto_ticker_rejected ticker=%s", ticker)
@@ -2377,7 +2495,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 continue
         except Exception as e:
             # Don't crash on relevance check errors - log and continue
-            log.debug("ticker_relevance_check_error ticker=%s err=%s", ticker, e.__class__.__name__)
+            log.debug(
+                "ticker_relevance_check_error ticker=%s err=%s",
+                ticker,
+                e.__class__.__name__,
+            )
 
         # WAVE 1.2: OTC Stock Filter
         # Block alerts on illiquid OTC/pink sheet stocks unsuitable for day trading.
@@ -2425,9 +2547,12 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         if min_avg_vol is not None and ticker:
             try:
                 import yfinance as yf
+
                 ticker_obj = yf.Ticker(ticker)
                 info = ticker_obj.info
-                avg_volume = info.get("averageVolume") or info.get("averageVolume10days") or 0
+                avg_volume = (
+                    info.get("averageVolume") or info.get("averageVolume10days") or 0
+                )
 
                 if avg_volume < min_avg_vol:
                     log.info(
@@ -2440,7 +2565,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     continue  # Skip low volume ticker
             except Exception as e:
                 # Don't crash on volume fetch failures - log and continue
-                log.debug("volume_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__)
+                log.debug(
+                    "volume_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__
+                )
 
         # Unit/Warrant/Rights Filter
         # Block alerts on derivative securities (units, warrants, rights) which have
@@ -2628,6 +2755,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
 
             # Check for NaN/Inf
             import math
+
             if math.isnan(last_px) or not math.isfinite(last_px):
                 log.debug(
                     "early_price_skip_invalid ticker=%s price=%s source=%s",
@@ -2661,6 +2789,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 continue
 
             import math
+
             if math.isnan(last_px) or not math.isfinite(last_px):
                 log.debug(
                     "early_price_skip_invalid_floor ticker=%s price=%s source=%s",
@@ -2703,9 +2832,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             )
 
         is_earnings = (
-            source == "Finnhub Earnings" or
-            it.get("category") == "earnings" or
-            it.get("event_type") == "earnings"
+            source == "Finnhub Earnings"
+            or it.get("category") == "earnings"
+            or it.get("event_type") == "earnings"
         )
 
         if is_earnings:
@@ -2729,7 +2858,6 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         # ========================================================================
         if ticker:
             try:
-                from .ticker_validation import TickerValidator
                 validator = TickerValidator()
                 if validator.is_otc(ticker):
                     log.info(
@@ -2858,15 +2986,26 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             is_strong_negative = True
             log.info(
                 "strong_negative_detected ticker=%s sentiment=%.3f reason=strong_sentiment",
-                ticker, snt
+                ticker,
+                snt,
             )
 
         # Check 2: Critical negative keywords (always alert)
         if not is_strong_negative:
             critical_negative_keywords = [
-                "dilution", "offering", "warrant", "delisting", "bankruptcy",
-                "trial failed", "fda rejected", "lawsuit", "going concern",
-                "chapter 11", "restructuring", "default", "insolvent"
+                "dilution",
+                "offering",
+                "warrant",
+                "delisting",
+                "bankruptcy",
+                "trial failed",
+                "fda rejected",
+                "lawsuit",
+                "going concern",
+                "chapter 11",
+                "restructuring",
+                "default",
+                "insolvent",
             ]
 
             title_lower = (it.get("title") or "").lower()
@@ -2878,7 +3017,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     is_strong_negative = True
                     log.info(
                         "strong_negative_detected ticker=%s keyword='%s' reason=critical_keyword",
-                        ticker, keyword
+                        ticker,
+                        keyword,
                     )
                     break
 
@@ -2889,7 +3029,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 strong_negatives_bypassed += 1
                 log.info(
                     "min_score_bypassed ticker=%s score=%.3f sentiment=%.3f reason=strong_negative",
-                    ticker, scr, snt
+                    ticker,
+                    scr,
+                    snt,
                 )
                 # Continue processing (don't skip)
             else:
@@ -2918,7 +3060,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 # Strong negatives can also bypass sentiment gate (though typically not needed)
                 log.info(
                     "sent_gate_bypassed ticker=%s abs_sentiment=%.3f reason=strong_negative",
-                    ticker, abs(snt)
+                    ticker,
+                    abs(snt),
                 )
                 # Continue processing (don't skip)
             else:
@@ -2965,9 +3108,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             news_item = market.NewsItem.from_feed_dict(it)  # type: ignore[attr-defined]
             enrichment_task_id = enqueue_for_enrichment(scored, news_item)
             log.debug(
-                "enrichment_queued ticker=%s task_id=%s",
-                ticker,
-                enrichment_task_id
+                "enrichment_queued ticker=%s task_id=%s", ticker, enrichment_task_id
             )
 
             # CRITICAL: Wait for enrichment to complete before sending alert
@@ -2978,21 +3119,17 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 log.debug(
                     "enrichment_completed ticker=%s task_id=%s",
                     ticker,
-                    enrichment_task_id
+                    enrichment_task_id,
                 )
             else:
                 log.warning(
                     "enrichment_timeout ticker=%s task_id=%s timeout=5.0s",
                     ticker,
-                    enrichment_task_id
+                    enrichment_task_id,
                 )
         except Exception as enrich_err:
             # Don't block alerts if enrichment fails - send with basic data
-            log.warning(
-                "enrichment_failed ticker=%s err=%s",
-                ticker,
-                str(enrich_err)
-            )
+            log.warning("enrichment_failed ticker=%s err=%s", ticker, str(enrich_err))
 
         # Build a payload the new alerts API understands
         # Use enriched_scored (which has market data) instead of scored
@@ -3001,7 +3138,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             "scored": (
                 enriched_scored._asdict()
                 if hasattr(enriched_scored, "_asdict")
-                else (enriched_scored.dict() if hasattr(enriched_scored, "dict") else enriched_scored)
+                else (
+                    enriched_scored.dict()
+                    if hasattr(enriched_scored, "dict")
+                    else enriched_scored
+                )
             ),
             "last_price": last_px,
             "last_change_pct": last_chg,
@@ -3029,7 +3170,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     record_only=settings.feature_record_only,
                     webhook_url=_resolve_main_webhook(settings),
                 )
-            except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as req_err:
+            except (
+                requests.exceptions.RequestException,
+                ConnectionError,
+                TimeoutError,
+            ) as req_err:
                 # CRITICAL FIX: Handle network-specific errors
                 log.error(
                     "alert_network_error source=%s ticker=%s err=%s err_type=%s",
@@ -3051,7 +3196,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     exc_info=True,
                 )
                 ok = False
-        except (requests.exceptions.RequestException, ConnectionError, TimeoutError) as req_err:
+        except (
+            requests.exceptions.RequestException,
+            ConnectionError,
+            TimeoutError,
+        ) as req_err:
             # CRITICAL FIX: Handle network-specific errors
             log.error(
                 "alert_network_error source=%s ticker=%s err=%s err_type=%s",
@@ -3086,7 +3235,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     log.info("marked_seen item_id=%s ticker=%s", item_id, ticker)
             except Exception as mark_err:
                 # Don't crash if marking fails, but log it
-                log.warning("mark_seen_failed item_id=%s err=%s", item_id, str(mark_err))
+                log.warning(
+                    "mark_seen_failed item_id=%s err=%s", item_id, str(mark_err)
+                )
 
             # FALSE POSITIVE ANALYSIS: Log accepted item for outcome tracking
             # Store classification data, keywords, scores for later analysis
@@ -3159,19 +3310,32 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     if current_price and ticker:
                         # Run async trading engine call in sync context
                         try:
-                            loop = asyncio.get_running_loop()
+                            asyncio.get_running_loop()
                             # Already in async context - shouldn't happen
-                            log.warning("trading_engine_call_in_async_context ticker=%s", ticker)
+                            log.warning(
+                                "trading_engine_call_in_async_context ticker=%s", ticker
+                            )
                         except RuntimeError:
                             # No loop exists, safe to use asyncio.run()
                             position_id = asyncio.run(
-                                trading_engine.process_scored_item(scored, ticker, current_price)
+                                trading_engine.process_scored_item(
+                                    scored, ticker, current_price
+                                )
                             )
                             if position_id:
-                                log.info("trading_position_opened ticker=%s position_id=%s", ticker, position_id)
+                                log.info(
+                                    "trading_position_opened ticker=%s position_id=%s",
+                                    ticker,
+                                    position_id,
+                                )
                 except Exception as e:
                     # Never crash the bot - just log trading errors
-                    log.error("trading_engine_error ticker=%s err=%s", ticker, str(e), exc_info=True)
+                    log.error(
+                        "trading_engine_error ticker=%s err=%s",
+                        ticker,
+                        str(e),
+                        exc_info=True,
+                    )
 
             # Optional: subscribe to Alpaca stream after sending an alert.  Run
             # asynchronously so we do not block the runner loop.  The feature
@@ -3616,20 +3780,32 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
     if time_diff <= 10:
         log.info(
             "moa_trigger_primary exact_match=True target=%02d:%02d now=%02d:%02d diff_min=%d",
-            moa_hour, moa_minute, current_hour, current_minute, time_diff
+            moa_hour,
+            moa_minute,
+            current_hour,
+            current_minute,
+            time_diff,
         )
     # FALLBACK TRIGGER: Within 3-hour window after target time
-    elif (moa_hour <= current_hour < moa_hour + 3) and (current_minute >= moa_minute or current_hour > moa_hour):
+    elif (moa_hour <= current_hour < moa_hour + 3) and (
+        current_minute >= moa_minute or current_hour > moa_hour
+    ):
         log.info(
             "moa_trigger_fallback window_match=True target=%02d:%02d now=%02d:%02d",
-            moa_hour, moa_minute, current_hour, current_minute
+            moa_hour,
+            moa_minute,
+            current_hour,
+            current_minute,
         )
     # CATCH-UP TRIGGER: Past 3-hour window but haven't run today
     elif current_hour >= moa_hour + 3:
         log.warning(
             "moa_trigger_catchup missed_window=True target=%02d:%02d now=%02d:%02d last_run=%s",
-            moa_hour, moa_minute, current_hour, current_minute,
-            _MOA_LAST_RUN_DATE.isoformat() if _MOA_LAST_RUN_DATE else "never"
+            moa_hour,
+            moa_minute,
+            current_hour,
+            current_minute,
+            _MOA_LAST_RUN_DATE.isoformat() if _MOA_LAST_RUN_DATE else "never",
         )
     # NO TRIGGER: Before target time
     else:
@@ -3639,7 +3815,12 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
     _MOA_LAST_RUN_DATE = today
     _save_moa_last_run_date(today)  # Persist to survive restarts
 
-    log.info("moa_nightly_scheduled hour=%d minute=%d date=%s", moa_hour, moa_minute, today.isoformat())
+    log.info(
+        "moa_nightly_scheduled hour=%d minute=%d date=%s",
+        moa_hour,
+        moa_minute,
+        today.isoformat(),
+    )
 
     def _run_moa_analysis():
         """Background thread function to run MOA and FP analyzers."""
@@ -3663,14 +3844,15 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                     # Read recommendations from the analysis report and apply them to keyword_stats.json
                     # This creates a closed-loop system where nightly analysis automatically updates weights
                     try:
-                        from pathlib import Path
                         import json
+                        from pathlib import Path
+
                         from .moa_historical_analyzer import update_keyword_stats_file
 
                         # Load recommendations from the analysis report
                         report_path = Path("data/moa/analysis_report.json")
                         if report_path.exists():
-                            with open(report_path, 'r', encoding='utf-8') as f:
+                            with open(report_path, "r", encoding="utf-8") as f:
                                 report = json.load(f)
                                 recommendations = report.get("recommendations", [])
 
@@ -3682,7 +3864,7 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                                     log.info(
                                         "moa_keyword_weights_applied path=%s count=%d",
                                         stats_path,
-                                        len(recommendations)
+                                        len(recommendations),
                                     )
                                 else:
                                     log.info("moa_no_recommendations_to_apply")
@@ -3693,7 +3875,7 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                         log.warning(
                             "moa_keyword_weight_update_failed err=%s",
                             e.__class__.__name__,
-                            exc_info=True
+                            exc_info=True,
                         )
                 else:
                     log.warning(
@@ -3748,9 +3930,7 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                 )
                 log.info("moa_discord_report_posted")
             except Exception as e:
-                log.warning(
-                    "moa_discord_report_failed err=%s", e.__class__.__name__
-                )
+                log.warning("moa_discord_report_failed err=%s", e.__class__.__name__)
                 # Don't crash MOA thread if Discord posting fails
 
         except Exception as e:
@@ -3937,7 +4117,9 @@ def runner_main(
             log.info("startup_test_alert_triggering")
             send_startup_test_alert(webhook_url=main_webhook)
         except Exception as test_err:
-            log.error("startup_test_alert_exception err=%s", str(test_err), exc_info=True)
+            log.error(
+                "startup_test_alert_exception err=%s", str(test_err), exc_info=True
+            )
 
     do_loop = loop or (not once)
     sleep_interval = float(sleep_s if sleep_s is not None else settings.loop_seconds)
@@ -4041,9 +4223,10 @@ def runner_main(
         # Check for expired MOA reviews and auto-apply after timeout
         try:
             settings = get_settings()
-            if getattr(settings, 'moa_review_enabled', False):
+            if getattr(settings, "moa_review_enabled", False):
                 from .keyword_review import expire_old_reviews
-                timeout_hours = getattr(settings, 'moa_review_timeout_hours', 48)
+
+                timeout_hours = getattr(settings, "moa_review_timeout_hours", 48)
                 expired_count = expire_old_reviews(timeout_hours=timeout_hours)
                 if expired_count > 0:
                     log.info(f"moa_reviews_expired_and_applied count={expired_count}")
@@ -4066,7 +4249,11 @@ def runner_main(
 
                 # Check if closed hours should be skipped (non-weekend/holiday)
                 skip_on_closed = os.getenv("SKIP_SCAN_CLOSED", "0") == "1"
-                if skip_on_closed and not current_market_info["is_weekend"] and not current_market_info["is_holiday"]:
+                if (
+                    skip_on_closed
+                    and not current_market_info["is_weekend"]
+                    and not current_market_info["is_holiday"]
+                ):
                     skip_scan = True
                     skip_reason = "market_closed"
 
@@ -4089,7 +4276,7 @@ def runner_main(
                     "scan_skipped reason=%s status=%s next_scan_in=%ds",
                     skip_reason,
                     market_status,
-                    int(sleep_interval)
+                    int(sleep_interval),
                 )
                 time.sleep(sleep_interval)
                 continue

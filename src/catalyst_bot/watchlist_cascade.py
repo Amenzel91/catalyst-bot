@@ -24,7 +24,7 @@ Typical usage::
 
     settings = get_settings()
     state = load_state(settings.watchlist_state_file)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     state = decay_state(
         state,
         now,

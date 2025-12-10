@@ -59,6 +59,8 @@ def init_optimized_connection(db_path: str, timeout: int = 30) -> sqlite3.Connec
     # Enable WAL mode for better concurrency (configurable)
     if os.getenv("SQLITE_WAL_MODE", "1") == "1":
         conn.execute("PRAGMA journal_mode=WAL")
+        # Set WAL auto-checkpoint to 500 pages (prevents WAL bloat)
+        conn.execute("PRAGMA wal_autocheckpoint=500")
 
     # Balance between safety and speed
     synchronous_mode = os.getenv("SQLITE_SYNCHRONOUS", "NORMAL")

@@ -34,11 +34,10 @@ References:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import pickle
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -216,7 +215,9 @@ class SECFilingRAG:
                 "Install with: pip install faiss-cpu sentence-transformers"
             )
 
-        self.index_path = Path(index_path or os.getenv("RAG_INDEX_PATH", DEFAULT_INDEX_PATH))
+        self.index_path = Path(
+            index_path or os.getenv("RAG_INDEX_PATH", DEFAULT_INDEX_PATH)
+        )
         self.index_path.mkdir(parents=True, exist_ok=True)
 
         # Initialize sentence transformer for embeddings
@@ -275,7 +276,9 @@ class SECFilingRAG:
             with open(self.index_path / "chunks.pkl", "wb") as f:
                 pickle.dump(self.chunks, f)
 
-            log.info(f"Saved index: {self.index.ntotal} vectors, {len(self.chunks)} chunks")
+            log.info(
+                f"Saved index: {self.index.ntotal} vectors, {len(self.chunks)} chunks"
+            )
         except Exception as e:
             log.error(f"Failed to save index: {e}")
 
@@ -333,7 +336,9 @@ class SECFilingRAG:
                 ticker=filing_section.ticker,
                 filing_type=filing_section.filing_type,
                 filing_url=filing_section.filing_url,
-                filed_at=datetime.utcnow(),  # Would use actual filing date if available
+                filed_at=datetime.now(
+                    timezone.utc
+                ),  # Would use actual filing date if available
                 chunk_index=i,
                 text=chunk_text,
                 metadata={
@@ -398,11 +403,15 @@ class SECFilingRAG:
         query_embedding = self.encoder.encode([query], normalize_embeddings=True)
 
         # Search FAISS index
-        similarities, indices = self.index.search(query_embedding.astype("float32"), top_k * 2)  # Get extra for filtering
+        similarities, indices = self.index.search(
+            query_embedding.astype("float32"), top_k * 2
+        )  # Get extra for filtering
 
         # Convert to SearchResults
         results = []
-        for rank, (similarity, idx) in enumerate(zip(similarities[0], indices[0]), start=1):
+        for rank, (similarity, idx) in enumerate(
+            zip(similarities[0], indices[0]), start=1
+        ):
             if idx == -1:  # FAISS returns -1 for empty slots
                 continue
 
@@ -464,7 +473,9 @@ class SECFilingRAG:
         "The company projected Q2 2025 revenue of $150M-$175M..."
         """
         if max_tokens is None:
-            max_tokens = int(os.getenv("RAG_ANSWER_MAX_TOKENS", DEFAULT_ANSWER_MAX_TOKENS))
+            max_tokens = int(
+                os.getenv("RAG_ANSWER_MAX_TOKENS", DEFAULT_ANSWER_MAX_TOKENS)
+            )
 
         # Search for relevant chunks
         results = self.search(query, ticker=ticker)
@@ -517,7 +528,9 @@ Provide a direct, factual answer in {max_tokens} tokens or less. Include specifi
             "total_chunks": len(self.chunks),
             "total_vectors": self.index.ntotal,
             "unique_tickers": len(ticker_counts),
-            "top_tickers": sorted(ticker_counts.items(), key=lambda x: x[1], reverse=True)[:10],
+            "top_tickers": sorted(
+                ticker_counts.items(), key=lambda x: x[1], reverse=True
+            )[:10],
             "embedding_dim": self.embedding_dim,
             "index_path": str(self.index_path),
         }

@@ -9,7 +9,7 @@ calculates position sizing, stop-loss, and take-profit levels.
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -26,9 +26,11 @@ log = get_logger(__name__)
 # These map keywords to trading parameters based on historical performance
 # and risk/reward profiles from backtesting and live trading data.
 
+
 @dataclass
 class KeywordConfig:
     """Configuration for a specific keyword category."""
+
     action: str  # "buy", "sell", "avoid", "close"
     base_confidence: float  # Base confidence score (0.0-1.0)
     size_multiplier: float  # Position size multiplier (applied to base%)
@@ -45,7 +47,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.6,
         stop_loss_pct=5.0,
         take_profit_pct=12.0,
-        rationale="FDA approval = strong catalyst"
+        rationale="FDA approval = strong catalyst",
     ),
     "merger": KeywordConfig(
         action="buy",
@@ -53,7 +55,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=2.0,
         stop_loss_pct=4.0,
         take_profit_pct=15.0,
-        rationale="Merger/acquisition = high probability event"
+        rationale="Merger/acquisition = high probability event",
     ),
     "partnership": KeywordConfig(
         action="buy",
@@ -61,7 +63,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.4,
         stop_loss_pct=5.0,
         take_profit_pct=10.0,
-        rationale="Strategic partnership = positive catalyst"
+        rationale="Strategic partnership = positive catalyst",
     ),
     "trial": KeywordConfig(
         action="buy",
@@ -69,7 +71,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.5,
         stop_loss_pct=6.0,
         take_profit_pct=12.0,
-        rationale="Successful trial results = strong move"
+        rationale="Successful trial results = strong move",
     ),
     "clinical": KeywordConfig(
         action="buy",
@@ -77,7 +79,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.5,
         stop_loss_pct=6.0,
         take_profit_pct=12.0,
-        rationale="Clinical trial progress = biotech catalyst"
+        rationale="Clinical trial progress = biotech catalyst",
     ),
     "acquisition": KeywordConfig(
         action="buy",
@@ -85,7 +87,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.7,
         stop_loss_pct=4.5,
         take_profit_pct=14.0,
-        rationale="Acquisition = growth catalyst"
+        rationale="Acquisition = growth catalyst",
     ),
     "uplisting": KeywordConfig(
         action="buy",
@@ -93,7 +95,7 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
         size_multiplier=1.3,
         stop_loss_pct=5.5,
         take_profit_pct=11.0,
-        rationale="Exchange uplisting = legitimacy boost"
+        rationale="Exchange uplisting = legitimacy boost",
     ),
 }
 
@@ -162,27 +164,26 @@ class SignalGenerator:
         # Load configuration with fallbacks
         self.min_confidence = self.config.get(
             "min_confidence",
-            float(self.settings.__dict__.get("SIGNAL_MIN_CONFIDENCE", 0.6))
+            float(self.settings.__dict__.get("SIGNAL_MIN_CONFIDENCE", 0.6)),
         )
         self.min_score = self.config.get(
-            "min_score",
-            float(self.settings.__dict__.get("SIGNAL_MIN_SCORE", 1.5))
+            "min_score", float(self.settings.__dict__.get("SIGNAL_MIN_SCORE", 1.5))
         )
         self.base_position_pct = self.config.get(
             "base_position_pct",
-            float(self.settings.__dict__.get("POSITION_SIZE_BASE_PCT", 2.0))
+            float(self.settings.__dict__.get("POSITION_SIZE_BASE_PCT", 2.0)),
         )
         self.max_position_pct = self.config.get(
             "max_position_pct",
-            float(self.settings.__dict__.get("POSITION_SIZE_MAX_PCT", 5.0))
+            float(self.settings.__dict__.get("POSITION_SIZE_MAX_PCT", 5.0)),
         )
         self.default_stop_pct = self.config.get(
             "default_stop_pct",
-            float(self.settings.__dict__.get("DEFAULT_STOP_LOSS_PCT", 5.0))
+            float(self.settings.__dict__.get("DEFAULT_STOP_LOSS_PCT", 5.0)),
         )
         self.default_tp_pct = self.config.get(
             "default_tp_pct",
-            float(self.settings.__dict__.get("DEFAULT_TAKE_PROFIT_PCT", 10.0))
+            float(self.settings.__dict__.get("DEFAULT_TAKE_PROFIT_PCT", 10.0)),
         )
 
         log.info(
@@ -234,12 +235,20 @@ class SignalGenerator:
             log.debug(
                 "no_keywords_found ticker=%s score=%.2f",
                 ticker,
-                scored_item.total if hasattr(scored_item, 'total') else scored_item.relevance,
+                (
+                    scored_item.total
+                    if hasattr(scored_item, "total")
+                    else scored_item.relevance
+                ),
             )
             return None
 
         # Get total score (use total property if available, else relevance)
-        total_score = scored_item.total if hasattr(scored_item, 'total') else scored_item.relevance
+        total_score = (
+            scored_item.total
+            if hasattr(scored_item, "total")
+            else scored_item.relevance
+        )
 
         # Check minimum score threshold
         if total_score < self.min_score:
@@ -268,7 +277,7 @@ class SignalGenerator:
             signal = TradingSignal(
                 signal_id=str(uuid.uuid4()),
                 ticker=ticker,
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 action="close",
                 confidence=1.0,  # Close signals are always high confidence
                 entry_price=current_price,
@@ -347,7 +356,7 @@ class SignalGenerator:
         signal = TradingSignal(
             signal_id=str(uuid.uuid4()),
             ticker=ticker,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             action=action,
             confidence=confidence,
             entry_price=current_price,
@@ -360,10 +369,14 @@ class SignalGenerator:
             strategy="keyword_signal_generator",
             metadata={
                 "keywords": keyword_hits,
-                "keyword_category": keyword_config.rationale if keyword_config else "unknown",
+                "keyword_category": (
+                    keyword_config.rationale if keyword_config else "unknown"
+                ),
                 "total_score": float(total_score),
                 "sentiment": scored_item.sentiment,
-                "base_confidence": keyword_config.base_confidence if keyword_config else 0.0,
+                "base_confidence": (
+                    keyword_config.base_confidence if keyword_config else 0.0
+                ),
             },
         )
 
@@ -407,7 +420,7 @@ class SignalGenerator:
                     keyword_hits[keyword.lower()] = 1.0
 
         # Also check tags field (some classifiers use this)
-        if hasattr(scored_item, 'tags') and scored_item.tags:
+        if hasattr(scored_item, "tags") and scored_item.tags:
             for tag in scored_item.tags:
                 if isinstance(tag, str):
                     tag_lower = tag.lower()
@@ -448,7 +461,6 @@ class SignalGenerator:
                 return ("avoid", None)
 
         # Find strongest BUY keyword
-        strongest_keyword = None
         strongest_config = None
         strongest_score = 0.0
 
@@ -461,7 +473,6 @@ class SignalGenerator:
 
                 if combined_score > strongest_score:
                     strongest_score = combined_score
-                    strongest_keyword = keyword_lower
                     strongest_config = config
 
         if strongest_config:

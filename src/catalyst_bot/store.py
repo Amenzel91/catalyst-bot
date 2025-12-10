@@ -10,7 +10,7 @@ such as deduplication and seen ID tracking are also provided.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Set
 
@@ -70,7 +70,7 @@ def rolling_last24(path: Path) -> List[Dict]:
     This helper is used to produce the ``last24.jsonl`` file from the raw
     ingest. It filters based on the ``ts_utc`` field if present.
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     twenty_four_hours_ago = now - timedelta(hours=24)
     records: List[Dict] = []
     for rec in read_jsonl(path):

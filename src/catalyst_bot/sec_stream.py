@@ -26,7 +26,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
 try:
@@ -114,11 +114,15 @@ class FilingEvent:
         try:
             filed_at = datetime.fromisoformat(filed_at_str.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
-            filed_at = datetime.utcnow()
+            filed_at = datetime.now(timezone.utc)
 
         # Parse 8-K items
         items_str = payload.get("items", "")
-        item_codes = [item.strip() for item in items_str.split(",") if item.strip()] if items_str else []
+        item_codes = (
+            [item.strip() for item in items_str.split(",") if item.strip()]
+            if items_str
+            else []
+        )
 
         return cls(
             ticker=payload.get("ticker", "UNKNOWN"),
@@ -160,8 +164,6 @@ class FilingEvent:
 
 class SECStreamException(Exception):
     """Exception raised by SEC WebSocket stream."""
-
-    pass
 
 
 # ============================================================================
@@ -363,11 +365,15 @@ class SECStreamClient:
 
                 # Apply filters
                 if not self.filter_by_filing_type(filing):
-                    log.debug(f"Filtered out {filing.ticker} {filing.filing_type} (type mismatch)")
+                    log.debug(
+                        f"Filtered out {filing.ticker} {filing.filing_type} (type mismatch)"
+                    )
                     continue
 
                 if not self.filter_by_market_cap(filing):
-                    log.debug(f"Filtered out {filing.ticker} (market cap ${filing.market_cap:,.0f})")
+                    log.debug(
+                        f"Filtered out {filing.ticker} (market cap ${filing.market_cap:,.0f})"
+                    )
                     continue
 
                 log.info(
@@ -379,7 +385,9 @@ class SECStreamClient:
                 try:
                     self.filing_queue.put_nowait(filing)
                 except asyncio.QueueFull:
-                    log.warning(f"Filing queue full, dropping {filing.ticker} {filing.filing_type}")
+                    log.warning(
+                        f"Filing queue full, dropping {filing.ticker} {filing.filing_type}"
+                    )
 
                 yield filing
 
