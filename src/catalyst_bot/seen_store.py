@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Optional
 
 try:
+    import cachetools
+except ImportError:
+    cachetools = None  # Graceful degradation if not installed
+
+try:
     from catalyst_bot.logging_utils import get_logger  # type: ignore
 except Exception:  # pragma: no cover
     import logging
@@ -51,6 +56,8 @@ def _env_flag(name: str, default: str) -> bool:
 class SeenStoreConfig:
     path: Path
     ttl_days: int
+    cache_size: int = 1000
+    cache_enabled: bool = True
 
 
 class SeenStore:
@@ -58,12 +65,32 @@ class SeenStore:
         if config is None:
             path = Path(os.getenv("SEEN_DB_PATH", "data/seen_ids.sqlite"))
             ttl = int(os.getenv("SEEN_TTL_DAYS", "7"))
-            config = SeenStoreConfig(path=path, ttl_days=ttl)
+            cache_size = int(os.getenv("SEEN_STORE_CACHE_SIZE", "1000"))
+            cache_enabled = os.getenv("SEEN_STORE_CACHE_ENABLED", "1") in (
+                "1",
+                "true",
+                "yes",
+            )
+            config = SeenStoreConfig(
+                path=path,
+                ttl_days=ttl,
+                cache_size=cache_size,
+                cache_enabled=cache_enabled,
+            )
 
         self.cfg = config
         self.cfg.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()  # Thread-safe access protection
         self._thread_local = threading.local()  # Thread-local storage for connections
+
+        # Initialize cache
+        self._cache = None
+        self._cache_hits = 0
+        self._cache_misses = 0
+        if self.cfg.cache_enabled and cachetools is not None:
+            self._cache = cachetools.LRUCache(maxsize=self.cfg.cache_size)
+            log.info("seen_store_cache_initialized size=%d", self.cfg.cache_size)
+
         self._init_schema()
         self.purge_expired()
 
@@ -106,6 +133,52 @@ class SeenStore:
             log.error("seen_store_schema_init_failed err=%s", str(e), exc_info=True)
             raise
 
+    def _cache_get(self, item_id: str) -> Optional[bool]:
+        """Check cache for item ID. Returns None if not in cache."""
+        if self._cache is None:
+            return None
+
+        if item_id in self._cache:
+            self._cache_hits += 1
+            return self._cache[item_id]
+
+        self._cache_misses += 1
+        return None
+
+    def _cache_set(self, item_id: str, is_present: bool) -> None:
+        """Store item lookup result in cache."""
+        if self._cache is None:
+            return
+
+        try:
+            self._cache[item_id] = is_present
+        except Exception as e:
+            log.warning("cache_set_error item_id=%s err=%s", item_id[:80], str(e))
+
+    def _cache_invalidate_all(self) -> None:
+        """Clear entire cache (used during purge_expired)."""
+        if self._cache is None:
+            return
+        self._cache.clear()
+        log.debug("cache_invalidated_all")
+
+    def get_cache_stats(self) -> dict:
+        """Return cache performance statistics."""
+        if self._cache is None:
+            return {"enabled": False}
+
+        total = self._cache_hits + self._cache_misses
+        hit_rate = (self._cache_hits / total * 100) if total > 0 else 0
+
+        return {
+            "enabled": True,
+            "size": len(self._cache),
+            "max_size": self.cfg.cache_size,
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "hit_rate_percent": round(hit_rate, 2),
+        }
+
     def close(self) -> None:
         """Close all thread-local connections and truncate WAL files."""
         try:
@@ -143,19 +216,33 @@ class SeenStore:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM seen WHERE ts < ?", (cutoff,))
                 conn.commit()
+
+                # Invalidate cache since entries were deleted
+                self._cache_invalidate_all()
+
                 log.debug("purge_expired_success cutoff=%d", cutoff)
             except Exception as e:  # pragma: no cover - non-fatal
                 log.warning("purge_expired_failed", extra={"error": str(e)})
 
     def is_seen(self, item_id: str) -> bool:
-        """Check if item is seen (thread-safe across async and sync contexts)."""
+        """Check if item is seen (thread-safe, cache-backed)."""
         with self._lock:
+            # Fast path: check L1 cache first (lock protects cache access)
+            cached_result = self._cache_get(item_id)
+            if cached_result is not None:
+                return cached_result
+
+            # Cache miss: query L2 (SQLite)
             try:
                 conn = self._get_connection()
                 cur = conn.cursor()
                 cur.execute("SELECT 1 FROM seen WHERE id = ? LIMIT 1", (item_id,))
                 row = cur.fetchone()
-                return row is not None
+                is_present = row is not None
+
+                # Store result in cache for future lookups
+                self._cache_set(item_id, is_present)
+                return is_present
             except Exception as e:  # pragma: no cover - non-fatal
                 log.error(
                     "is_seen_error item_id=%s err=%s thread_id=%s",
@@ -167,7 +254,7 @@ class SeenStore:
                 return False  # Assume not seen on error (safer)
 
     def mark_seen(self, item_id: str, ts: Optional[int] = None) -> None:
-        """Mark item as seen (thread-safe across async and sync contexts)."""
+        """Mark item as seen (thread-safe, cache-backed)."""
         ts = int(time.time()) if ts is None else int(ts)
 
         with self._lock:
@@ -179,6 +266,10 @@ class SeenStore:
                     (item_id, ts),
                 )
                 conn.commit()
+
+                # Update cache (write-through)
+                self._cache_set(item_id, True)
+
                 log.debug("marked_seen item_id=%s", item_id[:80])
             except Exception as e:  # pragma: no cover - non-fatal
                 log.error(
