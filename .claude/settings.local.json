@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(paste:*)",
-      "Bash(autopep8:*)"
+      "Bash(autopep8:*)",
+      "Bash(git rm:*)",
+      "Bash(git reset:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []
