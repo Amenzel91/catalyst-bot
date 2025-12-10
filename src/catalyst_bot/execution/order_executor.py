@@ -520,9 +520,16 @@ class OrderExecutor:
                 )
 
             # Execute order
-            if use_bracket_order and signal.stop_loss_price and signal.take_profit_price:
+            # Note: Alpaca doesn't support bracket orders during extended hours
+            # Fall back to simple orders when trading pre-market/after-hours
+            if use_bracket_order and signal.stop_loss_price and signal.take_profit_price and not extended_hours:
                 result = await self._execute_bracket_order(signal, quantity, extended_hours=extended_hours)
             else:
+                if extended_hours and use_bracket_order:
+                    self.logger.info(
+                        f"Using simple order instead of bracket for {signal.ticker} "
+                        "(extended hours trading - bracket orders not supported)"
+                    )
                 result = await self._execute_simple_order(signal, quantity, extended_hours=extended_hours)
 
             # Log execution
