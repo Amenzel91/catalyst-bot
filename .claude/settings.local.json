@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(paste:*)"
+      "Bash(paste:*)",
+      "Bash(autopep8:*)"
     ],
     "deny": [],
     "ask": []

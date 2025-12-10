@@ -326,7 +326,7 @@ class SECFilingRAG:
 
         # Create FilingChunk objects
         filing_chunks = []
-        for i, chunk_text in enumerate(chunks_text):
+        for i, text_chunk in enumerate(chunks_text):
             chunk_id = hashlib.md5(
                 f"{filing_section.ticker}{filing_section.filing_url}{i}".encode()
             ).hexdigest()
@@ -340,7 +340,7 @@ class SECFilingRAG:
                     timezone.utc
                 ),  # Would use actual filing date if available
                 chunk_index=i,
-                text=chunk_text,
+                text=text_chunk,
                 metadata={
                     "summary": summary,
                     "keywords": keywords or [],
@@ -394,7 +394,8 @@ class SECFilingRAG:
         --------
         >>> results = rag.search("What were the acquisition terms?", ticker="AAPL")
         >>> for result in results:
-        ...     print(f"{result.rank}. {result.chunk.text[:100]}... (similarity: {result.similarity:.2f})")
+        ...     print(f"{result.rank}. {result.chunk.text[:100]}... "
+        ...           f"(similarity: {result.similarity:.2f})")
         """
         if top_k is None:
             top_k = int(os.getenv("RAG_MAX_CONTEXT_CHUNKS", DEFAULT_MAX_CONTEXT_CHUNKS))
@@ -493,14 +494,14 @@ class SECFilingRAG:
         context = "\n\n".join(context_parts)
 
         # Construct LLM prompt
-        prompt = f"""Based on the following SEC filing excerpt for {ticker}, answer this question concisely:
-
-Question: {query}
-
-Filing Context:
-{context}
-
-Provide a direct, factual answer in {max_tokens} tokens or less. Include specific numbers and dates when available."""
+        prompt = (
+            f"Based on the following SEC filing excerpt for {ticker}, "
+            f"answer this question concisely:\n\n"
+            f"Question: {query}\n\n"
+            f"Filing Context:\n{context}\n\n"
+            f"Provide a direct, factual answer in {max_tokens} tokens or less. "
+            f"Include specific numbers and dates when available."
+        )
 
         # Call LLM (using hybrid router)
         try:

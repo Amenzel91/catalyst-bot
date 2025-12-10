@@ -68,6 +68,8 @@ except ImportError as e:
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import requests
+
 from . import alerts as _alerts  # used to post log digests as embeds
 from .admin_reporter import send_admin_report_if_scheduled  # Nightly admin reports
 from .alerts import send_alert_safe
@@ -95,7 +97,6 @@ from .moa_price_tracker import (
 )
 from .seen_store import SeenStore  # persistent seen store for cross-run dedupe
 from .weekly_performance import send_weekly_report_if_scheduled  # Weekly performance
-import requests
 
 # Paper Trading Integration - Import TradingEngine
 try:
@@ -1032,7 +1033,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             {"name": "Features", "value": features_value, "inline": False},
         ]
 
-        # Enhanced Boot Heartbeat: Add system info, trading engine, signal enhancement, market status
+        # Enhanced Boot Heartbeat: Add system info, trading engine, signal
+        # enhancement, market status
         if reason == "boot":
             import socket
             import sys
@@ -1097,9 +1099,11 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 {
                     "name": "🕐 Market Status",
                     "value": (
-                        f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                        f"Current Status: {market_status['status_emoji']} "
+                        f"{market_status['status_text']}\n"
                         f"Next Event: {market_status['next_event']}\n"
-                        f"Scan Cycle: {market_status['cycle_time_sec']} sec ({market_status['market_hours_desc']})"
+                        f"Scan Cycle: {market_status['cycle_time_sec']} sec "
+                        f"({market_status['market_hours_desc']})"
                     ),
                     "inline": False,
                 }
@@ -1114,7 +1118,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     "name": "📰 Feed Activity (Last Hour)",
                     "value": (
                         f"RSS Feeds: {feed_activity['rss_count']:,} items\n"
-                        f"SEC Filings: {feed_activity['sec_count']} filings ({feed_activity['sec_breakdown']})\n"
+                        f"SEC Filings: {feed_activity['sec_count']} filings "
+                        f"({feed_activity['sec_breakdown']})\n"
                         f"Twitter/Social: {feed_activity['social_count']:,} posts"
                     ),
                     "inline": False,
@@ -1143,7 +1148,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                         "value": (
                             f"Total Classified: {total_classified:,}\n"
                             f"Above MIN_SCORE: {above_threshold} ({above_pct:.1f}%)\n"
-                            f"Below Threshold: {total_classified - above_threshold:,} ({below_pct:.1f}%)\n"
+                            f"Below Threshold: {total_classified -
+                                                above_threshold:,} ({below_pct:.1f}%)\n"
                             f"Deduped: {deduped_count}\n"
                             f"Skipped: {skipped_count:,}"
                         ),
@@ -1182,7 +1188,9 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 {
                     "name": "🤖 LLM Usage (Last Hour)",
                     "value": (
-                        f"Requests: {llm_usage['total_requests']} (Gemini: {llm_usage['gemini_count']}, Claude: {llm_usage['claude_count']})\n"
+                        f"Requests: {llm_usage['total_requests']} "
+                        f"(Gemini: {llm_usage['gemini_count']}, "
+                        f"Claude: {llm_usage['claude_count']})\n"
                         f"Tokens In: {llm_usage['input_tokens']:,}\n"
                         f"Tokens Out: {llm_usage['output_tokens']:,}\n"
                         f"Est. Cost (1hr): ${llm_usage['hourly_cost']:.2f}\n"
@@ -1208,7 +1216,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 {
                     "name": "🕐 Market Status",
                     "value": (
-                        f"Current Status: {market_status['status_emoji']} {market_status['status_text']}\n"
+                        f"Current Status: {market_status['status_emoji']} "
+                        f"{market_status['status_text']}\n"
                         f"Next Event: {market_status['next_event']}\n"
                         f"Scan Cycle: {market_status['cycle_time_sec']} sec"
                     ),
@@ -3842,7 +3851,8 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
 
                     # AUTO-APPLY KEYWORD WEIGHT UPDATES
                     # Read recommendations from the analysis report and apply them to keyword_stats.json
-                    # This creates a closed-loop system where nightly analysis automatically updates weights
+                    # This creates a closed-loop system where nightly analysis automatically
+                    # updates weights
                     try:
                         import json
                         from pathlib import Path
