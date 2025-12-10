@@ -1206,19 +1206,86 @@ async def _enrich_sec_items_batch(
         else:
             items_to_enrich = sec_items
 
+        # CRITICAL OPTIMIZATION: Price pre-filtering before LLM enrichment
+        # This prevents wasting LLM API calls on items that will be filtered anyway
+        # Expected savings: 15-20% reduction in LLM costs
+        price_filter_enabled = os.getenv("SEC_PRICE_FILTER_ENABLED", "1").strip() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+        items_after_price_filter = []
+        items_skipped_price = []
+
+        if price_filter_enabled:
+            from .sec_prefilter import check_price_filters
+
+            for filing in items_to_enrich:
+                ticker = filing.get("ticker")
+
+                # If no ticker, cannot filter - include in enrichment
+                if not ticker:
+                    items_after_price_filter.append(filing)
+                    continue
+
+                # Check price filters (ceiling/floor)
+                try:
+                    passes_price, reject_reason = check_price_filters(ticker)
+
+                    if passes_price:
+                        items_after_price_filter.append(filing)
+                    else:
+                        items_skipped_price.append(filing)
+                        filing_id = filing.get("id", filing.get("link", "unknown"))
+                        log.debug(
+                            "sec_price_prefilter_rejected ticker=%s reason=%s filing_id=%s",
+                            ticker,
+                            reject_reason,
+                            filing_id[:50] if filing_id else "unknown",
+                        )
+
+                except Exception as e:
+                    # If price check errors, be conservative and include
+                    items_after_price_filter.append(filing)
+                    log.debug(
+                        "sec_price_prefilter_error ticker=%s error=%s", ticker, str(e)
+                    )
+        else:
+            items_after_price_filter = items_to_enrich
+
+        # Update items_to_enrich to only include items that passed price filter
+        items_to_enrich = items_after_price_filter
+
         log.info(
-            "sec_llm_batch_start total_filings=%d skipped_seen=%d to_enrich=%d max_concurrent=%d",
+            "sec_price_prefilter_complete total=%d seen=%d price=%d "
+            "to_enrich=%d enabled=%s",
             len(sec_items),
             skipped_seen,
+            len(items_skipped_price),
+            len(items_to_enrich),
+            price_filter_enabled,
+        )
+
+        log.info(
+            "sec_llm_batch_start total=%d seen=%d price=%d "
+            "to_enrich=%d max_concurrent=%d",
+            len(sec_items),
+            skipped_seen,
+            len(items_skipped_price),
             len(items_to_enrich),
             max_concurrent,
         )
 
-        # If all filings were already seen, skip LLM processing entirely
+        # If all filings were filtered out, skip LLM processing entirely
         if not items_to_enrich:
             log.info(
-                "sec_llm_batch_complete total=%d enriched=0 all_already_seen=true",
+                "sec_llm_batch_complete total=%d seen=%d price=%d "
+                "enriched=0 all_filtered=true",
                 len(sec_items),
+                skipped_seen,
+                len(items_skipped_price),
             )
             return sec_items
 
@@ -1237,9 +1304,11 @@ async def _enrich_sec_items_batch(
         success_count = sum(1 for f in enriched if f.get("llm_confidence", 0) > 0.3)
 
         log.info(
-            "sec_llm_batch_complete total=%d skipped_seen=%d enriched=%d success_rate=%.1f%%",
+            "sec_llm_batch_complete total=%d seen=%d price=%d "
+            "enriched=%d success_rate=%.1f%%",
             len(sec_items),
             skipped_seen,
+            len(items_skipped_price),
             success_count,
             (success_count / len(items_to_enrich)) * 100 if items_to_enrich else 0,
         )
