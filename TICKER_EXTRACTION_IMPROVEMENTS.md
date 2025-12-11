@@ -241,6 +241,603 @@ Replace problematic CSV endpoint with `news_export.ashx` which includes ticker f
 
 ---
 
-**Document Version**: 1.0
+# IMPLEMENTATION TICKETS (Code Examples)
+
+The following tickets provide detailed, copy-paste ready code for implementation.
+
+---
+
+## TICKET-001: P1 - Integrate CIK Pre-extraction in feeds.py
+
+**Priority**: P1 (Highest Impact)
+**Estimated Effort**: 30 minutes
+**Risk Level**: Low (fallback to existing LLM path)
+
+### Context
+
+The existing `extract_ticker_from_filing()` function in `sec_prefilter.py` already has CIK lookup implemented (lines 79-87). However, it's not being called early enough in the `feeds.py` processing pipeline. We need to call it BEFORE the expensive LLM enrichment to skip ~70% of LLM calls.
+
+### Current Code Location
+
+**File**: `src/catalyst_bot/feeds.py`
+**Location**: Lines 1186-1207 (inside `_enrich_sec_items_batch()`)
+
+```python
+# Current code starts at line 1186
+# CRITICAL OPTIMIZATION: Pre-filter already-seen filings BEFORE expensive LLM calls
+# This prevents reprocessing the same 100+ filings every cycle (saves 7-8 min/cycle)
+items_to_enrich = []
+skipped_seen = 0
+
+# Pre-filter already-seen filings using async-safe seen_store
+if seen_store:
+    for filing in sec_items:
+        filing_id = filing.get("id") or filing.get("link") or ""
+        # ... etc
+```
+
+### Code Change
+
+**INSERT AFTER line 1207** (after the seen_store loop ends):
+
+```python
+        # -----------------------------------------------------------------
+        # P1 OPTIMIZATION: Extract ticker from CIK BEFORE expensive LLM calls
+        # CIK lookup is ~1000x faster than LLM and works for 95%+ of SEC filings
+        # Expected impact: Skip LLM enrichment for ~70% of items
+        # -----------------------------------------------------------------
+        cik_extracted_count = 0
+        try:
+            from .sec_prefilter import init_prefilter, extract_ticker_from_filing
+
+            # Ensure CIK map is loaded (idempotent)
+            init_prefilter()
+
+            for filing in items_to_enrich:
+                # Skip if ticker already extracted from title
+                if filing.get("ticker"):
+                    continue
+
+                # Try CIK extraction
+                ticker = extract_ticker_from_filing(filing)
+                if ticker:
+                    filing["ticker"] = ticker
+                    filing["ticker_source"] = "cik_lookup"
+                    cik_extracted_count += 1
+                    log.debug(
+                        "ticker_from_cik_prefilter ticker=%s filing_id=%s",
+                        ticker,
+                        (filing.get("id") or "")[:50]
+                    )
+        except Exception as e:
+            log.warning("cik_prefilter_failed error=%s", str(e))
+
+        if cik_extracted_count > 0:
+            log.info(
+                "cik_prefilter_complete extracted=%d total=%d",
+                cik_extracted_count,
+                len(items_to_enrich)
+            )
+```
+
+### Validation Steps
+
+1. Run existing tests: `pytest tests/test_sec_feed_integration.py -v`
+2. Test with sample SEC filing:
+   ```python
+   filing = {
+       "item_id": "/edgar/data/0001018724/0001018724-24-001234.txt",
+       "title": "8-K - Amazon.com Inc. (0001018724) (Filer)",
+       "ticker": None
+   }
+   # Expected: filing["ticker"] == "AMZN" after extraction
+   ```
+3. Monitor logs for `ticker_from_cik_prefilter` events
+
+### Rollback Plan
+
+If issues occur, simply comment out the new block. The existing LLM enrichment path remains unchanged and will handle all items.
+
+---
+
+## TICKET-002: P1 - Verify CIK Extraction in sec_prefilter.py
+
+**Priority**: P1
+**Estimated Effort**: 15 minutes (verification only)
+**Risk Level**: None (code already exists)
+
+### Context
+
+The CIK extraction functionality already exists in `sec_prefilter.py` lines 60-106. This ticket is for verification and potential enhancement.
+
+### Existing Code (Lines 79-87)
+
+```python
+# Strategy 1: Extract CIK from filing URL/ID
+item_id = filing.get("item_id", "")
+if item_id:
+    cik = cik_from_text(item_id)
+    if cik:
+        ticker = _CIK_MAP.get(cik) or _CIK_MAP.get(str(cik).zfill(10))
+        if ticker:
+            log.debug("ticker_from_cik cik=%s ticker=%s", cik, ticker)
+            return ticker.upper()
+```
+
+### Verification Steps
+
+1. **Verify CIK map loading**:
+   ```python
+   from src.catalyst_bot.sec_prefilter import init_prefilter, _CIK_MAP
+   init_prefilter()
+   print(f"CIK map loaded: {len(_CIK_MAP)} entries")
+   # Expected: ~6000+ entries
+   ```
+
+2. **Test CIK extraction**:
+   ```python
+   from src.catalyst_bot.ticker_map import cik_from_text
+
+   # Test URLs
+   test_urls = [
+       "/edgar/data/0001018724/0001018724-24-001234.txt",  # Amazon
+       "/edgar/data/320193/000032019324000001.txt",        # Apple (unpadded)
+       "/edgar/data/0000320193/000032019324000001.txt",    # Apple (padded)
+   ]
+
+   for url in test_urls:
+       cik = cik_from_text(url)
+       print(f"URL: {url} -> CIK: {cik}")
+   ```
+
+3. **Test end-to-end extraction**:
+   ```python
+   from src.catalyst_bot.sec_prefilter import extract_ticker_from_filing
+
+   filing = {
+       "item_id": "/edgar/data/0001018724/0001018724-24-001234.txt",
+       "title": "8-K - Amazon.com Inc. (0001018724) (Filer)"
+   }
+   ticker = extract_ticker_from_filing(filing)
+   assert ticker == "AMZN", f"Expected AMZN, got {ticker}"
+   ```
+
+### Optional Enhancement
+
+Add `item_id` extraction from `link` field as fallback (lines 79-87):
+
+```python
+# Strategy 1: Extract CIK from filing URL/ID
+item_id = filing.get("item_id", "") or filing.get("link", "")  # Added link fallback
+if item_id:
+    cik = cik_from_text(item_id)
+    # ... rest unchanged
+```
+
+---
+
+## TICKET-003: P1 - Add SEC API Refresh for CIK Mappings (Optional)
+
+**Priority**: P1 (Optional - current NDJSON bootstrap works)
+**Estimated Effort**: 45 minutes
+**Risk Level**: Low
+
+### Context
+
+The current implementation bootstraps from `company_tickers.ndjson`. This ticket adds optional refresh from SEC API for newer IPOs.
+
+### New Function for ticker_map.py
+
+**INSERT AFTER line 137** (after `load_cik_to_ticker` function):
+
+```python
+def refresh_cik_mappings_from_sec() -> int:
+    """
+    Refresh CIK-to-ticker mappings from SEC EDGAR API.
+
+    Fetches the latest company_tickers.json from SEC and updates
+    the local SQLite database. Safe to call periodically (daily/weekly).
+
+    Returns:
+        Number of new/updated mappings, or -1 on error
+
+    SEC API Details:
+        - Endpoint: https://www.sec.gov/files/company_tickers.json
+        - Rate limit: 10 requests/second (we make 1 request)
+        - User-Agent: Required per SEC guidelines
+    """
+    import time
+    from urllib.request import Request, urlopen
+    from .storage import init_optimized_connection
+
+    url = "https://www.sec.gov/files/company_tickers.json"
+    headers = {
+        "User-Agent": "CatalystBot/1.0 (+https://github.com/catalyst-bot)",
+        "Accept": "application/json",
+    }
+
+    # Rate limit safety (SEC allows 10/sec, we use 1)
+    log.info("sec_api_fetch_start url=%s", url)
+
+    try:
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        log.error("sec_api_fetch_failed error=%s", str(e))
+        return -1
+
+    # Parse response (dict format: {"0": {"cik_str": 320193, "ticker": "AAPL"}, ...})
+    updates = 0
+    conn = init_optimized_connection(str(_db_path()))
+
+    try:
+        for key, record in (data or {}).items():
+            cik = str(record.get("cik_str", "")).strip()
+            ticker = str(record.get("ticker", "")).strip().upper()
+            if cik and ticker:
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tickers(cik, ticker) VALUES(?, ?)",
+                        (cik, ticker),
+                    )
+                    # Also add zero-padded version
+                    if len(cik) < 10:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO tickers(cik, ticker) VALUES(?, ?)",
+                            (cik.zfill(10), ticker),
+                        )
+                    updates += 1
+                except Exception:
+                    continue
+        conn.commit()
+        log.info("sec_api_refresh_complete updates=%d", updates)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return updates
+```
+
+### Usage
+
+Call periodically (e.g., daily via cron or at startup):
+
+```python
+from src.catalyst_bot.ticker_map import refresh_cik_mappings_from_sec
+
+# Refresh mappings (optional, current bootstrap is sufficient)
+updated = refresh_cik_mappings_from_sec()
+if updated > 0:
+    log.info("Refreshed %d CIK mappings from SEC", updated)
+```
+
+---
+
+## TICKET-004: P2 - Add PR Wire Pattern Variants (Analysis Complete)
+
+**Priority**: P2
+**Estimated Effort**: 20 minutes
+**Risk Level**: Low (patterns already well-designed in existing code)
+
+### Context
+
+After code analysis, the existing patterns in `title_ticker.py` already cover the main cases:
+- Exchange-qualified: `(NASDAQ: AAPL)` ✓
+- Company + Ticker: `Apple (AAPL)` ✓
+- Headline start: `TSLA: Deliveries` ✓
+- Dollar ticker: `$AAPL` ✓
+
+**Finding**: The current patterns are comprehensive. Additional patterns may increase false positives without significant gain.
+
+### Recommended: Verify Existing Coverage
+
+Run the existing test suite:
+```bash
+pytest tests/test_title_ticker.py -v
+```
+
+### Optional: Add "Ticker Symbol:" Pattern
+
+If analysis shows this format is common in your PR wire data, add to `title_ticker.py`:
+
+**INSERT AFTER line 96** (after `_HEADLINE_START_TICKER`):
+
+```python
+# "Ticker symbol: AAPL" or "ticker symbol TSLA"
+_TICKER_SYMBOL_PATTERN = r"(?:ticker\s+symbol\s*:?\s*)([A-Z]{2,5}(?:\.[A-Z])?)"
+```
+
+**MODIFY line 60-62** to include the new pattern:
+
+```python
+        combined = (
+            rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|"
+            rf"{_HEADLINE_START_TICKER}|{_TICKER_SYMBOL_PATTERN}|{_DOLLAR_PATTERN}"
+        )
+```
+
+### Test Cases for New Pattern
+
+```python
+def test_ticker_symbol_pattern():
+    from src.catalyst_bot.title_ticker import ticker_from_title
+
+    assert ticker_from_title("Ticker symbol: AAPL") == "AAPL"
+    assert ticker_from_title("ticker symbol TSLA today") == "TSLA"
+    assert ticker_from_title("Stock ticker symbol: BA announced") == "BA"
+```
+
+---
+
+## TICKET-005: P4 - Disable Finviz CSV Export (Simple Fix)
+
+**Priority**: P4 (Cleanup)
+**Estimated Effort**: 10 minutes
+**Risk Level**: Very Low (CSV already disabled by default)
+
+### Context
+
+The Finviz CSV export at `_fetch_finviz_news_export()` (lines 3113-3187) returns NO ticker data. The working endpoint `_fetch_finviz_news_from_env()` (lines 2790-3014) is already the default.
+
+### Current State
+
+**File**: `src/catalyst_bot/feeds.py`
+**Line 1609**: CSV export is called when feature flag is enabled
+
+```python
+if settings.feature_finviz_news_export and settings.finviz_news_export_url:
+    try:
+        export_items = _fetch_finviz_news_export(
+            settings.finviz_news_export_url
+        )
+```
+
+### Verification
+
+The feature flag `FEATURE_FINVIZ_NEWS_EXPORT` defaults to `False` in config.py.
+
+**Verify it's disabled**:
+```bash
+grep -n "FEATURE_FINVIZ_NEWS_EXPORT" src/catalyst_bot/config.py
+# Should show: feature_finviz_news_export: bool = _b("FEATURE_FINVIZ_NEWS_EXPORT", False)
+```
+
+### Option A: Leave As-Is (Recommended)
+
+The CSV export is already disabled by default. No code changes needed.
+
+### Option B: Remove CSV Code (Optional Cleanup)
+
+If you want to remove the unused code:
+
+1. **DELETE lines 3113-3187** (entire `_fetch_finviz_news_export` function)
+2. **DELETE lines 1605-1644** (the CSV export block in `fetch_pr_feeds`)
+3. **DELETE config entries** for `FINVIZ_NEWS_EXPORT_URL` and `FEATURE_FINVIZ_NEWS_EXPORT`
+
+### Validation
+
+After any changes:
+```bash
+# Verify Finviz news still works
+python -c "from src.catalyst_bot.feeds import _fetch_finviz_news_from_env; print(len(_fetch_finviz_news_from_env()))"
+# Expected: Some number of items with tickers
+```
+
+---
+
+## TICKET-006: Add Extraction Method Logging
+
+**Priority**: P2 (Observability)
+**Estimated Effort**: 15 minutes
+**Risk Level**: None
+
+### Context
+
+Add tracking for how tickers are extracted (CIK vs title vs summary) for monitoring and optimization.
+
+### Code Change in feeds.py
+
+**MODIFY the normalization section** (~line 780-850) to track extraction method:
+
+```python
+# After ticker extraction, before item is added to results
+if item.get("ticker"):
+    # Track extraction source for metrics
+    if not item.get("ticker_source"):
+        item["ticker_source"] = "title_pattern"
+```
+
+### Add Summary Log in fetch_pr_feeds()
+
+**INSERT** at end of `fetch_pr_feeds()` function (~line 1900):
+
+```python
+    # Log ticker extraction summary for monitoring
+    extraction_summary = {}
+    for item in all_items:
+        source = item.get("ticker_source", "unknown")
+        extraction_summary[source] = extraction_summary.get(source, 0) + 1
+
+    log.info(
+        "ticker_extraction_summary total=%d by_source=%s",
+        len(all_items),
+        extraction_summary
+    )
+```
+
+### Expected Log Output
+
+```
+INFO ticker_extraction_summary total=450 by_source={'cik_lookup': 285, 'title_pattern': 120, 'unknown': 45}
+```
+
+---
+
+## TICKET-007: Integration Test for Full Pipeline
+
+**Priority**: P1
+**Estimated Effort**: 30 minutes
+**Risk Level**: None (test only)
+
+### Test File: `tests/test_ticker_extraction_integration.py`
+
+```python
+"""Integration tests for ticker extraction improvements."""
+import pytest
+
+
+class TestCIKExtraction:
+    """Tests for CIK-to-ticker extraction (P1)."""
+
+    def test_cik_from_edgar_url(self):
+        """Verify CIK extraction from EDGAR URLs."""
+        from src.catalyst_bot.ticker_map import cik_from_text
+
+        # Standard padded CIK
+        assert cik_from_text("/edgar/data/0001018724/file.txt") == "0001018724"
+        # Unpadded CIK
+        assert cik_from_text("/edgar/data/320193/file.txt") == "320193"
+        # No CIK present
+        assert cik_from_text("https://example.com/news") is None
+
+    def test_cik_to_ticker_mapping(self):
+        """Verify CIK maps to correct ticker."""
+        from src.catalyst_bot.ticker_map import load_cik_to_ticker
+
+        cik_map = load_cik_to_ticker()
+        assert len(cik_map) > 5000, "CIK map should have 5000+ entries"
+
+        # Test known mappings (both padded and unpadded)
+        assert cik_map.get("1018724") == "AMZN" or cik_map.get("0001018724") == "AMZN"
+
+    def test_extract_ticker_from_filing(self):
+        """Verify full extraction from SEC filing dict."""
+        from src.catalyst_bot.sec_prefilter import init_prefilter, extract_ticker_from_filing
+
+        init_prefilter()
+
+        filing = {
+            "item_id": "/edgar/data/0001018724/0001018724-24-001234.txt",
+            "title": "8-K - Amazon.com Inc. (0001018724) (Filer)",
+        }
+
+        ticker = extract_ticker_from_filing(filing)
+        assert ticker == "AMZN", f"Expected AMZN, got {ticker}"
+
+
+class TestPatternMatching:
+    """Tests for PR wire pattern matching (P2)."""
+
+    def test_exchange_qualified_patterns(self):
+        """Verify exchange-qualified patterns work."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        assert ticker_from_title("(Nasdaq: AAPL) reports strong Q3") == "AAPL"
+        assert ticker_from_title("Boeing (NYSE: BA) announces layoffs") == "BA"
+
+    def test_company_ticker_patterns(self):
+        """Verify company + ticker patterns work."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        assert ticker_from_title("Apple (AAPL) Reports Strong Quarter") == "AAPL"
+        assert ticker_from_title("Tesla Inc. (TSLA) Q3 earnings beat") == "TSLA"
+
+    def test_exclusion_lists(self):
+        """Verify false positives are filtered."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        # These should NOT return tickers
+        assert ticker_from_title("FDA approves new drug") is None
+        assert ticker_from_title("PRICE: Stock rises 5%") is None
+        assert ticker_from_title("CEO announces strategy") is None
+
+
+class TestFinvizExtraction:
+    """Tests for Finviz feed ticker extraction (P4)."""
+
+    def test_finviz_env_has_ticker(self):
+        """Verify news_export.ashx returns ticker data."""
+        # This test requires FINVIZ_AUTH_TOKEN to be set
+        import os
+        if not os.getenv("FINVIZ_AUTH_TOKEN"):
+            pytest.skip("FINVIZ_AUTH_TOKEN not set")
+
+        from src.catalyst_bot.feeds import _fetch_finviz_news_from_env
+
+        items = _fetch_finviz_news_from_env()
+        if items:
+            # At least some items should have tickers
+            with_ticker = [i for i in items if i.get("ticker")]
+            assert len(with_ticker) > 0, "Expected some items with tickers"
+```
+
+### Run Tests
+
+```bash
+pytest tests/test_ticker_extraction_integration.py -v
+```
+
+---
+
+## Architecture Reference
+
+### Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     FEED SOURCES                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  PR Wires              SEC Filings            Finviz            │
+│  (GlobeNewswire,       (8-K, 424B5,           (news_export.ashx)│
+│   BusinessWire)         13D, 13G)                               │
+└────────┬───────────────────┬────────────────────┬───────────────┘
+         │                   │                    │
+         ▼                   ▼                    ▼
+┌─────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│ title_ticker.py │  │ sec_prefilter.py │  │ ticker field     │
+│ Pattern Match   │  │ CIK → Ticker     │  │ (direct extract) │
+│ (50% success)   │  │ (95% success)    │  │ (92% success)    │
+└────────┬────────┘  └────────┬─────────┘  └────────┬─────────┘
+         │                    │                     │
+         └────────────────────┼─────────────────────┘
+                              ▼
+                    ┌──────────────────┐
+                    │  Validated Item  │
+                    │  ticker = "AAPL" │
+                    └────────┬─────────┘
+                             ▼
+                    ┌──────────────────┐
+                    │  Downstream      │
+                    │  Processing      │
+                    │  (classify,      │
+                    │   alert, track)  │
+                    └──────────────────┘
+```
+
+### Key File Locations
+
+| File | Purpose | Key Lines |
+|------|---------|-----------|
+| `ticker_map.py` | CIK extraction & mapping | `cik_from_text()` L140, `load_cik_to_ticker()` L98 |
+| `sec_prefilter.py` | SEC filing pre-filter | `extract_ticker_from_filing()` L60 |
+| `title_ticker.py` | Regex pattern matching | `ticker_from_title()` L185 |
+| `feeds.py` | Feed orchestration | `_enrich_sec_items_batch()` L1143 |
+
+### Existing Patterns Inventory
+
+| Pattern | Regex | Example Match |
+|---------|-------|---------------|
+| Exchange-qualified | `(?i:\b(?:NASDAQ\|NYSE...)\s*[:\-]\s*)\$?([A-Z][A-Z0-9.\-]{0,5})\b` | `(NASDAQ: AAPL)` |
+| Company + Ticker | `[A-Z][A-Za-z0-9&\.\-]*(?:\s+(?:Inc\.?\|Corp\.?...))?\s*\(([A-Z]{2,5}(?:\.[A-Z])?)\)` | `Apple (AAPL)` |
+| Headline Start | `^([A-Z]{2,5}):\s+` | `TSLA: Reports` |
+| Dollar Ticker | `(?<!\w)\$([A-Z][A-Z0-9.\-]{0,5})\b` | `$NVDA` |
+| CIK from URL | `/edgar/data/(\d+)/` | `/edgar/data/0001018724/` |
+
+---
+
+**Document Version**: 2.0
 **Last Updated**: 2025-12-11
-**Status**: Ready for Implementation
+**Status**: Ready for Implementation with Code Tickets
