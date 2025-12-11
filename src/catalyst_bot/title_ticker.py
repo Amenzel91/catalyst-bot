@@ -54,12 +54,12 @@ def _build_regex(allow_otc: bool, require_exch_for_dollar: bool) -> Pattern[str]
     # Company+ticker and headline patterns are case-sensitive for ticker validation
     if require_exch_for_dollar:
         # Only exchange-qualified patterns (no loose dollar tickers)
-        combined = rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|{_HEADLINE_START_TICKER}"
+        combined = rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|{_HEADLINE_START_TICKER}|{_TICKER_SYMBOL_PATTERN}"
     else:
         # Include all patterns
         combined = (
             rf"{exch_pattern}|{_COMPANY_TICKER_PATTERN}|"
-            rf"{_HEADLINE_START_TICKER}|{_DOLLAR_PATTERN}"
+            rf"{_HEADLINE_START_TICKER}|{_TICKER_SYMBOL_PATTERN}|{_DOLLAR_PATTERN}"
         )
 
     # No global IGNORECASE flag - use inline flags where needed
@@ -94,6 +94,13 @@ _COMPANY_TICKER_PATTERN = (
 #   - ([A-Z]{2,5}) : Ticker (2-5 uppercase letters)
 #   - :\s+ : Colon followed by whitespace
 _HEADLINE_START_TICKER = r"^([A-Z]{2,5}):\s+"
+
+# Ticker symbol pattern
+# Matches: "Ticker symbol: AAPL", "ticker symbol TSLA"
+# Pattern: (?:ticker\s+symbol\s*:?\s*)([A-Z]{2,5}(?:\.[A-Z])?)
+#   - (?:ticker\s+symbol\s*:?\s*) : Non-capturing group for "ticker symbol" with optional colon
+#   - ([A-Z]{2,5}(?:\.[A-Z])?) : Ticker (2-5 uppercase letters, optional class like .A)
+_TICKER_SYMBOL_PATTERN = r"(?i:ticker\s+symbol\s*):?\s*([A-Z]{2,5}(?:\.[A-Z])?)"
 
 # Exclusion list for false positives in headline start patterns
 # These are common words that appear at the start of headlines with colons

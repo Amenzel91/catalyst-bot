@@ -454,5 +454,98 @@ class TestEdgeCases:
         assert result["ticker_source"] == "summary"
 
 
+class TestCIKExtraction:
+    """Tests for CIK-to-ticker extraction (P1 optimization)."""
+
+    def test_cik_from_edgar_url(self):
+        """Verify CIK extraction from EDGAR URLs."""
+        from src.catalyst_bot.ticker_map import cik_from_text
+
+        # Standard padded CIK
+        assert cik_from_text("/edgar/data/0001018724/file.txt") == "0001018724"
+        # Unpadded CIK
+        assert cik_from_text("/edgar/data/320193/file.txt") == "320193"
+        # No CIK present
+        assert cik_from_text("https://example.com/news") is None
+
+    def test_cik_to_ticker_mapping(self):
+        """Verify CIK maps to correct ticker."""
+        from src.catalyst_bot.ticker_map import load_cik_to_ticker
+
+        cik_map = load_cik_to_ticker()
+        assert len(cik_map) > 5000, "CIK map should have 5000+ entries"
+
+        # Test known mappings (both padded and unpadded)
+        assert cik_map.get("1018724") == "AMZN" or cik_map.get("0001018724") == "AMZN"
+
+    def test_extract_ticker_from_filing(self):
+        """Verify full extraction from SEC filing dict."""
+        from src.catalyst_bot.sec_prefilter import init_prefilter, extract_ticker_from_filing
+
+        init_prefilter()
+
+        filing = {
+            "item_id": "/edgar/data/0001018724/0001018724-24-001234.txt",
+            "title": "8-K - Amazon.com Inc. (0001018724) (Filer)",
+        }
+
+        ticker = extract_ticker_from_filing(filing)
+        assert ticker == "AMZN", f"Expected AMZN, got {ticker}"
+
+
+class TestPatternMatching:
+    """Tests for PR wire pattern matching (P2 optimization)."""
+
+    def test_exchange_qualified_patterns(self):
+        """Verify exchange-qualified patterns work."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        assert ticker_from_title("(Nasdaq: AAPL) reports strong Q3") == "AAPL"
+        assert ticker_from_title("Boeing (NYSE: BA) announces layoffs") == "BA"
+
+    def test_company_ticker_patterns(self):
+        """Verify company + ticker patterns work."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        assert ticker_from_title("Apple (AAPL) Reports Strong Quarter") == "AAPL"
+        assert ticker_from_title("Tesla Inc. (TSLA) Q3 earnings beat") == "TSLA"
+
+    def test_ticker_symbol_pattern(self):
+        """Verify new ticker symbol pattern works."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        # New pattern from TICKET-004
+        assert ticker_from_title("Ticker symbol: NVDA announces new GPU") == "NVDA"
+        assert ticker_from_title("ticker symbol TSLA earnings") == "TSLA"
+
+    def test_exclusion_lists(self):
+        """Verify false positives are filtered."""
+        from src.catalyst_bot.title_ticker import ticker_from_title
+
+        # These should NOT return tickers
+        assert ticker_from_title("FDA approves new drug") is None
+        assert ticker_from_title("PRICE: Stock rises 5%") is None
+        assert ticker_from_title("CEO announces strategy") is None
+
+
+class TestFinvizExtraction:
+    """Tests for Finviz feed ticker extraction (P4 optimization)."""
+
+    def test_finviz_env_has_ticker(self):
+        """Verify news_export.ashx returns ticker data."""
+        # This test requires FINVIZ_AUTH_TOKEN to be set
+        import os
+        if not os.getenv("FINVIZ_AUTH_TOKEN"):
+            pytest.skip("FINVIZ_AUTH_TOKEN not set")
+
+        from src.catalyst_bot.feeds import _fetch_finviz_news_from_env
+
+        items = _fetch_finviz_news_from_env()
+        if items:
+            # At least some items should have tickers
+            with_ticker = [i for i in items if i.get("ticker")]
+            assert len(with_ticker) > 0, "Expected some items with tickers"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

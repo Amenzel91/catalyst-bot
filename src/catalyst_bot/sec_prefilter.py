@@ -77,7 +77,7 @@ def extract_ticker_from_filing(filing: Dict[str, Any]) -> Optional[str]:
         init_prefilter()
 
     # Strategy 1: Extract CIK from filing URL/ID
-    item_id = filing.get("item_id", "")
+    item_id = filing.get("item_id", "") or filing.get("link", "")
     if item_id:
         cik = cik_from_text(item_id)
         if cik:
