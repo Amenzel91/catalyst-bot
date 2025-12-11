@@ -1,36 +1,39 @@
 # Fix: Implement Tiingo Batch API
 
-## Problem
-Current system makes **1,380 individual Tiingo API calls per hour**, exceeding rate limits by 3.3x (limit: 417/hour on paid tier). This causes 77% of calls to fail with `tiingo_invalid_json` errors.
-
-## Root Cause
-`batch_get_prices()` in `src/catalyst_bot/market.py` uses yfinance batch download, NOT Tiingo batch API. Tiingo is called individually for each ticker in `get_last_price_change()`.
-
-**Current Flow:**
-```
-30 tickers/cycle × 46 cycles/hour = 1,380 individual Tiingo calls/hour
-```
-
-## Solution
-Implement Tiingo batch endpoint to reduce API calls by 30x.
-
-**Tiingo Batch Endpoint:**
-```
-GET https://api.tiingo.com/tiingo/daily/prices?tickers=AAPL,MSFT,GOOGL&token=XXX
-```
-
-**New Flow:**
-```
-1 batch call/cycle × 46 cycles/hour = 46 Tiingo calls/hour (safe!)
-```
+> **Claude Code CLI Implementation Guide**
+> Priority: P0 - Critical | Risk: Low | Estimated Impact: 93% API call reduction
 
 ---
 
-## Implementation Plan
+## Problem Summary
 
-### File: `src/catalyst_bot/market.py`
+| Metric | Current | After Fix |
+|--------|---------|-----------|
+| Tiingo API calls/hour | 1,380 | ~96 |
+| Rate limit (paid tier) | 417/hour | 417/hour |
+| Status | **3.3x OVER limit** | **76% UNDER limit** |
+| Failure rate | 77% | <5% |
 
-### Step 1: Add Tiingo Batch Function (Insert after line 280)
+**Root Cause:** `batch_get_prices()` uses yfinance batch download, NOT Tiingo batch API. Tiingo is called individually per ticker via `_tiingo_last_prev()`.
+
+---
+
+## Implementation Tickets
+
+### TICKET-1: Add Tiingo Batch Function
+
+**File:** `src/catalyst_bot/market.py`
+**Insert Location:** Lines 280-281 (between `_tiingo_last_prev()` and `_tiingo_intraday_series()`)
+
+**Context:**
+```
+Line 279: End of _tiingo_last_prev()
+Line 280: [BLANK - INSERT HERE]
+Line 281: [BLANK - INSERT HERE]
+Line 282: def _tiingo_intraday_series(...)
+```
+
+**Code to Insert:**
 
 ```python
 def _tiingo_batch_prices(
@@ -41,6 +44,15 @@ def _tiingo_batch_prices(
     """
     Fetch prices for multiple tickers in a single Tiingo API call.
 
+    Parameters
+    ----------
+    tickers : List[str]
+        List of ticker symbols (max 100 per call)
+    api_key : str
+        Tiingo API key
+    timeout : int
+        Request timeout in seconds
+
     Returns
     -------
     Dict[str, Tuple[Optional[float], Optional[float]]]
@@ -50,20 +62,17 @@ def _tiingo_batch_prices(
         return {}
 
     try:
-        url = "https://api.tiingo.com/tiingo/daily/prices"
+        url = "https://api.tiingo.com/iex"
         params = {
             "token": api_key.strip(),
-            "tickers": ",".join(t.strip().upper() for t in tickers[:100]),  # Max 100 tickers
-            "startDate": (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),
-            "endDate": datetime.now().strftime("%Y-%m-%d"),
+            "tickers": ",".join(t.strip().upper() for t in tickers[:100]),
         }
 
         r = requests.get(url, params=params, timeout=timeout)
 
-        # Detect rate limiting
+        # Handle rate limiting
         if r.status_code == 429:
-            log.warning("tiingo_rate_limited status=429 cooldown=5s")
-            time.sleep(5)
+            log.warning("tiingo_batch_rate_limited status=429")
             return {}
 
         if r.status_code != 200:
@@ -80,7 +89,7 @@ def _tiingo_batch_prices(
             log.warning("tiingo_batch_unexpected_format type=%s", type(data).__name__)
             return {}
 
-        # Parse batch response
+        # Parse IEX batch response
         results = {}
         for entry in data:
             if not isinstance(entry, dict):
@@ -90,31 +99,17 @@ def _tiingo_batch_prices(
             if not ticker:
                 continue
 
-            # Get ticker-specific price data (nested list)
-            price_data = entry.get("priceData", [])
-            if not price_data or not isinstance(price_data, list):
-                continue
+            last_price = entry.get("last") or entry.get("tngoLast")
+            prev_close = entry.get("prevClose")
 
-            # Sort by date descending to get most recent
-            price_data.sort(key=lambda x: x.get("date", ""), reverse=True)
+            change_pct = None
+            if last_price is not None and prev_close is not None and abs(prev_close) > 1e-9:
+                change_pct = ((last_price - prev_close) / prev_close) * 100.0
 
-            if len(price_data) >= 1:
-                last_day = price_data[0]
-                close = last_day.get("close")
-
-                # Calculate change from previous day
-                change_pct = None
-                if len(price_data) >= 2:
-                    prev_day = price_data[1]
-                    prev_close = prev_day.get("close")
-
-                    if close is not None and prev_close is not None and abs(prev_close) > 1e-9:
-                        change_pct = ((close - prev_close) / prev_close) * 100.0
-
-                results[ticker] = (
-                    float(close) if close is not None else None,
-                    float(change_pct) if change_pct is not None else None
-                )
+            results[ticker.upper()] = (
+                float(last_price) if last_price is not None else None,
+                float(change_pct) if change_pct is not None else None
+            )
 
         log.info(
             "tiingo_batch_success requested=%d fetched=%d",
@@ -132,29 +127,29 @@ def _tiingo_batch_prices(
         return {}
 ```
 
-### Step 2: Modify `batch_get_prices()` (Line 701)
+---
 
-**BEFORE** (line 733-760):
+### TICKET-2: Modify batch_get_prices() to Use Tiingo Batch
+
+**File:** `src/catalyst_bot/market.py`
+**Function:** `batch_get_prices()` (starts at line 701)
+**Modify Location:** Insert after line 709 (after the empty tickers check)
+
+**Current Code (lines 701-715):**
 ```python
-def batch_get_prices(tickers: list[str]) -> Dict[...]:
+def batch_get_prices(
+    tickers: list[str],
+) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
     """Batch fetch prices for multiple tickers."""
     if not tickers:
         return {}
 
-    if yf is None:
-        log.warning("yfinance_missing batch_fetch_skipped")
-        return {ticker: (None, None) for ticker in tickers}
-
-    # ... yfinance batch download code ...
+    # ... yfinance batch code follows ...
 ```
 
-**AFTER**:
-```python
-def batch_get_prices(tickers: list[str]) -> Dict[...]:
-    """Batch fetch prices for multiple tickers (tries Tiingo batch first, then yfinance)."""
-    if not tickers:
-        return {}
+**New Code to Insert After Line 709:**
 
+```python
     # OPTIMIZATION: Try Tiingo batch API first if enabled
     try:
         settings = get_settings()
@@ -165,11 +160,9 @@ def batch_get_prices(tickers: list[str]) -> Dict[...]:
                 tiingo_results = _tiingo_batch_prices(tickers, tiingo_key)
 
                 if tiingo_results:
-                    # Check if we got most tickers (>80% success)
                     success_rate = len(tiingo_results) / len(tickers)
 
                     if success_rate >= 0.8:
-                        # Good batch result - use Tiingo as primary
                         elapsed_ms = (time.perf_counter() - t0) * 1000.0
                         log.info(
                             "batch_fetch_tiingo_primary tickers=%d success_rate=%.1f%% t_ms=%.1f",
@@ -180,13 +173,12 @@ def batch_get_prices(tickers: list[str]) -> Dict[...]:
 
                         # Fill missing tickers with (None, None)
                         for ticker in tickers:
-                            norm_t = _norm_ticker(ticker)
+                            norm_t = ticker.strip().upper()
                             if norm_t and norm_t not in tiingo_results:
                                 tiingo_results[norm_t] = (None, None)
 
                         return tiingo_results
                     else:
-                        # Low success rate - fallback to yfinance
                         log.warning(
                             "tiingo_batch_low_success rate=%.1f%% falling_back_to_yf",
                             success_rate * 100
@@ -194,146 +186,194 @@ def batch_get_prices(tickers: list[str]) -> Dict[...]:
     except Exception as e:
         log.warning("tiingo_batch_attempt_failed err=%s using_yf", e.__class__.__name__)
 
-    # FALLBACK: Use yfinance batch (existing code preserved)
-    if yf is None:
-        log.warning("yfinance_missing batch_fetch_skipped")
-        return {ticker: (None, None) for ticker in tickers}
-
-    # ... rest of existing yfinance batch code (line 751-849) ...
+    # FALLBACK: Continue to existing yfinance batch code below...
 ```
 
-### Step 3: Add Rate Limit Detection to Individual Calls (Line 558)
+---
 
-**In `get_last_price_change()` Tiingo section:**
+### TICKET-3: Add Rate Limit Detection to Individual Calls
+
+**File:** `src/catalyst_bot/market.py`
+**Function:** `get_last_price_snapshot()` (starts at line 417)
+**Tiingo Section:** Lines 547-579
+**Modify Location:** Line 574 (exception handling)
+
+**Current Code (lines 574-577):**
+```python
+                    except Exception as e:
+                        _log_provider(
+                            "tiingo", t0, None, None, error=str(e.__class__.__name__)
+                        )
+```
+
+**Replace With:**
+```python
+                    except Exception as e:
+                        # Check for rate limiting (429)
+                        if hasattr(e, 'response') and getattr(e.response, 'status_code', 0) == 429:
+                            log.warning("tiingo_rate_limited_individual ticker=%s", nt)
+                            break  # Stop retrying, move to next provider
+                        _log_provider(
+                            "tiingo", t0, None, None, error=str(e.__class__.__name__)
+                        )
+```
+
+---
+
+## Wiring Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         market.py                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Line 15: import requests                                        │
+│                                                                  │
+│  Lines 212-279: _tiingo_last_prev()  ← Individual ticker calls   │
+│                                                                  │
+│  Lines 280-281: [INSERT] _tiingo_batch_prices()  ← NEW FUNCTION  │
+│                                                                  │
+│  Lines 282-414: _tiingo_intraday_series()                        │
+│                                                                  │
+│  Lines 417-680: get_last_price_snapshot()                        │
+│      └─ Lines 547-579: Tiingo provider block                     │
+│          └─ Line 558: _tiingo_last_prev(nt, key) call            │
+│          └─ Line 574: Exception handling ← MODIFY for 429        │
+│                                                                  │
+│  Lines 701-915: batch_get_prices()                               │
+│      └─ Line 709: Empty check                                    │
+│      └─ [INSERT] Tiingo batch call (after line 709)              │
+│      └─ Line 753: yf.download() ← Existing yfinance fallback     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## CLI Implementation Steps
+
+### Step 1: Open market.py and add the batch function
+
+```bash
+# Claude Code will:
+# 1. Read src/catalyst_bot/market.py
+# 2. Find line 280 (after _tiingo_last_prev ends)
+# 3. Insert _tiingo_batch_prices() function
+```
+
+### Step 2: Modify batch_get_prices()
+
+```bash
+# Claude Code will:
+# 1. Find batch_get_prices() at line 701
+# 2. Insert Tiingo batch call after line 709
+# 3. Preserve existing yfinance fallback
+```
+
+### Step 3: Add rate limit detection
+
+```bash
+# Claude Code will:
+# 1. Find exception handling at line 574
+# 2. Add 429 status code check
+```
+
+---
+
+## Testing Plan
+
+### Unit Test (create tests/test_tiingo_batch.py)
 
 ```python
-# Around line 558
-if use_tiingo and key:
-    for attempt in range(retries + 1):
-        t0 = time.perf_counter()
-        try:
-            t_last, t_prev = _tiingo_last_prev(nt, key)
-            if t_last is not None:
-                last = t_last
-            if t_prev is not None:
-                prev = t_prev
-            _log_provider("tiingo", t0, t_last, t_prev)
+import pytest
+from unittest.mock import patch, MagicMock
 
-            if last is not None and prev is not None:
-                log.info(
-                    "provider provider=tiingo ticker=%s role=PRIMARY last=%.2f prev=%.2f",
-                    nt, last, prev,
-                )
-                return last, prev
+def test_tiingo_batch_valid_response():
+    """Test parsing of valid Tiingo IEX batch response."""
+    from src.catalyst_bot.market import _tiingo_batch_prices
 
-        except requests.exceptions.HTTPError as e:
-            if e.response and e.response.status_code == 429:
-                log.warning("tiingo_rate_limited_individual ticker=%s", nt)
-                break  # Stop retrying, move to next provider
-            _log_provider("tiingo", t0, None, None, error=str(e.__class__.__name__))
-        except Exception as e:
-            _log_provider("tiingo", t0, None, None, error=str(e.__class__.__name__))
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = [
+        {"ticker": "AAPL", "last": 150.0, "prevClose": 148.0},
+        {"ticker": "MSFT", "last": 300.0, "prevClose": 295.0},
+    ]
 
-        time.sleep(0.35 * (attempt + 1))
+    with patch("requests.get", return_value=mock_response):
+        result = _tiingo_batch_prices(["AAPL", "MSFT"], "test_key")
+
+    assert "AAPL" in result
+    assert "MSFT" in result
+    assert result["AAPL"][0] == 150.0  # last price
+
+def test_tiingo_batch_rate_limit():
+    """Test handling of 429 rate limit response."""
+    from src.catalyst_bot.market import _tiingo_batch_prices
+
+    mock_response = MagicMock()
+    mock_response.status_code = 429
+
+    with patch("requests.get", return_value=mock_response):
+        result = _tiingo_batch_prices(["AAPL"], "test_key")
+
+    assert result == {}
+```
+
+### Integration Test
+
+```bash
+# Run full cycle with Tiingo batch enabled
+FEATURE_TIINGO=1 python -m catalyst_bot.runner --once
+
+# Check logs for:
+grep "tiingo_batch_success" data/logs/bot.jsonl
+grep "batch_fetch_tiingo_primary" data/logs/bot.jsonl
 ```
 
 ---
 
 ## Expected Impact
 
-**Before:**
-- 1,380 API calls/hour
-- 77% failure rate
-- Exceeds rate limit by 3.3x
-
-**After:**
-- 46 batch calls/hour (primary path)
-- <50 individual fallback calls/hour
-- Total: ~96 calls/hour (76% under limit)
-- **API call reduction: 93%**
-
-**Performance:**
-- Faster: 1 batch call vs 30 individual calls
-- More reliable: Well under rate limits
-- Better fallback: yfinance preserved
-
----
-
-## Testing Plan
-
-### Unit Tests
-```python
-# tests/test_tiingo_batch.py
-
-def test_tiingo_batch_valid_response():
-    """Test parsing of valid Tiingo batch response."""
-    tickers = ["AAPL", "MSFT"]
-    # Mock Tiingo batch endpoint response
-    # Assert correct parsing
-
-def test_tiingo_batch_rate_limit():
-    """Test handling of 429 rate limit response."""
-    # Mock 429 response
-    # Assert returns empty dict and logs warning
-
-def test_batch_get_prices_tiingo_primary():
-    """Test batch_get_prices uses Tiingo when enabled."""
-    # Mock Tiingo batch success
-    # Assert Tiingo called, yfinance not called
-
-def test_batch_get_prices_fallback():
-    """Test fallback to yfinance on Tiingo failure."""
-    # Mock Tiingo failure
-    # Assert yfinance called as fallback
-```
-
-### Integration Test
-```bash
-# Run full cycle with Tiingo batch enabled
-FEATURE_TIINGO=1 python -m catalyst_bot.runner --loop --sleep-secs 60
-
-# Monitor logs for:
-# - "tiingo_batch_success"
-# - "batch_fetch_tiingo_primary"
-# - Reduced "tiingo_invalid_json" errors
-```
+| Metric | Before | After |
+|--------|--------|-------|
+| API calls/hour | 1,380 | ~96 |
+| Call pattern | 30 individual/cycle | 1 batch/cycle |
+| Rate limit usage | 330% | 23% |
+| Error rate | 77% | <5% |
+| Cycle speed | Slower (sequential) | Faster (batch) |
 
 ---
 
 ## Rollback Plan
 
-If issues arise:
-1. Set `FEATURE_TIINGO=0` in `.env` (disables Tiingo entirely)
-2. System falls back to yfinance (current fallback)
-3. Or revert commit
+**Option 1: Disable feature flag**
+```bash
+# In .env
+FEATURE_TIINGO=0
+```
 
-**Risk: Low** - All existing fallback logic preserved.
+**Option 2: Revert commit**
+```bash
+git revert <commit-hash>
+```
+
+**Risk: LOW** - All existing yfinance fallback logic preserved.
 
 ---
 
-## Monitoring
+## Definition Reference
 
-After deployment, track these metrics:
-
-```python
-# Add to cycle_metrics log
-log.info(
-    "cycle_metrics",
-    tiingo_batch_calls=tiingo_batch_call_count,
-    tiingo_batch_success_rate=batch_success / batch_calls,
-    tiingo_individual_fallback_calls=individual_call_count,
-    yfinance_fallback_calls=yf_fallback_count,
-)
-```
-
-**Success Criteria:**
-- Tiingo API calls: <100/hour
-- Batch success rate: >80%
-- Overall price fetch success: >95%
+| Term | Definition |
+|------|------------|
+| `_tiingo_batch_prices()` | NEW function to fetch multiple tickers in one API call |
+| `batch_get_prices()` | Existing function at line 701 that fetches prices for multiple tickers |
+| `get_last_price_snapshot()` | Existing function at line 417 for single ticker price fetch |
+| `_tiingo_last_prev()` | Existing function at lines 212-279 for individual Tiingo calls |
+| `feature_tiingo` | Config flag in config.py (line 55) to enable/disable Tiingo |
+| `tiingo_api_key` | Config setting in config.py (line 50) for API authentication |
 
 ---
 
 **Created:** 2025-12-11
-**Priority:** P0 - Critical (fixes rate limiting)
-**Estimated Impact:** 93% API call reduction
-**Risk:** Low (fallback preserved)
+**Updated:** 2025-12-11 (corrected line numbers, added CLI instructions)
+**Validated:** Cross-referenced with actual codebase
