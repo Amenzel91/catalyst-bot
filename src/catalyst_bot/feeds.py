@@ -2762,8 +2762,12 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
     # Set default ticker_source for items that have tickers but no source tracking
     # -----------------------------------------------------------------
     for item in all_items:
-        if item.get("ticker") and not item.get("ticker_source"):
-            item["ticker_source"] = "title_pattern"
+        # Set ticker_source based on whether ticker exists
+        if not item.get("ticker_source"):
+            if item.get("ticker"):
+                item["ticker_source"] = "title_pattern"
+            else:
+                item["ticker_source"] = "no_ticker"
 
     # Generate and log ticker extraction summary
     extraction_summary = {}
