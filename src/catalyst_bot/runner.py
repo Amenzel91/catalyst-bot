@@ -1695,7 +1695,12 @@ def _as_list(x: Any) -> List[str]:
 
 
 def _score_of(scored: Any) -> float:
-    for name in ("total_score", "score", "relevance", "value"):
+    """Extract numeric score from scored object or dict.
+
+    Note: Checks source_weight because classify.py stores the complete
+    calculated score (relevance + sentiment) in this field.
+    """
+    for name in ("total_score", "score", "source_weight", "relevance", "value"):
         v = _get(scored, name, None)
         if v is not None:
             try:

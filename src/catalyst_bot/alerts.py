@@ -1456,9 +1456,15 @@ def send_alert_safe(*args, **kwargs) -> bool:
                             from decimal import Decimal
 
                             from .market_hours import is_extended_hours
+                            from .runner import TRADING_ACTIVITY_STATS
 
                             # Get current settings
                             s = get_settings()
+
+                            # Track signal generation attempt
+                            TRADING_ACTIVITY_STATS["signals_generated"] = (
+                                TRADING_ACTIVITY_STATS.get("signals_generated", 0) + 1
+                            )
 
                             # Execute trade via TradingEngine adapter
                             success = execute_with_trading_engine(
@@ -1472,6 +1478,10 @@ def send_alert_safe(*args, **kwargs) -> bool:
                             )
 
                             if success:
+                                # Track successful trade execution
+                                TRADING_ACTIVITY_STATS["trades_executed"] = (
+                                    TRADING_ACTIVITY_STATS.get("trades_executed", 0) + 1
+                                )
                                 log.info(
                                     "trading_engine_signal_executed ticker=%s extended_hours=%s",
                                     ticker,

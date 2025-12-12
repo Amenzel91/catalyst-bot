@@ -384,6 +384,25 @@ class LLMService:
                     error=None
                 )
 
+            # 7b. Bridge to legacy monitor for heartbeat display
+            # The heartbeat reads from LLMUsageMonitor (JSONL), so we need
+            # to also log there for metrics to appear in admin alerts.
+            try:
+                from ..llm_usage_monitor import get_monitor as get_legacy_monitor
+                legacy_monitor = get_legacy_monitor()
+                if legacy_monitor:
+                    legacy_monitor.log_usage(
+                        provider=provider_name,
+                        model=model,
+                        operation=request.feature_name,
+                        input_tokens=llm_response.tokens_input,
+                        output_tokens=llm_response.tokens_output,
+                        cost_estimate=llm_response.cost_usd,
+                        latency_ms=latency_ms,
+                    )
+            except Exception:
+                pass  # Non-critical - don't fail request if logging fails
+
             # 8. Cache response
             if request.enable_cache and self.cache:
                 await self.cache.set(request.prompt, request.feature_name, llm_response)
@@ -421,6 +440,24 @@ class LLMService:
                     cached=False,
                     error=str(e)
                 )
+
+            # Bridge error to legacy monitor
+            try:
+                from ..llm_usage_monitor import get_monitor as get_legacy_monitor
+                legacy_monitor = get_legacy_monitor()
+                if legacy_monitor:
+                    legacy_monitor.log_usage(
+                        provider="unknown",
+                        model="unknown",
+                        operation=request.feature_name,
+                        input_tokens=0,
+                        output_tokens=0,
+                        cost_estimate=0.0,
+                        latency_ms=latency_ms,
+                        error=str(e),
+                    )
+            except Exception:
+                pass
 
             return LLMResponse(
                 text="",
