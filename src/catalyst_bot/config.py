@@ -54,6 +54,11 @@ class Settings:
     # will query Tiingo before Alpha Vantage and yfinance.
     feature_tiingo: bool = _b("FEATURE_TIINGO", False)
 
+    # Feature flag to filter non-public company news items (no ticker)
+    # Defaults to True. When enabled, items without valid tickers are
+    # filtered out before LLM classification to save compute.
+    feature_filter_non_public: bool = _b("FEATURE_FILTER_NON_PUBLIC", True)
+
     # --- Phase‑C: FMP sentiment support ---
     # API key used to access the Financial Modeling Prep sentiment RSS endpoint.  When
     # non‑empty, it will be appended as a query parameter to the RSS URL.  This
@@ -119,9 +124,13 @@ class Settings:
     # Alpaca API credentials.  Only used when FEATURE_ALPACA_STREAM is true.
     # Note: Support both ALPACA_SECRET and ALPACA_API_SECRET for backwards compatibility
     alpaca_api_key: str = os.getenv("ALPACA_API_KEY", "")
-    alpaca_api_secret: str = os.getenv("ALPACA_API_SECRET", "") or os.getenv("ALPACA_SECRET", "")
+    alpaca_api_secret: str = os.getenv("ALPACA_API_SECRET", "") or os.getenv(
+        "ALPACA_SECRET", ""
+    )
     alpaca_secret: str = alpaca_api_secret  # Alias for backwards compatibility
-    alpaca_base_url: str = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    alpaca_base_url: str = os.getenv(
+        "ALPACA_BASE_URL", "https://paper-api.alpaca.markets"
+    )
     alpaca_paper_mode: bool = _b("ALPACA_PAPER_MODE", True)
 
     # Number of seconds to sample Alpaca stream after a headline.  The
@@ -139,7 +148,8 @@ class Settings:
 
     # --- Paper Trading Configuration (Wave 5) ---
     # Master feature flag for paper trading bot integration
-    # MIGRATED TO TRADINGENGINE (2025-11-26): Now uses TradingEngine instead of legacy paper_trader.py
+    # MIGRATED TO TRADINGENGINE (2025-11-26): Now uses TradingEngine
+    # instead of legacy paper_trader.py
     feature_paper_trading: bool = _b("FEATURE_PAPER_TRADING", True)
 
     # Data Collection Mode
@@ -175,9 +185,7 @@ class Settings:
     default_take_profit_pct: float = float(
         os.getenv("DEFAULT_TAKE_PROFIT_PCT", "10.0") or "10.0"
     )
-    max_daily_loss_pct: float = float(
-        os.getenv("MAX_DAILY_LOSS_PCT", "10.0") or "10.0"
-    )
+    max_daily_loss_pct: float = float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0") or "10.0")
     risk_reward_ratio_min: float = float(
         os.getenv("RISK_REWARD_RATIO_MIN", "2.0") or "2.0"
     )
@@ -191,9 +199,7 @@ class Settings:
 
     # SEC Feed Throttling (Smart Filtering)
     sec_feed_live: bool = _b("SEC_FEED_LIVE", True)
-    sec_feed_max_per_hour: int = int(
-        os.getenv("SEC_FEED_MAX_PER_HOUR", "20") or "20"
-    )
+    sec_feed_max_per_hour: int = int(os.getenv("SEC_FEED_MAX_PER_HOUR", "20") or "20")
     sec_feed_priority_tickers: bool = _b("SEC_FEED_PRIORITY_TICKERS", True)
 
     # Trading Schedule
@@ -274,8 +280,12 @@ class Settings:
 
     # Behavior / thresholds
     price_ceiling: Optional[float] = _env_float_opt("PRICE_CEILING")
-    min_avg_volume: Optional[float] = _env_float_opt("MIN_AVG_VOLUME")  # Filter low liquidity stocks
-    loop_seconds: int = int(os.getenv("LOOP_SECONDS", "30"))  # Reduced from 60 for faster scanning
+    min_avg_volume: Optional[float] = _env_float_opt(
+        "MIN_AVG_VOLUME"
+    )  # Filter low liquidity stocks
+    loop_seconds: int = int(
+        os.getenv("LOOP_SECONDS", "30")
+    )  # Reduced from 60 for faster scanning
 
     # Feature flags
     feature_record_only: bool = _b("FEATURE_RECORD_ONLY", False)
@@ -995,7 +1005,9 @@ class Settings:
     # Show annotations for extended hours periods (premarket/afterhours)
     # When enabled, adds background shading and labels for extended hours
     # Default: True (enabled)
-    chart_show_extended_hours_annotation: bool = _b("CHART_SHOW_EXTENDED_HOURS_ANNOTATION", True)
+    chart_show_extended_hours_annotation: bool = _b(
+        "CHART_SHOW_EXTENDED_HOURS_ANNOTATION", True
+    )
 
     # Fetch extended hours data from Tiingo (4am-8pm ET instead of 9:30am-4pm)
     # Requires Tiingo API key and FEATURE_TIINGO=1
@@ -1061,7 +1073,9 @@ class Settings:
 
     # Hours before pending review auto-applies if admin doesn't respond.
     # Defaults to 48 hours. Set MOA_REVIEW_TIMEOUT_HOURS to customize.
-    moa_review_timeout_hours: int = int(os.getenv("MOA_REVIEW_TIMEOUT_HOURS", "48") or "48")
+    moa_review_timeout_hours: int = int(
+        os.getenv("MOA_REVIEW_TIMEOUT_HOURS", "48") or "48"
+    )
 
     # Discord channel ID for MOA review requests. If not set, uses
     # DISCORD_ADMIN_CHANNEL_ID. Set MOA_REVIEW_CHANNEL_ID to override.
@@ -1220,7 +1234,9 @@ class Settings:
     # Float data doesn't change frequently, so 24 hours is a safe default.
     # Increase to 168 (1 week) or 720 (30 days) if API quota is limited.
     # Defaults to 24 hours.
-    float_cache_max_age_hours: int = int(os.getenv("FLOAT_CACHE_MAX_AGE_HOURS", "24") or "24")
+    float_cache_max_age_hours: int = int(
+        os.getenv("FLOAT_CACHE_MAX_AGE_HOURS", "24") or "24"
+    )
 
     # Comma-separated list of float data sources in priority order.
     # Available sources: finviz, yfinance, tiingo
@@ -1232,7 +1248,9 @@ class Settings:
     # Request delay in seconds between FinViz scraping attempts.
     # FinViz has rate limiting, so a 2-second delay is recommended.
     # Defaults to 2.0 seconds.
-    float_request_delay_sec: float = float(os.getenv("FLOAT_REQUEST_DELAY_SEC", "2.0") or "2.0")
+    float_request_delay_sec: float = float(
+        os.getenv("FLOAT_REQUEST_DELAY_SEC", "2.0") or "2.0"
+    )
 
     # --- WAVE 3: Multi-Ticker Article Handling ---
     # Enable smart multi-ticker detection to reduce false positives from articles
@@ -1285,7 +1303,9 @@ class Settings:
     # Cache SEC filing analysis results for 72 hours to prevent re-analysis
     feature_sec_llm_cache: bool = _b("FEATURE_SEC_LLM_CACHE", True)
     # Cache TTL in hours (default: 72 hours)
-    sec_llm_cache_ttl_hours: int = int(os.getenv("SEC_LLM_CACHE_TTL_HOURS", "72") or "72")
+    sec_llm_cache_ttl_hours: int = int(
+        os.getenv("SEC_LLM_CACHE_TTL_HOURS", "72") or "72"
+    )
 
     # Agent 3: Batch Classification (group 5-10 items per API call)
     # Enable batching of LLM classification requests to reduce overhead
@@ -1298,7 +1318,9 @@ class Settings:
     # Agent 4: Cost Monitoring Alerts (multi-tier safety thresholds)
     # Warn/crit/emergency thresholds automatically disable expensive models
     llm_cost_alert_warn: float = float(os.getenv("LLM_COST_ALERT_WARN", "5.0") or "5.0")
-    llm_cost_alert_crit: float = float(os.getenv("LLM_COST_ALERT_CRIT", "10.0") or "10.0")
+    llm_cost_alert_crit: float = float(
+        os.getenv("LLM_COST_ALERT_CRIT", "10.0") or "10.0"
+    )
     llm_cost_alert_emergency: float = float(
         os.getenv("LLM_COST_ALERT_EMERGENCY", "20.0") or "20.0"
     )

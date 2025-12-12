@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # Pandas is used for DatetimeIndex checks in get_intraday_snapshots
 import pandas as pd
@@ -279,6 +279,97 @@ def _tiingo_last_prev(
         return None, None
 
 
+def _tiingo_batch_prices(
+    tickers: List[str], api_key: str, timeout: int = 10
+) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
+    """
+    Fetch prices for multiple tickers in a single Tiingo API call.
+
+    Parameters
+    ----------
+    tickers : List[str]
+        List of ticker symbols (max 100 per call)
+    api_key : str
+        Tiingo API key
+    timeout : int
+        Request timeout in seconds
+
+    Returns
+    -------
+    Dict[str, Tuple[Optional[float], Optional[float]]]
+        Mapping of ticker → (last_price, change_pct)
+    """
+    if not tickers or not api_key:
+        return {}
+
+    try:
+        url = "https://api.tiingo.com/iex"
+        params = {
+            "token": api_key.strip(),
+            "tickers": ",".join(t.strip().upper() for t in tickers[:100]),
+        }
+
+        r = requests.get(url, params=params, timeout=timeout)
+
+        # Handle rate limiting
+        if r.status_code == 429:
+            log.warning("tiingo_batch_rate_limited status=429")
+            return {}
+
+        if r.status_code != 200:
+            log.warning("tiingo_batch_http_error status=%d", r.status_code)
+            return {}
+
+        try:
+            data = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError) as e:
+            log.warning("tiingo_batch_invalid_json err=%s", str(e))
+            return {}
+
+        if not isinstance(data, list):
+            log.warning("tiingo_batch_unexpected_format type=%s", type(data).__name__)
+            return {}
+
+        # Parse IEX batch response
+        results = {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+
+            ticker = entry.get("ticker")
+            if not ticker:
+                continue
+
+            last_price = entry.get("last") or entry.get("tngoLast")
+            prev_close = entry.get("prevClose")
+
+            change_pct = None
+            if (
+                last_price is not None
+                and prev_close is not None
+                and abs(prev_close) > 1e-9
+            ):
+                change_pct = ((last_price - prev_close) / prev_close) * 100.0
+
+            results[ticker.upper()] = (
+                float(last_price) if last_price is not None else None,
+                float(change_pct) if change_pct is not None else None,
+            )
+
+        log.info(
+            "tiingo_batch_success requested=%d fetched=%d", len(tickers), len(results)
+        )
+
+        return results
+
+    except requests.exceptions.Timeout:
+        log.warning("tiingo_batch_timeout")
+        return {}
+    except Exception as e:
+        log.warning("tiingo_batch_error err=%s", e.__class__.__name__)
+        return {}
+
+
 def _tiingo_intraday_series(
     ticker: str,
     api_key: str,
@@ -494,23 +585,22 @@ def get_last_price_snapshot(
     is_otc = False
     try:
         from .ticker_validation import TickerValidator
+
         validator = TickerValidator()
         is_otc = validator.is_otc(nt)
         if is_otc:
             # Reorder providers: yfinance first, then others
-            log.info(
-                "otc_ticker_detected ticker=%s provider_reorder=yf_first",
-                nt
-            )
+            log.info("otc_ticker_detected ticker=%s provider_reorder=yf_first", nt)
             # Move yfinance variants to front
             yf_providers = [p for p in providers if p in {"yf", "yahoo", "yfinance"}]
-            other_providers = [p for p in providers if p not in {"yf", "yahoo", "yfinance"}]
+            other_providers = [
+                p for p in providers if p not in {"yf", "yahoo", "yfinance"}
+            ]
             providers = yf_providers + other_providers
             # Ensure yfinance is always in the list for OTC tickers
             if not yf_providers:
                 log.warning(
-                    "otc_ticker_missing_yfinance ticker=%s adding_yf_provider",
-                    nt
+                    "otc_ticker_missing_yfinance ticker=%s adding_yf_provider", nt
                 )
                 providers = ["yf"] + providers
     except Exception as e:
@@ -518,7 +608,7 @@ def get_last_price_snapshot(
         log.debug(
             "otc_detection_failed ticker=%s err=%s continuing_with_defaults",
             nt,
-            str(e.__class__.__name__)
+            str(e.__class__.__name__),
         )
 
     # Helper to log telemetry
@@ -572,6 +662,13 @@ def get_last_price_snapshot(
                             )
                             return last, prev
                     except Exception as e:
+                        # Check for rate limiting (429)
+                        if (
+                            hasattr(e, "response")
+                            and getattr(e.response, "status_code", 0) == 429
+                        ):
+                            log.warning("tiingo_rate_limited_individual ticker=%s", nt)
+                            break  # Stop retrying, move to next provider
                         _log_provider(
                             "tiingo", t0, None, None, error=str(e.__class__.__name__)
                         )
@@ -674,7 +771,7 @@ def get_last_price_snapshot(
             nt,
             ",".join(providers),
             "available" if last is not None else "N/A",
-            "available" if prev is not None else "N/A"
+            "available" if prev is not None else "N/A",
         )
     return last, prev
 
@@ -733,6 +830,43 @@ def batch_get_prices(
     if not tickers:
         return {}
 
+    # OPTIMIZATION: Try Tiingo batch API first if enabled
+    try:
+        settings = get_settings()
+        if settings and getattr(settings, "feature_tiingo", False):
+            tiingo_key = getattr(settings, "tiingo_api_key", "")
+            if tiingo_key:
+                t0 = time.perf_counter()
+                tiingo_results = _tiingo_batch_prices(tickers, tiingo_key)
+
+                if tiingo_results:
+                    success_rate = len(tiingo_results) / len(tickers)
+
+                    if success_rate >= 0.8:
+                        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                        log.info(
+                            "batch_fetch_tiingo_primary tickers=%d success_rate=%.1f%% t_ms=%.1f",
+                            len(tickers),
+                            success_rate * 100,
+                            elapsed_ms,
+                        )
+
+                        # Fill missing tickers with (None, None)
+                        for ticker in tickers:
+                            norm_t = ticker.strip().upper()
+                            if norm_t and norm_t not in tiingo_results:
+                                tiingo_results[norm_t] = (None, None)
+
+                        return tiingo_results
+                    else:
+                        log.warning(
+                            "tiingo_batch_low_success rate=%.1f%% falling_back_to_yf",
+                            success_rate * 100,
+                        )
+    except Exception as e:
+        log.warning("tiingo_batch_attempt_failed err=%s using_yf", e.__class__.__name__)
+
+    # FALLBACK: Continue to existing yfinance batch code below...
     if yf is None:
         log.warning("yfinance_missing batch_fetch_skipped")
         return {ticker: (None, None) for ticker in tickers}
@@ -785,7 +919,10 @@ def batch_get_prices(
                 # FIX: Pandas returns NaN for missing data, convert to None
                 # NaN would pass through filters since NaN != None and NaN > 10 = False
                 import math
-                if last_price is not None and (math.isnan(last_price) or not math.isfinite(last_price)):
+
+                if last_price is not None and (
+                    math.isnan(last_price) or not math.isfinite(last_price)
+                ):
                     last_price = None
 
                 # Get prev close (if available)
@@ -793,7 +930,9 @@ def batch_get_prices(
                     prev_row = ticker_data.iloc[-2]
                     prev_close = prev_row.get("Close")
                     # FIX: Convert NaN to None
-                    if prev_close is not None and (math.isnan(prev_close) or not math.isfinite(prev_close)):
+                    if prev_close is not None and (
+                        math.isnan(prev_close) or not math.isfinite(prev_close)
+                    ):
                         prev_close = None
                 else:
                     prev_close = None
@@ -850,34 +989,37 @@ def batch_get_prices(
 
     # CONCURRENT FALLBACK: Retry failed tickers in parallel using ThreadPoolExecutor
     # This provides 6-10x speedup over sequential fallback for failed tickers
-    failed_tickers = [
-        ticker for ticker, (price, _) in results.items() if price is None
-    ]
+    failed_tickers = [ticker for ticker, (price, _) in results.items() if price is None]
 
     if failed_tickers:
         log.info(
             "tiingo_fallback_retry failed_count=%d tickers=%s",
             len(failed_tickers),
-            ",".join(failed_tickers[:5]) + ("..." if len(failed_tickers) > 5 else "")
+            ",".join(failed_tickers[:5]) + ("..." if len(failed_tickers) > 5 else ""),
         )
 
         # Use ThreadPoolExecutor for concurrent fetches (6-10x speedup)
         max_workers = min(10, len(failed_tickers))
 
-        def fetch_single_fallback(ticker: str) -> Tuple[str, Optional[float], Optional[float]]:
+        def fetch_single_fallback(
+            ticker: str,
+        ) -> Tuple[str, Optional[float], Optional[float]]:
             """Fetch single ticker via fallback provider chain."""
             try:
                 fallback_price, fallback_change = get_last_price_change(ticker)
                 return ticker, fallback_price, fallback_change
             except Exception as e:
-                log.debug("tiingo_fallback_failed ticker=%s err=%s", ticker, e.__class__.__name__)
+                log.debug(
+                    "tiingo_fallback_failed ticker=%s err=%s",
+                    ticker,
+                    e.__class__.__name__,
+                )
                 return ticker, None, None
 
         t_fallback_start = time.perf_counter()
 
         with ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="price-fallback"
+            max_workers=max_workers, thread_name_prefix="price-fallback"
         ) as executor:
             # Submit all tasks
             future_to_ticker = {
@@ -898,10 +1040,14 @@ def batch_get_prices(
                             "tiingo_fallback_success ticker=%s price=%.2f change=%.2f",
                             ticker,
                             fallback_price,
-                            fallback_change if fallback_change is not None else 0.0
+                            fallback_change if fallback_change is not None else 0.0,
                         )
                 except Exception as e:
-                    log.debug("tiingo_fallback_exception ticker=%s err=%s", ticker, str(e.__class__.__name__))
+                    log.debug(
+                        "tiingo_fallback_exception ticker=%s err=%s",
+                        ticker,
+                        str(e.__class__.__name__),
+                    )
 
         fallback_elapsed_ms = (time.perf_counter() - t_fallback_start) * 1000.0
         log.info(

@@ -137,6 +137,145 @@ def load_cik_to_ticker(db_path: str | None = None) -> Dict[str, str]:
     return mapping
 
 
+def refresh_cik_mappings_from_sec(
+    output_path: str = None, user_agent: str = "catalyst-bot/1.0 contact@example.com"
+) -> bool:
+    """
+    Fetch latest CIK-to-ticker mappings from SEC and update local NDJSON.
+
+    Downloads from official SEC API and converts to NDJSON format.
+    CRITICAL: Uses "cik" field name to match _bootstrap_if_needed() at line 79.
+
+    Parameters
+    ----------
+    output_path : str, optional
+        Path to output NDJSON file. Defaults to repo root company_tickers.ndjson
+    user_agent : str
+        User-Agent header (SEC requires identification)
+
+    Returns
+    -------
+    bool
+        True if refresh succeeded, False otherwise
+
+    Notes
+    -----
+    SEC rate limits API access. Don't call more than once per day.
+    Bot must be restarted OR tickers.db deleted to reload mappings.
+    """
+    from pathlib import Path
+
+    import requests
+
+    if output_path is None:
+        output_path = str(_ndjson_path())
+
+    url = "https://www.sec.gov/files/company_tickers.json"
+    headers = {"User-Agent": user_agent}
+
+    try:
+        log.info("cik_refresh_started source=sec_api")
+
+        r = requests.get(url, headers=headers, timeout=30)
+        r.raise_for_status()
+
+        data = r.json()
+
+        if not data:
+            log.error("cik_refresh_failed reason=empty_response")
+            return False
+
+        # Backup existing file
+        output = Path(output_path)
+        if output.exists():
+            backup_path = output.with_suffix(".ndjson.backup")
+            output.rename(backup_path)
+            log.info("cik_refresh_backup created=%s", backup_path)
+
+        # Write NDJSON with CORRECT field name
+        count = 0
+        with open(output_path, "w", encoding="utf-8") as f:
+            for entry in data.values():
+                cik_str = str(entry.get("cik_str", "")).strip()
+                ticker = entry.get("ticker", "").strip()
+                title = entry.get("title", "").strip()
+
+                if not cik_str or not ticker:
+                    continue
+
+                cik_padded = cik_str.zfill(10)
+
+                # CRITICAL: Use "cik" field to match line 79
+                record = {"cik": cik_padded, "ticker": ticker.upper(), "title": title}
+
+                f.write(json.dumps(record) + "\n")
+                count += 1
+
+        log.info("cik_refresh_complete entries=%d path=%s", count, output_path)
+
+        return True
+
+    except requests.exceptions.RequestException as e:
+        log.error(
+            "cik_refresh_http_error err=%s status=%s",
+            e.__class__.__name__,
+            getattr(getattr(e, "response", None), "status_code", "N/A"),
+        )
+        return False
+    except Exception as e:
+        log.error("cik_refresh_failed err=%s msg=%s", e.__class__.__name__, str(e))
+        return False
+
+
+def auto_refresh_cik_mappings_if_stale(
+    max_age_days: int = 7, mapping_file: str = None
+) -> None:
+    """
+    Automatically refresh CIK mappings if NDJSON file is older than max_age_days.
+
+    Call this on bot startup to ensure mappings are fresh.
+
+    Parameters
+    ----------
+    max_age_days : int
+        Refresh if file is older than this many days
+    mapping_file : str, optional
+        Path to NDJSON file. Defaults to repo root.
+    """
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    if mapping_file is None:
+        mapping_file = str(_ndjson_path())
+
+    try:
+        path = Path(mapping_file)
+
+        if not path.exists():
+            log.warning("cik_mapping_missing attempting_refresh")
+            refresh_cik_mappings_from_sec(output_path=mapping_file)
+            return
+
+        # Check file age
+        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+        age = datetime.now() - mtime
+
+        if age > timedelta(days=max_age_days):
+            log.info(
+                "cik_mapping_stale age_days=%.1f threshold=%d refreshing",
+                age.total_seconds() / 86400,
+                max_age_days,
+            )
+            refresh_cik_mappings_from_sec(output_path=mapping_file)
+        else:
+            log.info("cik_mapping_fresh age_days=%.1f", age.total_seconds() / 86400)
+
+    except Exception as e:
+        log.warning(
+            "cik_mapping_age_check_failed err=%s continuing", e.__class__.__name__
+        )
+
+
 def cik_from_text(text: str | None) -> str | None:
     """
     Extract a CIK from EDGAR text using the compiled regex ``_CIK_RE``.

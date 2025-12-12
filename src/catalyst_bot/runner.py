@@ -1059,6 +1059,7 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             data_collection_mode = getattr(settings, "data_collection_mode", True)
             trading_extended_hours = getattr(settings, "trading_extended_hours", True)
 
+            ext_hrs = "✅ DAY limit orders" if trading_extended_hours else "❌ Disabled"
             embed_fields.append(
                 {
                     "name": "💹 Paper Trading (TradingEngine)",
@@ -1067,7 +1068,7 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                         f"Mode: {'Data Collection' if data_collection_mode else 'Production'}\n"
                         f"Open Positions: {te_data.get('position_count', '—')}\n"
                         f"Portfolio Value: ${te_data.get('portfolio_value', '—')}\n"
-                        f"Extended Hours: {'✅ DAY limit orders' if trading_extended_hours else '❌ Disabled'}"
+                        f"Extended Hours: {ext_hrs}"
                     ),
                     "inline": False,
                 }
@@ -1080,14 +1081,27 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
             feature_rvol = os.getenv("FEATURE_RVOL", "0") == "1"
             feature_market_regime = os.getenv("FEATURE_MARKET_REGIME", "0") == "1"
 
+            # Format status strings for readability
+            trends_status = (
+                "✅ Enabled (10% weight)" if feature_google_trends else "❌ Disabled"
+            )
+            reddit_enabled = feature_reddit and feature_news_sent
+            reddit_status = (
+                "✅ Enabled (10% weight)" if reddit_enabled else "❌ Disabled"
+            )
+            rvol_status = "✅ Enabled (0.8x-1.4x)" if feature_rvol else "❌ Disabled"
+            regime_status = (
+                "✅ Enabled (0.5x-1.2x)" if feature_market_regime else "❌ Disabled"
+            )
+
             embed_fields.append(
                 {
                     "name": "🎯 Signal Enhancement (NEW!)",
                     "value": (
-                        f"Google Trends: {'✅ Enabled (10% weight)' if feature_google_trends else '❌ Disabled'}\n"
-                        f"Reddit Sentiment: {'✅ Enabled (10% weight)' if (feature_reddit and feature_news_sent) else '❌ Disabled'}\n"
-                        f"RVOL Multiplier: {'✅ Enabled (0.8x-1.4x)' if feature_rvol else '❌ Disabled'}\n"
-                        f"Market Regime: {'✅ Enabled (0.5x-1.2x)' if feature_market_regime else '❌ Disabled'}"
+                        f"Google Trends: {trends_status}\n"
+                        f"Reddit Sentiment: {reddit_status}\n"
+                        f"RVOL Multiplier: {rvol_status}\n"
+                        f"Market Regime: {regime_status}"
                     ),
                     "inline": False,
                 }
@@ -1142,14 +1156,14 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                     above_pct = 0.0
                     below_pct = 0.0
 
+                below_threshold = total_classified - above_threshold
                 embed_fields.append(
                     {
                         "name": "🎯 Classification Summary",
                         "value": (
                             f"Total Classified: {total_classified:,}\n"
                             f"Above MIN_SCORE: {above_threshold} ({above_pct:.1f}%)\n"
-                            f"Below Threshold: {total_classified -
-                                                above_threshold:,} ({below_pct:.1f}%)\n"
+                            f"Below Threshold: {below_threshold:,} ({below_pct:.1f}%)\n"
                             f"Deduped: {deduped_count}\n"
                             f"Skipped: {skipped_count:,}"
                         ),
@@ -1778,7 +1792,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         {
                             "content": (
                                 f"⚠️ **Feed Outage Detected**\n\n"
-                                f"No items fetched for **{_CONSECUTIVE_EMPTY_CYCLES}** consecutive cycles.\n"
+                                f"No items fetched for **{_CONSECUTIVE_EMPTY_CYCLES}** "
+                                f"consecutive cycles.\n"
                                 f"Check feed sources and network connectivity."
                             )
                         },
@@ -2192,7 +2207,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         if ticker not in primary_tickers:
                             # Log as low relevance rejection
                             log.info(
-                                "ticker_low_relevance ticker=%s score=%.1f primary_tickers=%s title=%s",
+                                "ticker_low_relevance ticker=%s score=%.1f "
+                                "primary_tickers=%s title=%s",
                                 ticker,
                                 all_scores.get(ticker, 0.0),
                                 (
@@ -2266,8 +2282,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             # Don't crash on multi-ticker detection errors
             log.warning("multi_ticker_handler_error ticker=%s err=%s", ticker, str(e))
 
-        # Filter data presentation and conference/exhibit announcements (rarely lead to sustained movement)
-        # These are conference presentations, exhibit announcements, interim data releases, etc. that lack novel catalysts
+        # Filter data presentation and conference/exhibit announcements
+        # (rarely lead to sustained movement). These are conference presentations,
+        # exhibit announcements, interim data releases, etc. that lack novel catalysts
         # User feedback: "usually these presentation announcements aren't really catalyst news"
         # Exception: Keep truly breakthrough data (FDA breakthrough, pivotal results, etc.)
         try:
@@ -3062,8 +3079,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 continue
 
         # Sentiment gate (snt already extracted above)
-        # Note: Strong negatives should already pass this gate since they have high absolute sentiment,
-        # but we check is_strong_negative here for consistency with the score bypass logic
+        # Note: Strong negatives should already pass this gate since they have
+        # high absolute sentiment, but we check is_strong_negative here for
+        # consistency with the score bypass logic
         if (min_sent_abs is not None) and (abs(snt) < min_sent_abs):
             if is_strong_negative:
                 # Strong negatives can also bypass sentiment gate (though typically not needed)
@@ -3380,8 +3398,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     log.info(
         "cycle_metrics items=%s deduped=%s tickers_present=%s tickers_missing=%s "
         "dyn_weights=%s dyn_path_exists=%s dyn_path='%s' price_ceiling=%s "
-        "skipped_no_ticker=%s skipped_crypto=%s skipped_ticker_relevance=%s skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
-        "skipped_multi_ticker=%s skipped_data_presentation=%s skipped_stale=%s skipped_otc=%s skipped_unit_warrant=%s skipped_low_volume=%s skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s "
+        "skipped_no_ticker=%s skipped_crypto=%s skipped_ticker_relevance=%s "
+        "skipped_price_gate=%s skipped_instr=%s skipped_by_source=%s "
+        "skipped_multi_ticker=%s skipped_data_presentation=%s skipped_stale=%s "
+        "skipped_otc=%s skipped_unit_warrant=%s skipped_low_volume=%s "
+        "skipped_low_score=%s skipped_sent_gate=%s skipped_cat_gate=%s "
         "strong_negatives_bypassed=%s alerted=%s",
         len(items),
         len(deduped),
@@ -3850,9 +3871,9 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
                     )
 
                     # AUTO-APPLY KEYWORD WEIGHT UPDATES
-                    # Read recommendations from the analysis report and apply them to keyword_stats.json
-                    # This creates a closed-loop system where nightly analysis automatically
-                    # updates weights
+                    # Read recommendations from the analysis report and apply them
+                    # to keyword_stats.json. This creates a closed-loop system where
+                    # nightly analysis automatically updates weights
                     try:
                         import json
                         from pathlib import Path
@@ -4087,6 +4108,14 @@ def runner_main(
             log.warning("sec_monitor_module_not_available")
         except Exception as e:
             log.error("sec_monitor_startup_failed err=%s", str(e))
+
+    # Auto-refresh CIK mappings if stale (>7 days old)
+    try:
+        from catalyst_bot.ticker_map import auto_refresh_cik_mappings_if_stale
+
+        auto_refresh_cik_mappings_if_stale(max_age_days=7)
+    except Exception as e:
+        log.warning("cik_auto_refresh_failed err=%s", e.__class__.__name__)
 
     # Paper Trading Integration - Initialize TradingEngine
     trading_engine = None

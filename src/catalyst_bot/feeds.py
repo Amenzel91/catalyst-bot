@@ -299,6 +299,82 @@ def _filter_by_freshness(
     return fresh_items, rejected_count
 
 
+def _filter_non_public_companies(
+    items: List[Dict],
+) -> Tuple[List[Dict], Dict[str, int]]:
+    """
+    Filter out items without valid tickers (likely non-public companies).
+
+    This removes news items for:
+    - Pre-IPO companies
+    - Private companies
+    - Generic corporate announcements without ticker context
+
+    Parameters
+    ----------
+    items : List[Dict]
+        Items after ticker extraction (from _normalize_entry)
+
+    Returns
+    -------
+    Tuple[List[Dict], Dict[str, int]]
+        (filtered_items, filter_stats)
+
+    Notes
+    -----
+    Items with valid tickers are kept regardless of source.
+    This primarily filters GlobeNewswire items (~90% lack tickers).
+    """
+    if not items:
+        return [], {"total": 0, "filtered": 0, "kept": 0}
+
+    kept = []
+    stats = {
+        "total": len(items),
+        "filtered_no_ticker": 0,
+        "filtered_na_ticker": 0,
+        "kept": 0,
+        "kept_with_ticker": 0,
+    }
+
+    for item in items:
+        ticker = (item.get("ticker") or "").strip().upper()
+        source = item.get("source", "unknown")
+
+        # Keep items with valid tickers
+        if ticker and ticker not in {"N/A", "NA", "NONE", ""}:
+            kept.append(item)
+            stats["kept"] += 1
+            stats["kept_with_ticker"] += 1
+            continue
+
+        # Filter out items without tickers
+        if not ticker or ticker == "":
+            stats["filtered_no_ticker"] += 1
+        else:  # ticker == "N/A" or similar
+            stats["filtered_na_ticker"] += 1
+
+        # Log for analysis (debug level to avoid spam)
+        log.debug(
+            "filtered_non_public source=%s ticker=%s title=%s",
+            source,
+            ticker or "none",
+            (item.get("title") or "")[:80],
+        )
+
+    stats["kept"] = len(kept)
+
+    log.info(
+        "non_public_filter total=%d filtered=%d kept=%d kept_with_ticker=%d",
+        stats["total"],
+        stats["filtered_no_ticker"] + stats["filtered_na_ticker"],
+        stats["kept"],
+        stats["kept_with_ticker"],
+    )
+
+    return kept, stats
+
+
 # Local sentiment fallback: optional.  If import fails (no module), attach
 # sentiment is a no-op so that pipeline continues smoothly.
 try:
@@ -1213,7 +1289,7 @@ async def _enrich_sec_items_batch(
         # -----------------------------------------------------------------
         cik_extracted_count = 0
         try:
-            from .sec_prefilter import init_prefilter, extract_ticker_from_filing
+            from .sec_prefilter import extract_ticker_from_filing, init_prefilter
 
             # Ensure CIK map is loaded (idempotent)
             init_prefilter()
@@ -1232,7 +1308,7 @@ async def _enrich_sec_items_batch(
                     log.debug(
                         "ticker_from_cik_prefilter ticker=%s filing_id=%s",
                         ticker,
-                        (filing.get("id") or "")[:50]
+                        (filing.get("id") or "")[:50],
                     )
         except Exception as e:
             log.warning("cik_prefilter_failed error=%s", str(e))
@@ -1241,7 +1317,7 @@ async def _enrich_sec_items_batch(
             log.info(
                 "cik_prefilter_complete extracted=%d total=%d",
                 cik_extracted_count,
-                len(items_to_enrich)
+                len(items_to_enrich),
             )
 
         # CRITICAL OPTIMIZATION: Price pre-filtering before LLM enrichment
@@ -2618,6 +2694,21 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
     all_items = filtered
 
     # -----------------------------------------------------------------
+    # OPTIMIZATION: Filter non-public companies before LLM classification
+    # -----------------------------------------------------------------
+    settings = get_settings()
+    if settings and getattr(settings, "feature_filter_non_public", True):
+        all_items, filter_stats = _filter_non_public_companies(all_items)
+        log.info(
+            "pipeline_after_non_public_filter items=%d filtered=%d",
+            len(all_items),
+            filter_stats.get("filtered_no_ticker", 0)
+            + filter_stats.get("filtered_na_ticker", 0),
+        )
+    else:
+        log.debug("non_public_filter_disabled keeping_all_items")
+
+    # -----------------------------------------------------------------
     # Patch: attach LLM classification & sentiment when enabled
     #
     # When FEATURE_LLM_CLASSIFIER=1 the bot will invoke the local
@@ -2778,7 +2869,7 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
     log.info(
         "ticker_extraction_summary total=%d by_source=%s",
         len(all_items),
-        extraction_summary
+        extraction_summary,
     )
 
     return _apply_refined_dedup(all_items)
