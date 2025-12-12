@@ -157,6 +157,7 @@ TOTAL_STATS: Dict[str, int] = {"items": 0, "deduped": 0, "skipped": 0, "alerts":
 # Enhanced Admin Heartbeat: Feed source tracking
 FEED_SOURCE_STATS: Dict[str, int] = {"rss": 0, "sec": 0, "social": 0}
 SEC_FILING_TYPES: Dict[str, int] = {}  # "8k": count, "10q": count, etc.
+RSS_SOURCE_BY_NAME: Dict[str, int] = {}  # "globenewswire": count, "finnhub": count
 TRADING_ACTIVITY_STATS: Dict[str, Any] = {
     "signals_generated": 0,
     "trades_executed": 0,
@@ -262,6 +263,29 @@ class HeartbeatAccumulator:
         ).total_seconds()
         return elapsed >= (interval_minutes * 60)
 
+    def _format_avg_alerts(self) -> str:
+        """Format average alerts per cycle with appropriate precision.
+
+        Uses 2 decimal places for low values to avoid showing 0.0 when
+        there are actual alerts. Falls back to 1 decimal for larger values.
+        """
+        if self.cycles_completed == 0:
+            return "0.0"
+
+        avg = self.total_alerts / self.cycles_completed
+
+        if avg == 0:
+            return "0.0"
+        elif avg < 0.1:
+            # Low value - use 2 decimal places to show actual value
+            return f"{avg:.2f}"
+        elif avg < 1:
+            # Medium value - use 1 decimal place
+            return f"{avg:.1f}"
+        else:
+            # High value - use 1 decimal place
+            return f"{avg:.1f}"
+
     def get_stats(self) -> dict:
         """Get cumulative stats for heartbeat message."""
         elapsed_min = (
@@ -273,9 +297,7 @@ class HeartbeatAccumulator:
             "total_errors": self.total_errors,
             "cycles_completed": self.cycles_completed,
             "elapsed_minutes": round(elapsed_min, 1),
-            "avg_alerts_per_cycle": round(
-                self.total_alerts / max(self.cycles_completed, 1), 1
-            ),
+            "avg_alerts_per_cycle": self._format_avg_alerts(),
         }
 
 
@@ -631,10 +653,10 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
     Get feed activity summary from global FEED_SOURCE_STATS.
 
     Returns:
-        Dictionary with rss_count, sec_count, social_count, sec_breakdown
+        Dictionary with rss_count, sec_count, social_count, sec_breakdown, rss_breakdown
     """
     try:
-        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES, RSS_SOURCE_BY_NAME
 
         rss_count = FEED_SOURCE_STATS.get("rss", 0)
         sec_count = FEED_SOURCE_STATS.get("sec", 0)
@@ -657,11 +679,31 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
         else:
             sec_breakdown = "—"
 
+        # Format RSS source breakdown (top 5 by count)
+        if RSS_SOURCE_BY_NAME:
+            # Sort by count descending, take top 5
+            sorted_sources = sorted(
+                RSS_SOURCE_BY_NAME.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:5]
+            # Format source names nicely (remove underscores, title case)
+            rss_parts = []
+            for src, count in sorted_sources:
+                # Clean up source name for display
+                display_name = src.replace("_", " ").replace("public", "").strip()
+                display_name = display_name.title() if display_name else src
+                rss_parts.append(f"{display_name}: {count}")
+            rss_breakdown = ", ".join(rss_parts)
+        else:
+            rss_breakdown = "—"
+
         return {
             "rss_count": rss_count,
             "sec_count": sec_count,
             "social_count": social_count,
             "sec_breakdown": sec_breakdown,
+            "rss_breakdown": rss_breakdown,
         }
     except Exception:
         return {
@@ -669,6 +711,7 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
             "sec_count": 0,
             "social_count": 0,
             "sec_breakdown": "—",
+            "rss_breakdown": "—",
         }
 
 
@@ -737,13 +780,13 @@ def _get_error_summary() -> str:
 
 def _track_feed_source(source: str) -> None:
     """
-    Track feed source type and SEC filing type.
+    Track feed source type, SEC filing type, and individual RSS source names.
 
     Args:
         source: Source string (e.g., "sec_8k", "globenewswire_public", "twitter")
     """
     try:
-        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES, RSS_SOURCE_BY_NAME
 
         if not source:
             return
@@ -755,15 +798,19 @@ def _track_feed_source(source: str) -> None:
             FEED_SOURCE_STATS["sec"] = FEED_SOURCE_STATS.get("sec", 0) + 1
 
             # Extract filing type (e.g., "sec_8k" -> "8k")
-            filing_type = source_lower.replace("sec_", "")
+            filing_type = source_lower.replace("sec_", "").upper()
             if filing_type:
                 SEC_FILING_TYPES[filing_type] = SEC_FILING_TYPES.get(filing_type, 0) + 1
 
         elif any(social in source_lower for social in ["twitter", "reddit", "social"]):
             FEED_SOURCE_STATS["social"] = FEED_SOURCE_STATS.get("social", 0) + 1
+            # Also track individual social sources
+            RSS_SOURCE_BY_NAME[source_lower] = RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
         else:
             # Default to RSS/news
             FEED_SOURCE_STATS["rss"] = FEED_SOURCE_STATS.get("rss", 0) + 1
+            # Track individual RSS source names
+            RSS_SOURCE_BY_NAME[source_lower] = RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
 
     except Exception:
         pass  # Silent fail - tracking is non-critical
@@ -802,10 +849,11 @@ def _track_error(level: str, category: str, message: str) -> None:
 def _reset_cycle_tracking() -> None:
     """Reset feed source tracking at start of each cycle."""
     try:
-        global FEED_SOURCE_STATS, SEC_FILING_TYPES
+        global FEED_SOURCE_STATS, SEC_FILING_TYPES, RSS_SOURCE_BY_NAME
 
         FEED_SOURCE_STATS = {"rss": 0, "sec": 0, "social": 0}
         SEC_FILING_TYPES = {}
+        RSS_SOURCE_BY_NAME = {}
         # Note: ERROR_TRACKER persists across cycles
 
     except Exception:
@@ -1131,7 +1179,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 {
                     "name": "📰 Feed Activity (Last Hour)",
                     "value": (
-                        f"RSS Feeds: {feed_activity['rss_count']:,} items\n"
+                        f"RSS Feeds: {feed_activity['rss_count']:,} items "
+                        f"({feed_activity['rss_breakdown']})\n"
                         f"SEC Filings: {feed_activity['sec_count']} filings "
                         f"({feed_activity['sec_breakdown']})\n"
                         f"Twitter/Social: {feed_activity['social_count']:,} posts"
