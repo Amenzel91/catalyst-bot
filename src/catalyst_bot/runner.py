@@ -683,9 +683,7 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
         if RSS_SOURCE_BY_NAME:
             # Sort by count descending, take top 5
             sorted_sources = sorted(
-                RSS_SOURCE_BY_NAME.items(),
-                key=lambda x: x[1],
-                reverse=True
+                RSS_SOURCE_BY_NAME.items(), key=lambda x: x[1], reverse=True
             )[:5]
             # Format source names nicely (remove underscores, title case)
             rss_parts = []
@@ -805,12 +803,16 @@ def _track_feed_source(source: str) -> None:
         elif any(social in source_lower for social in ["twitter", "reddit", "social"]):
             FEED_SOURCE_STATS["social"] = FEED_SOURCE_STATS.get("social", 0) + 1
             # Also track individual social sources
-            RSS_SOURCE_BY_NAME[source_lower] = RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
+            RSS_SOURCE_BY_NAME[source_lower] = (
+                RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
+            )
         else:
             # Default to RSS/news
             FEED_SOURCE_STATS["rss"] = FEED_SOURCE_STATS.get("rss", 0) + 1
             # Track individual RSS source names
-            RSS_SOURCE_BY_NAME[source_lower] = RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
+            RSS_SOURCE_BY_NAME[source_lower] = (
+                RSS_SOURCE_BY_NAME.get(source_lower, 0) + 1
+            )
 
     except Exception:
         pass  # Silent fail - tracking is non-critical
@@ -1799,9 +1801,6 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         market hours detection is enabled, features will be gated based on
         market status.
     """
-    # Enhanced Admin Heartbeat: Reset feed source tracking for this cycle
-    _reset_cycle_tracking()
-
     # Initialize seen store for this cycle (fixed: check-only, mark after success)
     seen_store = None
     try:
@@ -4419,6 +4418,8 @@ def runner_main(
                 # Send heartbeat with cumulative stats instead of just last cycle
                 _send_heartbeat(log, settings, reason="interval")
                 _heartbeat_acc.reset()
+                # Reset feed source tracking after heartbeat reads the accumulated stats
+                _reset_cycle_tracking()
         except Exception as e:
             log.debug("heartbeat_check_failed err=%s", e.__class__.__name__)
 
@@ -4438,6 +4439,8 @@ def runner_main(
     # when shutting down after a scheduled end‑of‑day analyzer run.
     try:
         _send_heartbeat(log, settings, reason="endday")
+        # Reset feed source tracking after final heartbeat
+        _reset_cycle_tracking()
     except Exception:
         pass
 
