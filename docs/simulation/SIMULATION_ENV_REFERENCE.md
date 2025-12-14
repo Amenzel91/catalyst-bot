@@ -20,11 +20,11 @@ python -m catalyst_bot.simulation.cli --preset full --speed 0
 
 | Preset | Time (EST) | Use Case |
 |--------|------------|----------|
-| `morning` | 8:45-9:45 | News rush, high activity (default) |
-| `sec` | 3:30-4:30 | SEC filing window |
-| `open` | 9:30-10:30 | Market open hour |
-| `close` | 3:00-4:00 | Market close hour |
-| `full` | 4:00am-5:00pm | Full trading day |
+| `morning` | 8:45-9:45am | News rush, high activity (default) |
+| `sec` | 3:30-4:30pm | SEC filing window |
+| `open` | 9:30-10:30am | Market open hour |
+| `close` | 3:00-4:00pm | Market close hour |
+| `full` | 5:00am-6:00pm | Full trading day |
 
 ---
 

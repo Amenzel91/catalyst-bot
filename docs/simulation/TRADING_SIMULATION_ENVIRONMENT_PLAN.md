@@ -132,8 +132,8 @@ class SimulationClock:
 
     Usage:
         clock = SimulationClock(
-            start_time=datetime(2025, 1, 15, 4, 0, tzinfo=timezone.utc),  # 4am UTC = premarket
-            speed_multiplier=10.0  # 10x speed
+            start_time=datetime(2024, 11, 12, 13, 45, tzinfo=timezone.utc),  # 8:45 EST
+            speed_multiplier=6.0  # 6x speed (default)
         )
 
         # Get current virtual time
@@ -143,7 +143,7 @@ class SimulationClock:
         clock.sleep(30)  # 30 virtual seconds
 
         # Jump to specific time
-        clock.jump_to(datetime(2025, 1, 15, 14, 30, tzinfo=timezone.utc))  # Jump to 9:30 ET
+        clock.jump_to(datetime(2024, 11, 12, 14, 30, tzinfo=timezone.utc))  # Jump to 9:30 ET
     """
 
     def __init__(
@@ -490,6 +490,19 @@ SIMULATION_SLIPPAGE_PCT=0.5
 
 # Maximum percentage of daily volume per trade
 SIMULATION_MAX_VOLUME_PCT=5.0
+
+# ============================================================================
+# ERROR HANDLING
+# ============================================================================
+
+# Maximum CRITICAL errors before abort (0 = unlimited)
+SIMULATION_MAX_CRITICAL_ERRORS=10
+
+# Retry attempts for transient failures
+SIMULATION_RETRY_ATTEMPTS=1
+
+# Minimum data completeness ratio (abort if below)
+SIMULATION_MIN_DATA_COMPLETENESS=0.5
 ```
 
 ### 1.4 Configuration Class Updates
@@ -562,6 +575,12 @@ class SimulationConfig:
 
     # Warning thresholds (default to production values)
     skip_incomplete_data: bool = True  # Skip tickers with missing data
+    use_cache: bool = True  # Use cached data (--no-cache sets to False)
+
+    # Error handling
+    max_critical_errors: int = 10  # Abort after N critical errors (0 = unlimited)
+    retry_attempts: int = 1  # Retry transient failures
+    min_data_completeness: float = 0.5  # Minimum data ratio before abort
 
     @classmethod
     def from_env(cls) -> "SimulationConfig":
@@ -589,6 +608,9 @@ class SimulationConfig:
             slippage_pct=float(os.getenv("SIMULATION_SLIPPAGE_PCT", "0.5")),
             max_volume_pct=float(os.getenv("SIMULATION_MAX_VOLUME_PCT", "5.0")),
             skip_incomplete_data=_b("SIMULATION_SKIP_INCOMPLETE", True),
+            max_critical_errors=int(os.getenv("SIMULATION_MAX_CRITICAL_ERRORS", "10")),
+            retry_attempts=int(os.getenv("SIMULATION_RETRY_ATTEMPTS", "1")),
+            min_data_completeness=float(os.getenv("SIMULATION_MIN_DATA_COMPLETENESS", "0.5")),
         )
 
     def apply_preset(self) -> None:
@@ -1161,6 +1183,26 @@ class EventReplayer:
         self.queue = EventQueue()
         self._handlers: Dict[EventType, List[Callable]] = {et: [] for et in EventType}
 
+    def _parse_timestamp(self, ts: Any) -> Optional[datetime]:
+        """
+        Safely parse timestamp from various formats.
+
+        Handles: ISO format (with/without Z), Unix timestamp (int/float).
+        Returns None if parsing fails (logs warning).
+        """
+        if ts is None:
+            return None
+        try:
+            if isinstance(ts, datetime):
+                return ts
+            if isinstance(ts, (int, float)):
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            if isinstance(ts, str):
+                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except (ValueError, TypeError) as e:
+            log.warning(f"Failed to parse timestamp '{ts}': {e}")
+        return None
+
     def load_historical_data(self, data: Dict[str, Any]) -> None:
         """
         Load historical data package and queue all events.
@@ -1168,9 +1210,14 @@ class EventReplayer:
         Args:
             data: Output from HistoricalDataFetcher.fetch_day()
         """
+        skipped = 0
+
         # Queue news items
         for item in data.get("news_items", []):
-            timestamp = datetime.fromisoformat(item["timestamp"].replace("Z", "+00:00"))
+            timestamp = self._parse_timestamp(item.get("timestamp"))
+            if not timestamp:
+                skipped += 1
+                continue
             self.queue.push(SimulationEvent.news_item(
                 timestamp=timestamp,
                 title=item.get("title", ""),
@@ -1183,7 +1230,10 @@ class EventReplayer:
 
         # Queue SEC filings
         for filing in data.get("sec_filings", []):
-            timestamp = datetime.fromisoformat(filing["timestamp"].replace("Z", "+00:00"))
+            timestamp = self._parse_timestamp(filing.get("timestamp"))
+            if not timestamp:
+                skipped += 1
+                continue
             self.queue.push(SimulationEvent.sec_filing(
                 timestamp=timestamp,
                 ticker=filing.get("ticker", ""),
@@ -1195,18 +1245,21 @@ class EventReplayer:
         for ticker, bars in data.get("price_bars", {}).items():
             for i, bar in enumerate(bars):
                 if i % 5 == 0:  # Every 5th bar (5-minute intervals)
-                    timestamp = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
+                    timestamp = self._parse_timestamp(bar.get("timestamp"))
+                    if not timestamp:
+                        skipped += 1
+                        continue
                     self.queue.push(SimulationEvent.price_update(
                         timestamp=timestamp,
                         ticker=ticker,
-                        price=bar["close"],
-                        volume=bar["volume"],
-                        open=bar["open"],
-                        high=bar["high"],
-                        low=bar["low"]
+                        price=bar.get("close", 0),
+                        volume=bar.get("volume", 0),
+                        open=bar.get("open", 0),
+                        high=bar.get("high", 0),
+                        low=bar.get("low", 0)
                     ))
 
-        log.info(f"Loaded {len(self.queue)} events into replay queue")
+        log.info(f"Loaded {len(self.queue)} events (skipped {skipped} with invalid timestamps)")
 
     def register_handler(self, event_type: EventType, handler: Callable) -> None:
         """Register a handler for a specific event type."""
@@ -1980,10 +2033,11 @@ class SimulationController:
         controller = SimulationController.from_config()
         await controller.run()
 
-        # Programmatic
+        # Programmatic with preset
         controller = SimulationController(
-            simulation_date="2025-01-15",
-            speed_multiplier=10.0
+            simulation_date="2024-11-12",
+            time_preset="morning",
+            speed_multiplier=6.0
         )
         await controller.run()
     """
@@ -1992,7 +2046,8 @@ class SimulationController:
         self,
         config: Optional[SimulationConfig] = None,
         simulation_date: Optional[str] = None,
-        speed_multiplier: float = 10.0,
+        speed_multiplier: float = 6.0,
+        time_preset: Optional[str] = None,
         start_time_cst: Optional[str] = None,
         end_time_cst: Optional[str] = None
     ):
@@ -2001,15 +2056,24 @@ class SimulationController:
         # Override config with explicit parameters
         if simulation_date:
             self.config.simulation_date = simulation_date
-        if speed_multiplier:
+        if speed_multiplier != 6.0:  # Only override if explicitly changed
             self.config.speed_multiplier = speed_multiplier
+        if time_preset:
+            self.config.time_preset = time_preset
         if start_time_cst:
             self.config.start_time_cst = start_time_cst
         if end_time_cst:
             self.config.end_time_cst = end_time_cst
 
+        # Apply time preset if specified (sets start/end times)
+        self.config.apply_preset()
+
         # Generate run ID
         self.run_id = self.config.generate_run_id()
+
+        # Error tracking
+        self._critical_error_count = 0
+        self._max_critical_errors = int(os.getenv("SIMULATION_MAX_CRITICAL_ERRORS", "10"))
 
         # Components (initialized in setup)
         self.clock: Optional[SimulationClock] = None
@@ -2096,6 +2160,96 @@ class SimulationController:
         self._register_event_handlers()
 
         log.info("Simulation setup complete")
+
+    async def validate(self) -> bool:
+        """
+        Pre-flight validation checks (used by --dry-run).
+
+        Verifies:
+        - API connectivity (Tiingo, Finnhub, Gemini)
+        - Discord webhook accessibility
+        - Cache/log directory writability
+        - Historical data availability for target date
+
+        Returns:
+            True if all checks pass
+
+        Raises:
+            SimulationSetupError: If any check fails
+        """
+        checks = []
+        failed = []
+
+        # Check Tiingo API
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.tiingo.com/api/test",
+                    headers={"Authorization": f"Token {os.getenv('TIINGO_API_KEY')}"},
+                    timeout=10
+                ) as resp:
+                    if resp.status == 200:
+                        checks.append(("Tiingo API", True))
+                    else:
+                        failed.append(f"Tiingo API: HTTP {resp.status}")
+        except Exception as e:
+            failed.append(f"Tiingo API: {e}")
+
+        # Check Finnhub API
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={os.getenv('FINNHUB_API_KEY')}",
+                    timeout=10
+                ) as resp:
+                    if resp.status == 200:
+                        checks.append(("Finnhub API", True))
+                    else:
+                        failed.append(f"Finnhub API: HTTP {resp.status}")
+        except Exception as e:
+            failed.append(f"Finnhub API: {e}")
+
+        # Check cache directory
+        cache_dir = self.config.cache_dir
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            test_file = cache_dir / ".write_test"
+            test_file.write_text("test")
+            test_file.unlink()
+            checks.append(("Cache directory", True))
+        except Exception as e:
+            failed.append(f"Cache directory: {e}")
+
+        # Check log directory
+        log_dir = self.config.log_dir
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            test_file = log_dir / ".write_test"
+            test_file.write_text("test")
+            test_file.unlink()
+            checks.append(("Log directory", True))
+        except Exception as e:
+            failed.append(f"Log directory: {e}")
+
+        # Check Discord webhook (if enabled)
+        if self.config.alert_output == "discord_test":
+            webhook_url = os.getenv("DISCORD_TEST_WEBHOOK_URL")
+            if not webhook_url:
+                failed.append("Discord: DISCORD_TEST_WEBHOOK_URL not set")
+            else:
+                checks.append(("Discord webhook", True))
+
+        # Log results
+        log.info(f"Pre-flight checks: {len(checks)} passed, {len(failed)} failed")
+        for name, _ in checks:
+            log.info(f"  ✓ {name}")
+        for failure in failed:
+            log.error(f"  ✗ {failure}")
+
+        if failed:
+            raise SimulationSetupError(f"Pre-flight checks failed: {failed}")
+
+        return True
 
     def _register_event_handlers(self) -> None:
         """Register handlers for different event types."""
@@ -2276,7 +2430,7 @@ Presets:
     sec       3:30-4:30 EST  SEC filing window
     open      9:30-10:30 EST Market open hour
     close     3:00-4:00 EST  Market close hour
-    full      4:00am-5:00pm  Full trading day
+    full      5:00am-6:00pm EST  Full trading day
 
 Examples:
     # Quick morning test (default)
@@ -2907,37 +3061,226 @@ async def test_new_feature():
 
 ---
 
-## Implementation Priority
+## Implementation Phases
 
-### Phase 1: Core Infrastructure (MVP)
-1. SimulationClock and clock_provider
-2. SimulationConfig with .env flags + TIME_PRESETS
-3. Pre-flight health check
-4. CLI entry point with preset support
+### Phase Dependency Diagram
+
+```
+Phase 1 (Clock & Config)
+         ↓
+Phase 1.5 (Test Infrastructure)
+         ↓
+Phase 2 (Data Layer) ←──────────────────┐
+         ↓                              │
+Phase 3 (Event & Execution) ────────────┤
+         ↓                              │
+Phase 4 (Output & Logging)              │
+         ↓                              │
+Phase 5 (Integration) ──────────────────┘
+         ↓
+Phase 6 (Testing & Validation)
+```
+
+---
+
+### Phase 1: Core Infrastructure
+
+**Goal:** Establish foundational clock system and configuration.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-001 | `simulation/clock.py` | SimulationClock class with time acceleration |
+| SIM-002 | `simulation/clock_provider.py` | Global clock provider (replaces datetime.now/time.sleep) |
+| SIM-003 | `simulation/config.py` | SimulationConfig dataclass + TIME_PRESETS |
+| SIM-004 | `simulation/__init__.py` | Package exports |
+
+**Definition of Done:**
+- [ ] `SimulationClock.now()` returns correct virtual time at all speeds (1x, 6x, 60x, 0)
+- [ ] `SimulationClock.sleep()` respects speed multiplier
+- [ ] `jump_to()` and `jump_to_time_cst()` work correctly
+- [ ] `clock_provider.now()` works in both real and simulation modes
+- [ ] `clock_provider.sleep()` works in both modes
+- [ ] Config loads all env vars correctly
+- [ ] Time presets apply correctly (morning, sec, open, close, full)
+- [ ] Unit tests pass: `pytest tests/simulation/test_clock.py`
+
+**Test Command:** `pytest tests/simulation/test_clock.py tests/simulation/test_config.py -v`
+
+---
+
+### Phase 1.5: Test Infrastructure
+
+**Goal:** Create test fixtures and testing framework for simulation.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-005 | `tests/simulation/__init__.py` | Test package |
+| SIM-006 | `tests/simulation/conftest.py` | Pytest fixtures (mock clock, sample data) |
+| SIM-007 | `tests/simulation/fixtures/` | Test data directory |
+| SIM-008 | `tests/simulation/fixtures/sample_prices.json` | Sample price bars for testing |
+| SIM-009 | `tests/simulation/fixtures/sample_news.json` | Sample news items for testing |
+| SIM-010 | `tests/simulation/fixtures/sample_sec.json` | Sample SEC filings for testing |
+
+**Definition of Done:**
+- [ ] Pytest fixtures provide mock SimulationClock
+- [ ] Sample data files contain realistic test data
+- [ ] Fixtures can be loaded in any test
+- [ ] `pytest tests/simulation/ --collect-only` shows all tests
+- [ ] Test isolation verified (no cross-test pollution)
+
+**Test Command:** `pytest tests/simulation/ --collect-only`
+
+---
 
 ### Phase 2: Data Layer
-1. HistoricalDataFetcher (Tiingo prices, Finnhub news)
-2. MockMarketDataFeed
-3. MockFeedProvider
-4. Data caching system
 
-### Phase 3: Execution Layer
-1. MockBroker with adaptive slippage
-2. EventQueue and EventReplayer
-3. SimulationController
-4. Position monitoring (matching production)
+**Goal:** Fetch and cache historical data for replay.
 
-### Phase 4: Output & Integration
-1. SimulationLogger (JSONL + Markdown)
-2. Integration with runner.py
-3. Alert routing (test channels)
-4. Output marking (simulation_run_id)
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-011 | `simulation/data_fetcher.py` | HistoricalDataFetcher class |
+| SIM-012 | `simulation/mock_market_data.py` | MockMarketDataFeed (returns prices by sim time) |
+| SIM-013 | `simulation/mock_feeds.py` | MockFeedProvider (returns news/SEC by sim time) |
+| SIM-014 | `tests/simulation/test_data_fetcher.py` | Data fetcher tests |
+| SIM-015 | `tests/simulation/test_mock_feeds.py` | Mock feed tests |
 
-### Phase 5: Polish
-1. SEC filing replay
-2. Mocked external sentiment APIs
-3. Error recovery and graceful degradation
-4. Additional test date scenarios
+**Definition of Done:**
+- [ ] `HistoricalDataFetcher.fetch_day()` returns prices, news, SEC filings
+- [ ] Data is cached to disk (JSON format)
+- [ ] Cache is used on subsequent runs (unless `--no-cache`)
+- [ ] `MockMarketDataFeed.get_price()` returns correct price for sim time
+- [ ] `MockFeedProvider.get_new_items()` returns items up to sim time
+- [ ] Missing data handled gracefully (skip with WARNING)
+- [ ] Data completeness check works (abort if < 50%)
+- [ ] Unit tests pass: `pytest tests/simulation/test_data*.py`
+
+**Test Command:** `pytest tests/simulation/test_data_fetcher.py tests/simulation/test_mock_feeds.py -v`
+
+---
+
+### Phase 3: Event & Execution Layer
+
+**Goal:** Queue events and execute simulated trades.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-016 | `simulation/event_queue.py` | EventQueue and SimulationEvent classes |
+| SIM-017 | `simulation/event_replayer.py` | EventReplayer (or merge into event_queue.py) |
+| SIM-018 | `simulation/mock_broker.py` | MockBroker with slippage models |
+| SIM-019 | `tests/simulation/test_event_queue.py` | Event queue tests |
+| SIM-020 | `tests/simulation/test_mock_broker.py` | Broker tests |
+
+**Definition of Done:**
+- [ ] EventQueue maintains chronological order
+- [ ] Events processed at correct simulation times
+- [ ] MockBroker processes orders with correct slippage
+- [ ] Position tracking matches production behavior
+- [ ] Stop loss / take profit triggers work
+- [ ] Order rejection works (insufficient funds, etc.)
+- [ ] 1000+ events processed without issues
+- [ ] Unit tests pass: `pytest tests/simulation/test_event*.py tests/simulation/test_mock_broker.py`
+
+**Test Command:** `pytest tests/simulation/test_event_queue.py tests/simulation/test_mock_broker.py -v`
+
+---
+
+### Phase 4: Output & Logging
+
+**Goal:** Create comprehensive logging and reporting.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-021 | `simulation/logger.py` | SimulationLogger (JSONL + Markdown) |
+| SIM-022 | `simulation/controller.py` | SimulationController orchestration |
+| SIM-023 | `simulation/cli.py` | CLI entry point |
+| SIM-024 | `tests/simulation/test_logger.py` | Logger tests |
+| SIM-025 | `tests/simulation/test_controller.py` | Controller tests |
+| SIM-026 | `tests/simulation/test_cli.py` | CLI tests |
+
+**Definition of Done:**
+- [ ] JSONL file written with all events
+- [ ] Markdown report generated with summary
+- [ ] Severity levels (CRITICAL, WARNING, NOTICE) work
+- [ ] SimulationController orchestrates all components
+- [ ] CLI parses all arguments correctly
+- [ ] `--dry-run` validates without running
+- [ ] `--no-cache` forces fresh data
+- [ ] All presets work from CLI
+- [ ] Unit tests pass: `pytest tests/simulation/test_logger.py tests/simulation/test_controller.py tests/simulation/test_cli.py`
+
+**Test Command:** `pytest tests/simulation/test_logger.py tests/simulation/test_controller.py tests/simulation/test_cli.py -v`
+
+---
+
+### Phase 5: Integration
+
+**Goal:** Integrate simulation with existing bot code.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-027 | `runner.py` (modify) | Replace datetime/time with clock_provider |
+| SIM-028 | `trading/trading_engine.py` (modify) | Use mock broker in sim mode |
+| SIM-029 | `alerts.py` (modify) | Route to test Discord channels |
+| SIM-030 | `accepted_items_logger.py` (modify) | Add simulation_run_id |
+| SIM-031 | `rejected_items_logger.py` (modify) | Add simulation_run_id |
+| SIM-032 | Various files (modify) | Clock integration (12 files) |
+| SIM-033 | `tests/simulation/test_integration.py` | Integration tests |
+
+**Definition of Done:**
+- [ ] All 12 clock integration files updated
+- [ ] All 7 Discord routing files updated
+- [ ] All 6 data marking files updated
+- [ ] `SIMULATION_MODE=1` activates simulation in runner.py
+- [ ] No live API calls made during simulation
+- [ ] Alerts route to test channels
+- [ ] All output has simulation_run_id
+- [ ] Integration tests pass
+
+**Test Command:** `pytest tests/simulation/test_integration.py -v`
+
+---
+
+### Phase 6: Testing & Validation
+
+**Goal:** End-to-end validation and documentation.
+
+**Deliverables:**
+| Ticket | File | Description |
+|--------|------|-------------|
+| SIM-034 | `tests/simulation/test_e2e.py` | End-to-end simulation test |
+| SIM-035 | `docs/simulation/VALIDATION_CHECKLIST.md` | Manual validation checklist |
+| SIM-036 | `.env.example` (update) | Add all SIMULATION_* vars |
+
+**Definition of Done:**
+- [ ] Full simulation runs without errors
+- [ ] Output matches expected (alerts fire, trades execute)
+- [ ] No production data modified
+- [ ] Documentation complete
+- [ ] Manual validation checklist passed
+- [ ] Ready for deployment
+
+**Test Command:** `pytest tests/simulation/ -v && python -m catalyst_bot.simulation.cli --dry-run`
+
+---
+
+## Implementation Tickets Summary
+
+| Phase | Tickets | Est. Files | Dependencies |
+|-------|---------|------------|--------------|
+| 1 | SIM-001 to SIM-004 | 4 | None |
+| 1.5 | SIM-005 to SIM-010 | 6 | Phase 1 |
+| 2 | SIM-011 to SIM-015 | 5 | Phase 1 |
+| 3 | SIM-016 to SIM-020 | 5 | Phases 1, 2 |
+| 4 | SIM-021 to SIM-026 | 6 | Phases 1-3 |
+| 5 | SIM-027 to SIM-033 | 20+ | Phases 1-4 |
+| 6 | SIM-034 to SIM-036 | 3 | All phases |
+| **Total** | **36 tickets** | **~50 files** | |
 
 ---
 
