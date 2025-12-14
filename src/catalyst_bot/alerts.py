@@ -1499,6 +1499,17 @@ def send_alert_safe(*args, **kwargs) -> bool:
                                 str(trade_err),
                                 exc_info=True,
                             )
+                            # Track trading errors for heartbeat visibility
+                            try:
+                                from .runner import _record_and_track_error
+
+                                _record_and_track_error(
+                                    "error",
+                                    "Trading",
+                                    f"Trade execution failed for {ticker}: {str(trade_err)[:60]}",
+                                )
+                            except Exception:
+                                pass
 
                 except Exception as feedback_err:
                     # Don't fail the alert if feedback recording fails

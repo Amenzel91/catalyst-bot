@@ -723,7 +723,16 @@ def _get_error_summary() -> str:
     try:
         global ERROR_TRACKER
 
-        if not ERROR_TRACKER:
+        # Get hourly error count from health_monitor
+        hourly_count = 0
+        try:
+            from .health_monitor import get_error_count
+
+            hourly_count = get_error_count()
+        except Exception:
+            pass
+
+        if not ERROR_TRACKER and hourly_count == 0:
             return "No errors or warnings"
 
         # Group errors by category
@@ -747,6 +756,11 @@ def _get_error_summary() -> str:
 
         # Format output with emojis
         lines = []
+
+        # Add hourly summary if we have errors
+        if hourly_count > 0:
+            lines.append(f"📊 {hourly_count} errors in last hour")
+
         for category, counts in sorted(error_groups.items()):
             total_errors = counts["error"]
             total_warnings = counts["warning"]
@@ -768,7 +782,7 @@ def _get_error_summary() -> str:
             sample = counts["sample"]
             line = f"{emoji} {category}: {display_count} {level_text}"
             if sample:
-                line += f" ({sample})"
+                line += f"\n   └─ {sample}"
             lines.append(line)
 
         return "\n".join(lines) if lines else "No errors or warnings"
@@ -846,6 +860,54 @@ def _track_error(level: str, category: str, message: str) -> None:
 
     except Exception:
         pass  # Silent fail - error tracking shouldn't cause errors
+
+
+def _record_and_track_error(
+    level: str,
+    category: str,
+    message: str,
+    log_func=None,
+    log_message: str = None,
+) -> None:
+    """
+    Track error in both ERROR_TRACKER and health_monitor.
+
+    This is a convenience wrapper that:
+    1. Calls _track_error() for heartbeat display
+    2. Calls health_monitor.record_error() for hourly counts
+    3. Optionally logs the error
+
+    Args:
+        level: "error", "warning", or "info"
+        category: Error category (e.g., "API", "LLM", "Database", "Feed", "Discord")
+        message: Error message (will be truncated to 100 chars)
+        log_func: Optional logging function (e.g., log.error, log.warning)
+        log_message: Optional message to log (if different from message)
+
+    Example:
+        _record_and_track_error(
+            "error", "Feed", f"Feed fetch failed: {e}",
+            log_func=log.error, log_message=f"feed_fetch_failed error={e}"
+        )
+    """
+    # Track in ERROR_TRACKER for heartbeat display
+    _track_error(level, category, message[:100] if message else "Unknown error")
+
+    # Track in health_monitor for hourly counts
+    if level == "error":
+        try:
+            from .health_monitor import record_error
+
+            record_error()
+        except Exception:
+            pass
+
+    # Optionally log
+    if log_func and log_message:
+        try:
+            log_func(log_message)
+        except Exception:
+            pass
 
 
 def _reset_cycle_tracking() -> None:
@@ -1818,7 +1880,13 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
 
     # Ingest + dedupe
     # Pass seen_store to enable SEC filing pre-filtering before LLM enrichment
-    items = feeds.fetch_pr_feeds(seen_store=seen_store)
+    try:
+        items = feeds.fetch_pr_feeds(seen_store=seen_store)
+    except Exception as e:
+        log.error("feed_fetch_failed error=%s", str(e))
+        _record_and_track_error("error", "Feed", f"Feed fetch failed: {str(e)}")
+        items = []
+
     deduped = feeds.dedupe(items)
 
     # ------------------------------------------------------------------
@@ -2042,6 +2110,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             log.warning(
                 "batch_price_fetch_failed err=%s falling_back_to_sequential",
                 e.__class__.__name__,
+            )
+            _record_and_track_error(
+                "warning", "API", f"Batch price fetch failed: {str(e)[:80]}"
             )
             price_cache = {}
 
@@ -2990,6 +3061,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 ),
                 exc_info=True,
             )
+            _record_and_track_error(
+                "error",
+                "Classification",
+                f"Classify failed for {ticker}: {str(err)[:80]}",
+            )
             try:
                 scored = _fallback_classify(
                     title=it.get("title", "") or it.get("summary", ""),
@@ -3264,6 +3340,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     req_err.__class__.__name__,
                     exc_info=True,
                 )
+                _record_and_track_error(
+                    "error",
+                    "Discord",
+                    f"Alert network error for {ticker}: {str(req_err)[:60]}",
+                )
                 ok = False
             except (AttributeError, KeyError, ValueError) as data_err:
                 # CRITICAL FIX: Handle data-related errors
@@ -3274,6 +3355,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     str(data_err),
                     data_err.__class__.__name__,
                     exc_info=True,
+                )
+                _record_and_track_error(
+                    "error",
+                    "Discord",
+                    f"Alert data error for {ticker}: {str(data_err)[:60]}",
                 )
                 ok = False
         except (
@@ -3290,6 +3376,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 req_err.__class__.__name__,
                 exc_info=True,
             )
+            _record_and_track_error(
+                "error",
+                "Discord",
+                f"Alert network error for {ticker}: {str(req_err)[:60]}",
+            )
             ok = False
         except (AttributeError, KeyError, ValueError) as data_err:
             # CRITICAL FIX: Handle data-related errors
@@ -3300,6 +3391,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 str(data_err),
                 data_err.__class__.__name__,
                 exc_info=True,
+            )
+            _record_and_track_error(
+                "error",
+                "Discord",
+                f"Alert data error for {ticker}: {str(data_err)[:60]}",
             )
             ok = False
 
@@ -4374,7 +4470,13 @@ def runner_main(
                 continue
 
         t0 = time.time()
-        _cycle(log, settings, market_info=current_market_info)
+        try:
+            _cycle(log, settings, market_info=current_market_info)
+        except Exception as e:
+            log.error("cycle_error error=%s", str(e), exc_info=True)
+            _record_and_track_error(
+                "error", "Cycle", f"Main cycle error: {str(e)[:80]}"
+            )
         cycle_time = time.time() - t0
         log.info("CYCLE_DONE took=%.2fs", cycle_time)
 
