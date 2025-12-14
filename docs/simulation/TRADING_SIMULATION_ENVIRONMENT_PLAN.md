@@ -2346,6 +2346,19 @@ Examples:
     )
 
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate config and check APIs without running simulation"
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        dest="no_cache",
+        help="Force fresh data fetch, ignore cached historical data"
+    )
+
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
@@ -2373,6 +2386,14 @@ async def run_simulation(args: argparse.Namespace) -> int:
         "local": "local_only",
         "disabled": "disabled"
     }.get(args.alerts, "discord_test")
+    controller.config.use_cache = not args.no_cache
+
+    # Dry run mode - validate and exit
+    if args.dry_run:
+        print("Dry run mode - validating configuration...")
+        await controller.validate()
+        print("Configuration valid. Ready to run.")
+        return 0
 
     try:
         # Run simulation
@@ -2721,17 +2742,66 @@ if is_simulation_mode():
     event["is_simulation"] = True
 ```
 
-### 6.2 Files to Modify
+### 6.2 Files to Modify (Comprehensive List)
+
+**Priority 1: Core Clock Integration** (Replace `datetime.now()` and `time.sleep()`)
 
 | File | Changes Required |
 |------|-----------------|
-| `runner.py` | Replace time functions with clock_provider |
-| `market.py` | Add simulation mode check, use mock data |
-| `feeds.py` | Add simulation mode check, use mock feeds |
-| `trading_engine.py` | Use mock broker in simulation mode |
-| `alerts.py` | Route to test channel or log in simulation |
-| `accepted_items_logger.py` | Add simulation_run_id to records |
-| `rejected_items_logger.py` | Add simulation_run_id to records |
+| `runner.py` | Replace time functions with clock_provider throughout main loop |
+| `trading/trading_engine.py` | Clock for circuit breaker timing, position updates, signal IDs |
+| `trading/market_data.py` | Clock for cache TTL calculations, age checks |
+| `broker/alpaca_client.py` | Clock for retry delays and exponential backoff |
+| `execution/order_executor.py` | Clock for order fill polling, retry waits |
+| `paper_trader.py` | Clock for order monitoring intervals |
+| `finnhub_client.py` | Clock for rate limiting |
+| `sec_document_fetcher.py` | Clock for SEC API rate limiting |
+| `feeds.py` | Clock for feed polling rate limiting |
+| `sec_monitor.py` | Clock for SEC polling intervals |
+| `llm_stability.py` | Clock for LLM rate limiting |
+| `historical_bootstrapper.py` | Clock for API rate limiting |
+
+**Priority 2: API Mocking** (Use mock components in simulation mode)
+
+| File | Changes Required |
+|------|-----------------|
+| `broker/alpaca_client.py` | Inject MockBroker (account, positions, orders) |
+| `market.py` | Inject MockMarketDataFeed (price data) |
+| `trading/market_data.py` | Use mock price feed instead of live APIs |
+| `finnhub_client.py` | Return mocked historical data |
+| `feeds.py` | Inject MockFeedProvider (news feeds) |
+| `sec_monitor.py` | Inject mock SEC filings |
+| `sec_document_fetcher.py` | Return cached document content |
+| `sentiment_sources.py` | Mock external APIs, keep local sentiment live |
+| `charts.py` | Skip chart generation when SIMULATION_CHARTS_ENABLED=0 |
+
+**Priority 3: Discord Routing** (Route alerts to test channels)
+
+| File | Changes Required |
+|------|-----------------|
+| `alerts.py` | Route to test webhook URL in simulation |
+| `trading/trading_engine.py` | Route position alerts to test channel |
+| `discord_transport.py` | Check simulation mode, swap webhook URLs |
+| `discord_upload.py` | Route embed uploads to test channel |
+| `moa_reporter.py` | Route MOA alerts to test channel |
+| `sec_filing_alerts.py` | Route SEC alerts to test channel |
+| `admin_reporter.py` | Route admin reports to test channel |
+
+**Priority 4: Data Marking** (Add simulation_run_id to all records)
+
+| File | Changes Required |
+|------|-----------------|
+| `accepted_items_logger.py` | Add simulation_run_id, is_simulation fields |
+| `rejected_items_logger.py` | Add simulation_run_id, is_simulation fields |
+| `execution/order_executor.py` | Mark order records with simulation_run_id |
+| `portfolio/position_manager.py` | Mark position records with simulation_run_id |
+| `feedback/price_tracker.py` | Mark price tracking records |
+| `feedback/database.py` | Add simulation_run_id column to schema |
+
+**Environment Variables to Route:**
+- `DISCORD_WEBHOOK_URL` → `DISCORD_TEST_WEBHOOK_URL` in simulation
+- `DISCORD_ADMIN_WEBHOOK` → `DISCORD_TEST_ADMIN_WEBHOOK` in simulation
+- `ALPACA_BASE_URL` → Not used (MockBroker handles everything)
 
 ---
 
@@ -2868,6 +2938,85 @@ async def test_new_feature():
 2. Mocked external sentiment APIs
 3. Error recovery and graceful degradation
 4. Additional test date scenarios
+
+---
+
+## Error Handling Strategy
+
+### Error Behavior
+
+| Scenario | Behavior |
+|----------|----------|
+| **Pre-flight: API unreachable** | Abort with clear error message before starting |
+| **Pre-flight: Missing API keys** | Abort with message listing missing keys |
+| **Data fetch: Ticker missing prices** | Skip ticker with WARNING, log reason, continue |
+| **Data fetch: No data for date** | Abort with message (date may be holiday/weekend) |
+| **Runtime: LLM call fails** | Retry once with backoff, then log error and continue |
+| **Runtime: Discord webhook fails** | Log WARNING, continue (non-critical) |
+| **Runtime: Mock broker error** | Log CRITICAL, continue processing |
+| **Runtime: Event handler exception** | Log CRITICAL, continue to next event |
+| **Runtime: 10+ CRITICAL errors** | Abort simulation, generate partial report |
+| **Simulation: Exceeds end time** | Graceful shutdown, generate complete report |
+| **User interrupt (Ctrl+C)** | Save state, generate partial report |
+| **Memory pressure** | Log WARNING, continue (Python GC handles) |
+| **Disk full (logs)** | Disable logging, continue simulation |
+
+### Error Thresholds (Configurable via .env)
+
+```ini
+# Maximum CRITICAL errors before abort (0 = unlimited)
+SIMULATION_MAX_CRITICAL_ERRORS=10
+
+# Retry attempts for transient failures
+SIMULATION_RETRY_ATTEMPTS=1
+
+# Minimum data completeness (abort if below)
+SIMULATION_MIN_DATA_COMPLETENESS=0.5
+```
+
+### Additional Failure Scenarios
+
+| Scenario | Detection | Recovery |
+|----------|-----------|----------|
+| **Clock drift** | Compare wall clock to sim clock | Reset sim clock anchor |
+| **Event queue empty early** | Check remaining events vs expected | Log WARNING, generate report |
+| **Price data gaps** | Missing timestamps in sequence | Interpolate or skip ticker |
+| **News timestamp mismatch** | News outside simulation window | Filter to window, log count |
+| **Cache corruption** | JSON parse failure | Delete cache, re-fetch with `--no-cache` |
+| **Database locked** | SQLite busy error | Retry with backoff, or skip write |
+| **Infinite loop detection** | Same event processed twice | Log CRITICAL, skip event |
+| **Memory leak** | Process memory > threshold | Log WARNING, suggest restart |
+
+### Pre-flight Health Check
+
+Run automatically before simulation starts (or manually with `--dry-run`):
+
+```python
+async def validate(self) -> bool:
+    """Pre-flight validation checks."""
+    checks = [
+        ("Tiingo API", self._check_tiingo()),
+        ("Finnhub API", self._check_finnhub()),
+        ("Gemini API", self._check_gemini()),
+        ("Discord webhook", self._check_discord()),
+        ("Cache directory", self._check_cache_dir()),
+        ("Log directory", self._check_log_dir()),
+        ("Historical data", self._check_historical_data()),
+    ]
+
+    failed = []
+    for name, check_coro in checks:
+        try:
+            if not await check_coro:
+                failed.append(name)
+        except Exception as e:
+            failed.append(f"{name}: {e}")
+
+    if failed:
+        raise SimulationSetupError(f"Pre-flight checks failed: {failed}")
+
+    return True
+```
 
 ---
 

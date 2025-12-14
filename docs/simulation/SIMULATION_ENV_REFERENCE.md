@@ -119,6 +119,8 @@ SIMULATION_MAX_VOLUME_PCT=5.0
 | `--end-time` | Custom end (HH:MM CST) | from preset |
 | `--cash` | Starting cash | 10000 |
 | `--alerts` | discord/local/disabled | discord |
+| `--dry-run` | Validate config, check APIs, don't run | False |
+| `--no-cache` | Force fresh data fetch | False |
 | `-v` | Verbose logging | False |
 
 ---
@@ -140,6 +142,12 @@ python -m catalyst_bot.simulation.cli --speed 0 --alerts local
 
 # Full day with verbose output
 python -m catalyst_bot.simulation.cli --preset full --speed 0 -v
+
+# Validate config without running (dry run)
+python -m catalyst_bot.simulation.cli --dry-run
+
+# Force fresh data (ignore cache)
+python -m catalyst_bot.simulation.cli --no-cache
 ```
 
 ---
