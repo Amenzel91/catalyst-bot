@@ -557,7 +557,8 @@ def _get_market_status_display() -> Dict[str, str]:
 
         market_info = get_market_info()
         status = market_info.get("status", "closed")
-        cycle_seconds = market_info.get("cycle_seconds", 180)
+        # Use actual SCAN_INTERVAL from environment instead of hardcoded default
+        cycle_seconds = int(os.getenv("SCAN_INTERVAL", "30"))
         is_holiday = market_info.get("is_holiday", False)
         is_weekend = market_info.get("is_weekend", False)
 
@@ -696,12 +697,24 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
         else:
             rss_breakdown = "—"
 
+        # Calculate dedup efficiency from TOTAL_STATS
+        global TOTAL_STATS
+        total_items = TOTAL_STATS.get("items", 0)
+        total_deduped = TOTAL_STATS.get("deduped", 0)
+
+        if total_items > 0:
+            dedup_pct = (total_deduped / total_items * 100)
+            dedup_display = f"{dedup_pct:.0f}%"
+        else:
+            dedup_display = "—"
+
         return {
             "rss_count": rss_count,
             "sec_count": sec_count,
             "social_count": social_count,
             "sec_breakdown": sec_breakdown,
             "rss_breakdown": rss_breakdown,
+            "dedup_efficiency": dedup_display,
         }
     except Exception:
         return {
@@ -710,7 +723,120 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
             "social_count": 0,
             "sec_breakdown": "—",
             "rss_breakdown": "—",
+            "dedup_efficiency": "—",
         }
+
+
+def _get_uptime_display() -> str:
+    """Get formatted uptime string.
+
+    Returns:
+        Human-readable uptime (e.g., "2d 5h" or "3h 45m")
+    """
+    try:
+        from .health_monitor import get_uptime
+
+        uptime_seconds = get_uptime()
+
+        if uptime_seconds < 60:
+            return f"{int(uptime_seconds)}s"
+        elif uptime_seconds < 3600:
+            minutes = int(uptime_seconds // 60)
+            seconds = int(uptime_seconds % 60)
+            return f"{minutes}m {seconds}s"
+        elif uptime_seconds < 86400:
+            hours = int(uptime_seconds // 3600)
+            minutes = int((uptime_seconds % 3600) // 60)
+            return f"{hours}h {minutes}m"
+        else:
+            days = int(uptime_seconds // 86400)
+            hours = int((uptime_seconds % 86400) // 3600)
+            return f"{days}d {hours}h"
+    except Exception:
+        return "—"
+
+
+def _get_system_resources() -> str:
+    """Get system resource usage.
+
+    Returns:
+        Formatted string with memory and CPU usage
+    """
+    try:
+        import os
+
+        lines = []
+
+        # Memory usage via /proc/self/status (Linux)
+        try:
+            with open("/proc/self/status", "r") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        # Resident memory in KB
+                        kb = int(line.split()[1])
+                        mb = kb / 1024
+                        emoji = "🟢" if mb < 500 else "🟡" if mb < 1000 else "🔴"
+                        lines.append(f"{emoji} Memory: {mb:.0f} MB")
+                        break
+        except Exception:
+            # Fallback: try psutil if available
+            try:
+                import psutil
+
+                process = psutil.Process(os.getpid())
+                mb = process.memory_info().rss / (1024 * 1024)
+                emoji = "🟢" if mb < 500 else "🟡" if mb < 1000 else "🔴"
+                lines.append(f"{emoji} Memory: {mb:.0f} MB")
+            except Exception:
+                pass
+
+        # CPU usage (requires psutil)
+        try:
+            import psutil
+
+            cpu_pct = psutil.Process(os.getpid()).cpu_percent(interval=0.1)
+            emoji = "🟢" if cpu_pct < 50 else "🟡" if cpu_pct < 80 else "🔴"
+            lines.append(f"{emoji} CPU: {cpu_pct:.0f}%")
+        except Exception:
+            pass
+
+        return "\n".join(lines) if lines else "—"
+    except Exception:
+        return "—"
+
+
+def _get_last_error_detail() -> str:
+    """Get details of the most recent error.
+
+    Returns:
+        Formatted string with last error info
+    """
+    try:
+        global ERROR_TRACKER
+
+        if not ERROR_TRACKER:
+            return "No recent errors"
+
+        # Get last error
+        last = ERROR_TRACKER[-1]
+        timestamp = last.get("timestamp", "")
+        level = last.get("level", "error")
+        category = last.get("category", "Unknown")
+        message = last.get("message", "")[:80]
+
+        # Format timestamp
+        try:
+            from datetime import datetime
+
+            dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            time_str = dt.strftime("%H:%M:%S")
+        except Exception:
+            time_str = "?"
+
+        emoji = "🔴" if level == "error" else "🟡" if level == "warning" else "🟢"
+        return f"{emoji} [{time_str}] {category}: {message}"
+    except Exception:
+        return "—"
 
 
 def _get_error_summary() -> str:
@@ -1159,7 +1285,8 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                         f"Hostname: {socket.gethostname()}\n"
                         f"Python: {sys.version.split()[0]}\n"
                         f"Bot Version: v2.5.1 (TradingEngine+)\n"
-                        f"Started: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')}"
+                        f"Started: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+                        f"Uptime: {_get_uptime_display()}"
                     ),
                     "inline": False,
                 }
@@ -1237,6 +1364,21 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
 
         # Enhanced Interval Heartbeat: Add feed activity, LLM usage, trading activity, errors
         if reason in ("interval", "endday"):
+            # Status section with uptime and resources
+            uptime_str = _get_uptime_display()
+            resources_str = _get_system_resources()
+            status_value = f"Uptime: {uptime_str}"
+            if resources_str != "—":
+                status_value += f"\n{resources_str}"
+
+            embed_fields.append(
+                {
+                    "name": "⏱️ Status",
+                    "value": status_value,
+                    "inline": False,
+                }
+            )
+
             # Feed Activity Summary
             feed_activity = _get_feed_activity_summary()
             embed_fields.append(
@@ -1329,10 +1471,16 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
 
             # Errors & Warnings
             error_summary = _get_error_summary()
+            last_error = _get_last_error_detail()
+
+            error_value = error_summary
+            if last_error != "No recent errors" and last_error != "—":
+                error_value += f"\n\n**Last:** {last_error}"
+
             embed_fields.append(
                 {
                     "name": "⚠️ Errors & Warnings",
-                    "value": error_summary,
+                    "value": error_value,
                     "inline": False,
                 }
             )
@@ -1863,6 +2011,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
         market hours detection is enabled, features will be gated based on
         market status.
     """
+    # Track errors in this cycle for heartbeat accumulator
+    cycle_errors = 0
+
     # Initialize seen store for this cycle (fixed: check-only, mark after success)
     seen_store = None
     try:
@@ -1885,6 +2036,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     except Exception as e:
         log.error("feed_fetch_failed error=%s", str(e))
         _record_and_track_error("error", "Feed", f"Feed fetch failed: {str(e)}")
+        cycle_errors += 1
         items = []
 
     deduped = feeds.dedupe(items)
@@ -2114,6 +2266,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             _record_and_track_error(
                 "warning", "API", f"Batch price fetch failed: {str(e)[:80]}"
             )
+            cycle_errors += 1
             price_cache = {}
 
     skipped_no_ticker = 0
@@ -3066,6 +3219,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 "Classification",
                 f"Classify failed for {ticker}: {str(err)[:80]}",
             )
+            cycle_errors += 1
             try:
                 scored = _fallback_classify(
                     title=it.get("title", "") or it.get("summary", ""),
@@ -3622,7 +3776,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             _heartbeat_acc.add_cycle(
                 scanned=len(items),
                 alerts=alerted,
-                errors=0,  # Could track errors in future enhancement
+                errors=cycle_errors,
             )
         except Exception:
             # ignore accumulator errors
