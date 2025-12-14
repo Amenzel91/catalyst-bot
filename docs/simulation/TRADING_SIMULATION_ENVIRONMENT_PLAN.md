@@ -8,8 +8,8 @@ This document outlines the implementation plan for a comprehensive trading simul
 - Simulate complete trading days using reconstructed historical data
 - Fire alerts exactly as they would during live trading
 - Execute simulated paper trades with mocked broker (no API calls)
-- Support time acceleration (1x, 10x, 100x speed)
-- Jump to specific times for stress testing (e.g., 8am CST news rush)
+- Support time acceleration (1x, 6x, 60x speed) with presets
+- Jump to specific times for stress testing (morning news, SEC filings)
 - Mark all generated data as simulation to prevent analytics pollution
 - Control everything via feature flags in `.env`
 
@@ -17,6 +17,42 @@ This document outlines the implementation plan for a comprehensive trading simul
 - This is NOT a backtesting system for generating trading performance data
 - This is NOT for parameter optimization or strategy discovery
 - This focuses on functional testing, not statistical analysis
+
+---
+
+## Confirmed Decisions (from design review)
+
+### Primary Use Case
+- **Quick sanity checks** after code changes: 1-hour simulated period at 6x speed (~10 min real time)
+- **Bug discovery** and **feature testing** - NOT performance analysis
+
+### Test Configuration
+| Setting | Value |
+|---------|-------|
+| **Default Test Date** | November 12, 2024 (Tuesday, normal market day) |
+| **Default Speed** | 6x (1 hour sim = 10 min real) |
+| **Time Presets** | `morning` (8:45-9:45am EST), `sec` (3:30-4:30pm EST) |
+
+### Component Behavior During Simulation
+| Component | Behavior | Notes |
+|-----------|----------|-------|
+| **LLM (Gemini)** | LIVE | Test actual classification |
+| **Local Sentiment** | LIVE | VADER/FinBERT are fast |
+| **External Sentiment APIs** | MOCKED | Pre-fetched, stored data |
+| **Discord Alerts** | LIVE | Fires to test channels |
+| **Charts** | DISABLED | Skip generation |
+| **Broker** | MOCKED | Full position monitoring |
+| **Heartbeat** | Normal intervals | Same as production |
+
+### Data Handling
+- **Incomplete data**: Skip ticker entirely with WARNING, don't process partial
+- **Missing prices**: Log warning explaining why ticker was skipped
+- **Pre-flight check**: Verify all APIs reachable before starting
+
+### Logging & Output
+- **Format**: JSONL (machine) + Markdown (human)
+- **Severity Levels**: CRITICAL, WARNING, NOTICE
+- **Warning Thresholds**: Configurable via `.env`, defaults match production
 
 ---
 
@@ -368,51 +404,75 @@ def is_simulation_mode() -> bool:
 SIMULATION_MODE=0
 
 # Simulation date to replay (YYYY-MM-DD format)
-# Leave empty to use a random recent trading day
-SIMULATION_DATE=
+# Default: 2024-11-12 (Tuesday, good test day with normal market conditions)
+SIMULATION_DATE=2024-11-12
 
 # Simulation speed multiplier
-# 1.0 = real-time, 10.0 = 10x speed, 100.0 = 100x speed, 0 = instant
-SIMULATION_SPEED=10.0
+# 1.0 = real-time, 6.0 = 6x speed (default), 60.0 = 60x, 0 = instant
+SIMULATION_SPEED=6.0
 
-# Jump to specific time on simulation start (HH:MM in CST, empty = start from 4am)
-# Use this for stress testing specific periods (e.g., "08:00" for morning news rush)
+# Time preset (overrides start/end times)
+# Options: "morning" (8:45-9:45 EST), "sec" (3:30-4:30 EST),
+#          "open", "close", "full"
+SIMULATION_PRESET=morning
+
+# Jump to specific time on simulation start (HH:MM in CST)
+# Only used if SIMULATION_PRESET is empty
 SIMULATION_START_TIME_CST=
 
-# End simulation at specific time (HH:MM in CST, empty = run until market close)
+# End simulation at specific time (HH:MM in CST)
+# Only used if SIMULATION_PRESET is empty
 SIMULATION_END_TIME_CST=
 
 # Simulation run ID (auto-generated if empty)
-# Set manually to replay exact same simulation
 SIMULATION_RUN_ID=
+
+# ============================================================================
+# COMPONENT BEHAVIOR
+# ============================================================================
+
+# LLM classification (Gemini) - LIVE by default to test actual behavior
+SIMULATION_LLM_ENABLED=1
+
+# Local sentiment (VADER/FinBERT) - LIVE, these are fast
+SIMULATION_LOCAL_SENTIMENT=1
+
+# External sentiment APIs - MOCKED (use pre-fetched data)
+SIMULATION_EXTERNAL_SENTIMENT=0
+
+# Chart generation - DISABLED by default
+SIMULATION_CHARTS_ENABLED=0
 
 # ============================================================================
 # SIMULATION DATA SOURCES
 # ============================================================================
 
-# How to get historical price data for simulation
-# Options: "tiingo", "yfinance", "alpha_vantage", "cached"
+# Historical price data source: "tiingo", "yfinance", "cached"
 SIMULATION_PRICE_SOURCE=tiingo
 
-# How to get historical news data for simulation
-# Options: "finnhub", "cached", "synthetic"
+# Historical news data source: "finnhub", "cached"
 SIMULATION_NEWS_SOURCE=finnhub
 
-# Cache directory for simulation data (speeds up repeated runs)
+# Cache directory for simulation data
 SIMULATION_CACHE_DIR=data/simulation_cache
+
+# Skip tickers with incomplete data (recommended: 1)
+SIMULATION_SKIP_INCOMPLETE=1
 
 # ============================================================================
 # SIMULATION OUTPUT CONFIGURATION
 # ============================================================================
 
 # Where to send alerts during simulation
-# Options: "discord_test", "local_only", "disabled"
-SIMULATION_ALERT_OUTPUT=local_only
+# "discord_test" = fire to test channels (default)
+# "local_only" = log only, no Discord
+# "disabled" = silent
+SIMULATION_ALERT_OUTPUT=discord_test
 
-# Separate database for simulation data (prevents pollution)
+# Separate database for simulation data
 SIMULATION_DB_PATH=data/simulation.db
 
-# Log file for simulation runs
+# Log directory for simulation runs
 SIMULATION_LOG_DIR=data/simulation_logs
 
 # ============================================================================
@@ -455,16 +515,27 @@ def _b(key: str, default: bool = False) -> bool:
     return val in ("1", "true", "yes", "y", "on")
 
 
+# Time presets for common testing scenarios
+TIME_PRESETS = {
+    "morning": {"start": "07:45", "end": "08:45"},  # 8:45-9:45 EST = 7:45-8:45 CST (news rush)
+    "sec": {"start": "14:30", "end": "15:30"},      # 3:30-4:30 EST = 2:30-3:30 CST (SEC filings)
+    "open": {"start": "08:30", "end": "09:30"},     # Market open hour
+    "close": {"start": "14:00", "end": "15:00"},    # Market close hour
+    "full": {"start": "04:00", "end": "17:00"},     # Full trading day
+}
+
+
 @dataclass
 class SimulationConfig:
     """Configuration for simulation mode."""
 
     # Core settings
     enabled: bool = False
-    simulation_date: Optional[str] = None
-    speed_multiplier: float = 10.0
+    simulation_date: Optional[str] = "2024-11-12"  # Default: Nov 12, 2024 (good test day)
+    speed_multiplier: float = 6.0  # Default: 6x (1hr sim = 10min real)
     start_time_cst: Optional[str] = None
     end_time_cst: Optional[str] = None
+    time_preset: Optional[str] = None  # "morning", "sec", "open", "close", "full"
     run_id: Optional[str] = None
 
     # Data sources
@@ -472,10 +543,16 @@ class SimulationConfig:
     news_source: str = "finnhub"
     cache_dir: Path = Path("data/simulation_cache")
 
-    # Output
-    alert_output: str = "local_only"  # "discord_test", "local_only", "disabled"
+    # Output - Discord alerts fire to test channels by default
+    alert_output: str = "discord_test"  # "discord_test", "local_only", "disabled"
     db_path: Path = Path("data/simulation.db")
     log_dir: Path = Path("data/simulation_logs")
+
+    # Component behavior
+    llm_enabled: bool = True        # LIVE - test actual classification
+    local_sentiment: bool = True    # LIVE - VADER/FinBERT
+    external_sentiment: bool = False  # MOCKED - use pre-fetched data
+    charts_enabled: bool = False    # DISABLED - skip generation
 
     # Broker simulation
     starting_cash: float = 10000.0
@@ -483,27 +560,43 @@ class SimulationConfig:
     slippage_pct: float = 0.5
     max_volume_pct: float = 5.0
 
+    # Warning thresholds (default to production values)
+    skip_incomplete_data: bool = True  # Skip tickers with missing data
+
     @classmethod
     def from_env(cls) -> "SimulationConfig":
         """Load configuration from environment variables."""
         return cls(
             enabled=_b("SIMULATION_MODE", False),
-            simulation_date=os.getenv("SIMULATION_DATE") or None,
-            speed_multiplier=float(os.getenv("SIMULATION_SPEED", "10.0")),
+            simulation_date=os.getenv("SIMULATION_DATE", "2024-11-12"),
+            speed_multiplier=float(os.getenv("SIMULATION_SPEED", "6.0")),
             start_time_cst=os.getenv("SIMULATION_START_TIME_CST") or None,
             end_time_cst=os.getenv("SIMULATION_END_TIME_CST") or None,
+            time_preset=os.getenv("SIMULATION_PRESET") or None,
             run_id=os.getenv("SIMULATION_RUN_ID") or None,
             price_source=os.getenv("SIMULATION_PRICE_SOURCE", "tiingo"),
             news_source=os.getenv("SIMULATION_NEWS_SOURCE", "finnhub"),
             cache_dir=Path(os.getenv("SIMULATION_CACHE_DIR", "data/simulation_cache")),
-            alert_output=os.getenv("SIMULATION_ALERT_OUTPUT", "local_only"),
+            alert_output=os.getenv("SIMULATION_ALERT_OUTPUT", "discord_test"),
             db_path=Path(os.getenv("SIMULATION_DB_PATH", "data/simulation.db")),
             log_dir=Path(os.getenv("SIMULATION_LOG_DIR", "data/simulation_logs")),
+            llm_enabled=_b("SIMULATION_LLM_ENABLED", True),
+            local_sentiment=_b("SIMULATION_LOCAL_SENTIMENT", True),
+            external_sentiment=_b("SIMULATION_EXTERNAL_SENTIMENT", False),
+            charts_enabled=_b("SIMULATION_CHARTS_ENABLED", False),
             starting_cash=float(os.getenv("SIMULATION_STARTING_CASH", "10000.0")),
             slippage_model=os.getenv("SIMULATION_SLIPPAGE_MODEL", "adaptive"),
             slippage_pct=float(os.getenv("SIMULATION_SLIPPAGE_PCT", "0.5")),
             max_volume_pct=float(os.getenv("SIMULATION_MAX_VOLUME_PCT", "5.0")),
+            skip_incomplete_data=_b("SIMULATION_SKIP_INCOMPLETE", True),
         )
+
+    def apply_preset(self) -> None:
+        """Apply time preset if specified."""
+        if self.time_preset and self.time_preset in TIME_PRESETS:
+            preset = TIME_PRESETS[self.time_preset]
+            self.start_time_cst = preset["start"]
+            self.end_time_cst = preset["end"]
 
     def get_simulation_date(self) -> datetime:
         """Get simulation date, picking random recent trading day if not specified."""
@@ -2137,17 +2230,18 @@ class SimulationController:
 Simulation CLI - Command-line interface for running simulations.
 
 Usage:
-    # Run simulation with defaults from .env
+    # Run with defaults (Nov 12 2024, morning preset, 6x speed)
     python -m catalyst_bot.simulation.cli
 
-    # Run specific date at 10x speed
-    python -m catalyst_bot.simulation.cli --date 2025-01-15 --speed 10
+    # Use preset for specific testing scenario
+    python -m catalyst_bot.simulation.cli --preset morning  # 8:45-9:45 EST news rush
+    python -m catalyst_bot.simulation.cli --preset sec      # 3:30-4:30 EST SEC filings
 
-    # Jump to 8am CST for stress testing
-    python -m catalyst_bot.simulation.cli --date 2025-01-15 --start-time 08:00
+    # Custom time range
+    python -m catalyst_bot.simulation.cli --start-time 08:00 --end-time 10:00
 
-    # Run at maximum speed (instant)
-    python -m catalyst_bot.simulation.cli --date 2025-01-15 --speed 0
+    # Maximum speed (instant)
+    python -m catalyst_bot.simulation.cli --speed 0
 """
 
 import argparse
@@ -2157,7 +2251,7 @@ import sys
 from datetime import datetime
 
 from .controller import SimulationController
-from .config import SimulationConfig
+from .config import SimulationConfig, TIME_PRESETS
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -2177,49 +2271,64 @@ def parse_args() -> argparse.Namespace:
         description="Run trading day simulation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Presets:
+    morning   8:45-9:45 EST  News rush, high activity
+    sec       3:30-4:30 EST  SEC filing window
+    open      9:30-10:30 EST Market open hour
+    close     3:00-4:00 EST  Market close hour
+    full      4:00am-5:00pm  Full trading day
+
 Examples:
-    # Run random recent day at 10x speed
+    # Quick morning test (default)
     python -m catalyst_bot.simulation.cli
 
-    # Run specific date
-    python -m catalyst_bot.simulation.cli --date 2025-01-15
+    # Test SEC filing period
+    python -m catalyst_bot.simulation.cli --preset sec
 
-    # Start at 8am CST (news rush)
-    python -m catalyst_bot.simulation.cli --start-time 08:00
+    # Custom date and time
+    python -m catalyst_bot.simulation.cli --date 2024-11-12 --start-time 08:00
 
-    # Run at maximum speed
+    # Maximum speed (instant)
     python -m catalyst_bot.simulation.cli --speed 0
 
-    # Run until specific time
-    python -m catalyst_bot.simulation.cli --end-time 12:00
+    # Local-only alerts (no Discord)
+    python -m catalyst_bot.simulation.cli --alerts local
         """
     )
 
     parser.add_argument(
         "--date",
         type=str,
-        help="Simulation date (YYYY-MM-DD). Random recent day if not specified."
+        default="2024-11-12",
+        help="Simulation date (YYYY-MM-DD). Default: 2024-11-12"
+    )
+
+    parser.add_argument(
+        "--preset",
+        choices=list(TIME_PRESETS.keys()),
+        default="morning",
+        help="Time preset (morning, sec, open, close, full). Default: morning"
     )
 
     parser.add_argument(
         "--speed",
         type=float,
-        default=10.0,
-        help="Speed multiplier (1=realtime, 10=10x, 0=instant). Default: 10"
+        default=6.0,
+        help="Speed multiplier (1=realtime, 6=6x, 0=instant). Default: 6"
     )
 
     parser.add_argument(
         "--start-time",
         type=str,
         dest="start_time",
-        help="Start time in CST (HH:MM). Default: 04:00 (premarket)"
+        help="Start time in CST (HH:MM). Overrides preset."
     )
 
     parser.add_argument(
         "--end-time",
         type=str,
         dest="end_time",
-        help="End time in CST (HH:MM). Default: 17:00 (after hours)"
+        help="End time in CST (HH:MM). Overrides preset."
     )
 
     parser.add_argument(
@@ -2232,8 +2341,8 @@ Examples:
     parser.add_argument(
         "--alerts",
         choices=["discord", "local", "disabled"],
-        default="local",
-        help="Alert output mode. Default: local"
+        default="discord",
+        help="Alert output mode. Default: discord (test channels)"
     )
 
     parser.add_argument(
@@ -2248,10 +2357,11 @@ Examples:
 async def run_simulation(args: argparse.Namespace) -> int:
     """Run the simulation with given arguments."""
 
-    # Create controller
+    # Create controller with preset support
     controller = SimulationController(
         simulation_date=args.date,
         speed_multiplier=args.speed,
+        time_preset=args.preset if not (args.start_time or args.end_time) else None,
         start_time_cst=args.start_time,
         end_time_cst=args.end_time
     )
@@ -2262,7 +2372,7 @@ async def run_simulation(args: argparse.Namespace) -> int:
         "discord": "discord_test",
         "local": "local_only",
         "disabled": "disabled"
-    }.get(args.alerts, "local_only")
+    }.get(args.alerts, "discord_test")
 
     try:
         # Run simulation
@@ -2312,6 +2422,263 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+```
+
+### 5.3 Simulation Logger
+
+**File:** `src/catalyst_bot/simulation/logger.py`
+
+```python
+"""
+SimulationLogger - Dual-format logging for simulation analysis.
+
+Outputs:
+- JSONL file: Machine-readable, structured events for LLM analysis
+- Markdown file: Human-readable summary report
+"""
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from enum import Enum
+import logging
+
+log = logging.getLogger(__name__)
+
+
+class Severity(Enum):
+    """Severity levels for simulation events."""
+    CRITICAL = "CRITICAL"  # Breaks simulation or requires immediate attention
+    WARNING = "WARNING"    # Unexpected behavior but continues
+    NOTICE = "NOTICE"      # Informational, worth noting
+
+
+class SimulationLogger:
+    """
+    Dual-format logger for simulation runs.
+
+    Creates:
+    - {run_id}.jsonl: Line-by-line JSON events
+    - {run_id}.md: Human-readable markdown summary
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        log_dir: Path,
+        simulation_date: str
+    ):
+        self.run_id = run_id
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        self.simulation_date = simulation_date
+
+        # File paths
+        self.jsonl_path = self.log_dir / f"{run_id}.jsonl"
+        self.md_path = self.log_dir / f"{run_id}.md"
+
+        # Tracking for summary
+        self.events: List[Dict] = []
+        self.alerts_fired: List[Dict] = []
+        self.trades_executed: List[Dict] = []
+        self.warnings: List[Dict] = []
+        self.errors: List[Dict] = []
+        self.skipped_tickers: List[Dict] = []
+
+        # Initialize files
+        self._init_files()
+
+    def _init_files(self):
+        """Initialize log files with headers."""
+        # Write markdown header
+        with open(self.md_path, "w") as f:
+            f.write(f"# Simulation Report: {self.run_id}\n\n")
+            f.write(f"**Date Simulated:** {self.simulation_date}\n")
+            f.write(f"**Run Started:** {datetime.now(timezone.utc).isoformat()}\n\n")
+            f.write("---\n\n")
+
+    def log_event(
+        self,
+        event_type: str,
+        data: Dict[str, Any],
+        severity: Optional[Severity] = None,
+        sim_time: Optional[datetime] = None
+    ):
+        """
+        Log a simulation event.
+
+        Args:
+            event_type: Type of event (alert, trade, skip, error, etc.)
+            data: Event data
+            severity: Optional severity level
+            sim_time: Simulation time when event occurred
+        """
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sim_time": sim_time.isoformat() if sim_time else None,
+            "run_id": self.run_id,
+            "event_type": event_type,
+            "severity": severity.value if severity else None,
+            **data
+        }
+
+        # Write to JSONL
+        with open(self.jsonl_path, "a") as f:
+            f.write(json.dumps(event) + "\n")
+
+        # Track for summary
+        self.events.append(event)
+
+        if event_type == "alert":
+            self.alerts_fired.append(event)
+        elif event_type == "trade":
+            self.trades_executed.append(event)
+        elif event_type == "skip":
+            self.skipped_tickers.append(event)
+        elif severity == Severity.WARNING:
+            self.warnings.append(event)
+        elif severity == Severity.CRITICAL:
+            self.errors.append(event)
+
+    def log_alert(
+        self,
+        ticker: str,
+        headline: str,
+        classification: str,
+        confidence: float,
+        sim_time: datetime,
+        **kwargs
+    ):
+        """Log an alert that was fired."""
+        self.log_event("alert", {
+            "ticker": ticker,
+            "headline": headline,
+            "classification": classification,
+            "confidence": confidence,
+            **kwargs
+        }, sim_time=sim_time)
+
+    def log_trade(
+        self,
+        ticker: str,
+        side: str,
+        quantity: int,
+        price: float,
+        sim_time: datetime,
+        **kwargs
+    ):
+        """Log a trade execution."""
+        self.log_event("trade", {
+            "ticker": ticker,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            **kwargs
+        }, sim_time=sim_time)
+
+    def log_skip(
+        self,
+        ticker: str,
+        reason: str,
+        sim_time: Optional[datetime] = None
+    ):
+        """Log a skipped ticker with reason."""
+        self.log_event("skip", {
+            "ticker": ticker,
+            "reason": reason
+        }, severity=Severity.WARNING, sim_time=sim_time)
+
+    def log_warning(self, message: str, context: Optional[Dict] = None):
+        """Log a warning."""
+        self.log_event("warning", {
+            "message": message,
+            **(context or {})
+        }, severity=Severity.WARNING)
+
+    def log_error(self, message: str, context: Optional[Dict] = None):
+        """Log a critical error."""
+        self.log_event("error", {
+            "message": message,
+            **(context or {})
+        }, severity=Severity.CRITICAL)
+
+    def finalize(self, portfolio_stats: Dict[str, Any]):
+        """Write final summary to markdown file."""
+        with open(self.md_path, "a") as f:
+            # Quick Glance Section
+            f.write("## Quick Glance\n\n")
+            f.write(f"| Metric | Value |\n")
+            f.write(f"|--------|-------|\n")
+            f.write(f"| Events Processed | {len(self.events)} |\n")
+            f.write(f"| Alerts Fired | {len(self.alerts_fired)} |\n")
+            f.write(f"| Trades Executed | {len(self.trades_executed)} |\n")
+            f.write(f"| Tickers Skipped | {len(self.skipped_tickers)} |\n")
+            f.write(f"| Warnings | {len(self.warnings)} |\n")
+            f.write(f"| Errors | {len(self.errors)} |\n")
+            f.write("\n")
+
+            # Errors Section (if any)
+            if self.errors:
+                f.write("## ❌ Errors (CRITICAL)\n\n")
+                for error in self.errors:
+                    f.write(f"- **{error.get('message', 'Unknown error')}**\n")
+                    if error.get('context'):
+                        f.write(f"  - Context: {error.get('context')}\n")
+                f.write("\n")
+
+            # Warnings Section (if any)
+            if self.warnings:
+                f.write("## ⚠️ Warnings\n\n")
+                for warning in self.warnings[:20]:  # Limit to 20
+                    f.write(f"- {warning.get('message', 'Unknown warning')}\n")
+                if len(self.warnings) > 20:
+                    f.write(f"- ... and {len(self.warnings) - 20} more\n")
+                f.write("\n")
+
+            # Skipped Tickers
+            if self.skipped_tickers:
+                f.write("## Skipped Tickers\n\n")
+                reasons = {}
+                for skip in self.skipped_tickers:
+                    reason = skip.get('reason', 'Unknown')
+                    reasons[reason] = reasons.get(reason, 0) + 1
+
+                f.write(f"| Reason | Count |\n")
+                f.write(f"|--------|-------|\n")
+                for reason, count in sorted(reasons.items(), key=lambda x: -x[1]):
+                    f.write(f"| {reason} | {count} |\n")
+                f.write("\n")
+
+            # Alerts Summary
+            if self.alerts_fired:
+                f.write("## Alerts Fired\n\n")
+                f.write(f"| Time | Ticker | Classification | Headline |\n")
+                f.write(f"|------|--------|----------------|----------|\n")
+                for alert in self.alerts_fired[:50]:  # Limit to 50
+                    sim_time = alert.get('sim_time', '')[:8] if alert.get('sim_time') else ''
+                    f.write(f"| {sim_time} | {alert.get('ticker', '')} | "
+                           f"{alert.get('classification', '')} | "
+                           f"{alert.get('headline', '')[:50]}... |\n")
+                f.write("\n")
+
+            # Portfolio Summary
+            f.write("## Portfolio Summary\n\n")
+            f.write(f"| Metric | Value |\n")
+            f.write(f"|--------|-------|\n")
+            f.write(f"| Starting Cash | ${portfolio_stats.get('starting_cash', 0):,.2f} |\n")
+            f.write(f"| Final Value | ${portfolio_stats.get('total_value', 0):,.2f} |\n")
+            f.write(f"| Return | ${portfolio_stats.get('total_return', 0):,.2f} "
+                   f"({portfolio_stats.get('total_return_pct', 0):.2f}%) |\n")
+            f.write(f"| Total Trades | {portfolio_stats.get('total_trades', 0)} |\n")
+            f.write(f"| Win Rate | {portfolio_stats.get('win_rate', 0):.1f}% |\n")
+            f.write("\n")
+
+            f.write("---\n")
+            f.write(f"*Report generated at {datetime.now(timezone.utc).isoformat()}*\n")
+
+        log.info(f"Simulation report written to {self.md_path}")
 ```
 
 ---
@@ -2376,34 +2743,60 @@ src/catalyst_bot/simulation/
 ├── cli.py                 # Command-line interface
 ├── clock.py               # SimulationClock class
 ├── clock_provider.py      # Global clock management
-├── config.py              # SimulationConfig dataclass
+├── config.py              # SimulationConfig + TIME_PRESETS
 ├── controller.py          # SimulationController orchestration
 ├── data_fetcher.py        # HistoricalDataFetcher
 ├── event_queue.py         # EventQueue and EventReplayer
+├── health_check.py        # Pre-flight API health checks
+├── logger.py              # SimulationLogger (JSONL + Markdown)
 ├── mock_broker.py         # MockBroker (simulated trading)
 ├── mock_market_data.py    # MockMarketDataFeed
 ├── mock_feeds.py          # MockFeedProvider
-└── output.py              # SimulationOutputManager
+└── mock_sentiment.py      # Mocked external sentiment APIs
+```
+
+**Output Files Generated:**
+```
+data/simulation_logs/
+├── sim_20241112_143000_abc123.jsonl   # Machine-readable event log
+└── sim_20241112_143000_abc123.md      # Human-readable summary
+
+data/simulation_cache/
+└── 2024-11-12_tiingo_finnhub.json     # Cached historical data
 ```
 
 ---
 
 ## Usage Examples
 
-### Basic Usage
+### Basic Usage (Most Common)
 
 ```bash
-# Run simulation of random recent day at 10x speed
+# Quick morning test (default: Nov 12 2024, 8:45-9:45 EST, 6x speed)
+# Takes ~10 minutes real time
 python -m catalyst_bot.simulation.cli
 
-# Run specific date
-python -m catalyst_bot.simulation.cli --date 2025-01-15
+# Test SEC filing period
+python -m catalyst_bot.simulation.cli --preset sec
 
-# Run at maximum speed (instant)
-python -m catalyst_bot.simulation.cli --speed 0
+# Full day simulation at instant speed
+python -m catalyst_bot.simulation.cli --preset full --speed 0
 
-# Stress test 8am news rush
-python -m catalyst_bot.simulation.cli --date 2025-01-15 --start-time 08:00 --speed 1
+# Local-only alerts (no Discord)
+python -m catalyst_bot.simulation.cli --alerts local
+```
+
+### Custom Time Windows
+
+```bash
+# Custom date and time range
+python -m catalyst_bot.simulation.cli --date 2024-11-12 --start-time 08:00 --end-time 10:00
+
+# Real-time speed (for debugging)
+python -m catalyst_bot.simulation.cli --speed 1
+
+# Maximum speed with verbose logging
+python -m catalyst_bot.simulation.cli --speed 0 -v
 ```
 
 ### Environment Variables
@@ -2411,8 +2804,9 @@ python -m catalyst_bot.simulation.cli --date 2025-01-15 --start-time 08:00 --spe
 ```bash
 # Enable simulation mode for regular bot run
 export SIMULATION_MODE=1
-export SIMULATION_DATE=2025-01-15
-export SIMULATION_SPEED=10.0
+export SIMULATION_DATE=2024-11-12
+export SIMULATION_PRESET=morning
+export SIMULATION_SPEED=6.0
 python -m catalyst_bot.runner --loop
 ```
 
@@ -2422,54 +2816,66 @@ python -m catalyst_bot.runner --loop
 from catalyst_bot.simulation import SimulationController
 
 async def test_new_feature():
-    # Run simulation
+    # Quick sanity check after code changes
     controller = SimulationController(
-        simulation_date="2025-01-15",
-        speed_multiplier=0,  # Instant
-        start_time_cst="08:00"
+        simulation_date="2024-11-12",
+        time_preset="morning",
+        speed_multiplier=6.0
     )
 
     results = await controller.run()
 
-    # Check results
-    assert results["portfolio"]["total_trades"] > 0
-    print(f"Feature test passed: {results['events_processed']} events")
+    # Check for errors
+    if results.get("errors"):
+        print(f"FAILED: {results['errors']}")
+        return False
+
+    print(f"Feature test passed: {results['events_processed']} events, "
+          f"{results['alerts_fired']} alerts")
+    return True
 ```
 
 ---
 
 ## Implementation Priority
 
-### MVP (Week 1-2)
-1. ✅ SimulationClock and clock_provider
-2. ✅ SimulationConfig with .env flags
-3. ✅ HistoricalDataFetcher (Tiingo prices, Finnhub news)
-4. ✅ MockBroker with basic slippage
-5. ✅ CLI entry point
+### Phase 1: Core Infrastructure (MVP)
+1. SimulationClock and clock_provider
+2. SimulationConfig with .env flags + TIME_PRESETS
+3. Pre-flight health check
+4. CLI entry point with preset support
 
-### Phase 2 (Week 3)
-1. EventQueue and EventReplayer
+### Phase 2: Data Layer
+1. HistoricalDataFetcher (Tiingo prices, Finnhub news)
 2. MockMarketDataFeed
 3. MockFeedProvider
-4. SimulationController
+4. Data caching system
 
-### Phase 3 (Week 4)
-1. Integration with runner.py
-2. Output marking (simulation_run_id)
-3. Alert routing (test channel vs local)
-4. Results reporting
+### Phase 3: Execution Layer
+1. MockBroker with adaptive slippage
+2. EventQueue and EventReplayer
+3. SimulationController
+4. Position monitoring (matching production)
 
-### Phase 4 (Ongoing)
+### Phase 4: Output & Integration
+1. SimulationLogger (JSONL + Markdown)
+2. Integration with runner.py
+3. Alert routing (test channels)
+4. Output marking (simulation_run_id)
+
+### Phase 5: Polish
 1. SEC filing replay
-2. Advanced slippage models
-3. Scenario library (meme stock day, crash day)
-4. A/B testing framework
+2. Mocked external sentiment APIs
+3. Error recovery and graceful degradation
+4. Additional test date scenarios
 
 ---
 
-## Questions to Consider
+## Open Questions (Resolved)
 
-1. **Data Retention**: How long to cache historical data? (Recommend: 30 days)
-2. **Parallel Runs**: Need to support multiple simultaneous simulations?
-3. **CI Integration**: Run simulations as part of test suite?
-4. **Visualization**: Add charts/graphs to simulation output?
+| Question | Decision |
+|----------|----------|
+| Data Retention | Cache indefinitely, clear manually if needed |
+| Parallel Runs | Single run at a time (simplicity) |
+| CI Integration | Future consideration |
+| Visualization | Markdown report + JSONL for LLM analysis |

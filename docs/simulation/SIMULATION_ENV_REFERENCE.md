@@ -1,32 +1,71 @@
 # Simulation Environment - Quick Reference
 
-## .env Configuration
+## Quick Start
 
-Add these to your `.env` file to control simulation mode:
+```bash
+# Default: Nov 12 2024, morning preset (8:45-9:45 EST), 6x speed
+# Takes ~10 minutes real time
+python -m catalyst_bot.simulation.cli
+
+# Test SEC filing period
+python -m catalyst_bot.simulation.cli --preset sec
+
+# Full day at instant speed
+python -m catalyst_bot.simulation.cli --preset full --speed 0
+```
+
+---
+
+## Time Presets
+
+| Preset | Time (EST) | Use Case |
+|--------|------------|----------|
+| `morning` | 8:45-9:45 | News rush, high activity (default) |
+| `sec` | 3:30-4:30 | SEC filing window |
+| `open` | 9:30-10:30 | Market open hour |
+| `close` | 3:00-4:00 | Market close hour |
+| `full` | 4:00am-5:00pm | Full trading day |
+
+---
+
+## .env Configuration
 
 ```ini
 # ============================================================================
 # SIMULATION MODE - Master Controls
 # ============================================================================
 
-# Enable simulation mode (0=live trading, 1=simulation)
+# Enable simulation mode (0=live, 1=simulation)
 SIMULATION_MODE=0
 
-# Date to simulate (YYYY-MM-DD) - random recent day if empty
-SIMULATION_DATE=
+# Date to simulate (default: Nov 12, 2024)
+SIMULATION_DATE=2024-11-12
 
-# Speed: 1.0=realtime, 10.0=10x faster, 0=instant
-SIMULATION_SPEED=10.0
+# Time preset: "morning", "sec", "open", "close", "full"
+SIMULATION_PRESET=morning
 
-# ============================================================================
-# TIME CONTROL (CST timezone)
-# ============================================================================
+# Speed: 1.0=realtime, 6.0=6x (default), 0=instant
+SIMULATION_SPEED=6.0
 
-# Start simulation at this time (HH:MM) - default 04:00 (premarket)
+# Custom time override (ignored if preset is set)
 SIMULATION_START_TIME_CST=
-
-# End simulation at this time (HH:MM) - default 17:00 (after hours)
 SIMULATION_END_TIME_CST=
+
+# ============================================================================
+# COMPONENT BEHAVIOR
+# ============================================================================
+
+# LLM (Gemini): 1=LIVE (default), 0=skip
+SIMULATION_LLM_ENABLED=1
+
+# Local sentiment (VADER/FinBERT): 1=LIVE (default)
+SIMULATION_LOCAL_SENTIMENT=1
+
+# External sentiment APIs: 0=MOCKED (default)
+SIMULATION_EXTERNAL_SENTIMENT=0
+
+# Chart generation: 0=DISABLED (default)
+SIMULATION_CHARTS_ENABLED=0
 
 # ============================================================================
 # DATA SOURCES
@@ -38,99 +77,69 @@ SIMULATION_PRICE_SOURCE=tiingo
 # News data: "finnhub", "cached"
 SIMULATION_NEWS_SOURCE=finnhub
 
-# Cache directory for simulation data
+# Skip tickers with incomplete data (recommended)
+SIMULATION_SKIP_INCOMPLETE=1
+
+# Cache directory
 SIMULATION_CACHE_DIR=data/simulation_cache
 
 # ============================================================================
 # OUTPUT CONFIGURATION
 # ============================================================================
 
-# Where to send alerts: "discord_test", "local_only", "disabled"
-SIMULATION_ALERT_OUTPUT=local_only
+# Alerts: "discord_test" (default), "local_only", "disabled"
+SIMULATION_ALERT_OUTPUT=discord_test
 
-# Database for simulation data (keeps production clean)
+# Simulation database (separate from production)
 SIMULATION_DB_PATH=data/simulation.db
 
-# Log directory for simulation runs
+# Log directory
 SIMULATION_LOG_DIR=data/simulation_logs
 
 # ============================================================================
-# MOCK BROKER SETTINGS
+# MOCK BROKER
 # ============================================================================
 
-# Starting portfolio cash
 SIMULATION_STARTING_CASH=10000.0
-
-# Slippage model: "none", "fixed", "adaptive"
 SIMULATION_SLIPPAGE_MODEL=adaptive
-
-# Fixed slippage % (if using fixed model)
 SIMULATION_SLIPPAGE_PCT=0.5
-
-# Max % of daily volume per trade
 SIMULATION_MAX_VOLUME_PCT=5.0
 ```
 
 ---
 
-## CLI Usage
-
-### Basic Commands
-
-```bash
-# Run with defaults (random date, 10x speed)
-python -m catalyst_bot.simulation.cli
-
-# Specific date
-python -m catalyst_bot.simulation.cli --date 2025-01-15
-
-# Maximum speed (instant)
-python -m catalyst_bot.simulation.cli --speed 0
-
-# Stress test morning news rush (8am CST)
-python -m catalyst_bot.simulation.cli --date 2025-01-15 --start-time 08:00
-
-# Different starting cash
-python -m catalyst_bot.simulation.cli --cash 25000
-
-# Verbose output
-python -m catalyst_bot.simulation.cli -v
-```
-
-### CLI Options
+## CLI Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--date` | Simulation date (YYYY-MM-DD) | Random recent day |
-| `--speed` | Speed multiplier (0=instant) | 10.0 |
-| `--start-time` | Start time in CST (HH:MM) | 04:00 |
-| `--end-time` | End time in CST (HH:MM) | 17:00 |
-| `--cash` | Starting portfolio cash | 10000 |
-| `--alerts` | Alert mode (discord/local/disabled) | local |
+| `--date` | Simulation date (YYYY-MM-DD) | 2024-11-12 |
+| `--preset` | Time preset | morning |
+| `--speed` | Speed multiplier (0=instant) | 6.0 |
+| `--start-time` | Custom start (HH:MM CST) | from preset |
+| `--end-time` | Custom end (HH:MM CST) | from preset |
+| `--cash` | Starting cash | 10000 |
+| `--alerts` | discord/local/disabled | discord |
 | `-v` | Verbose logging | False |
 
 ---
 
-## Quick Start
+## CLI Examples
 
-### 1. Test a random recent day
 ```bash
+# Morning test (default - takes ~10 min)
 python -m catalyst_bot.simulation.cli
-```
 
-### 2. Test a specific historical day
-```bash
-python -m catalyst_bot.simulation.cli --date 2025-01-10 --speed 0
-```
+# SEC filing period
+python -m catalyst_bot.simulation.cli --preset sec
 
-### 3. Stress test high-traffic period
-```bash
-python -m catalyst_bot.simulation.cli --date 2025-01-15 --start-time 08:00 --end-time 10:00 --speed 1
-```
+# Custom time range
+python -m catalyst_bot.simulation.cli --start-time 08:00 --end-time 10:00
 
-### 4. Test with production-like settings
-```bash
-python -m catalyst_bot.simulation.cli --date 2025-01-15 --speed 1 --alerts discord
+# Instant speed, local alerts only
+python -m catalyst_bot.simulation.cli --speed 0 --alerts local
+
+# Full day with verbose output
+python -m catalyst_bot.simulation.cli --preset full --speed 0 -v
 ```
 
 ---
