@@ -4,17 +4,37 @@
 > **Files Modified:** 1-3
 > **Estimated Time:** 1-2 vibecoding sessions
 
+## Implementation Status
+
+**Date:** 2025-12-14
+
+**Phase 1 (Implemented):**
+- ✅ General code cleanup (hardcoded cycle time, error propagation)
+- ✅ Uptime counter display
+- ✅ Memory/CPU usage
+- ✅ Last error detail
+- ✅ Dedup efficiency metric
+
+**Phase 2 (NOT Implemented):**
+- ❌ Feed health matrix - Deferred (requires feeds.py changes)
+- ❌ API rate limit status - Deferred (high effort, medium value)
+- ❌ Alert win rate (24h preview) - Deferred (requires feedback query)
+
+**Commit:** `043336c` - feat(heartbeat): add Phase 1 enhancements for admin visibility
+
+---
+
 ## Overview
 
 This patch includes general improvements and new features to enhance admin visibility:
 
-1. General code cleanup (duplicate tracking, hardcoded values)
-2. Uptime counter display
-3. Feed health matrix
-4. API rate limit status
-5. Memory/CPU usage
-6. Last error detail
-7. Alert win rate (24h preview)
+1. General code cleanup (duplicate tracking, hardcoded values) - **COMPLETED**
+2. Uptime counter display - **COMPLETED**
+3. Feed health matrix - **NOT IMPLEMENTED** (see Phase 2 note above)
+4. API rate limit status - **NOT IMPLEMENTED** (see Phase 2 note above)
+5. Memory/CPU usage - **COMPLETED**
+6. Last error detail - **COMPLETED**
+7. Alert win rate (24h preview) - **NOT IMPLEMENTED** (see Phase 2 note above)
 
 ---
 

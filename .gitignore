@@ -128,3 +128,12 @@ Desktop.ini
 docker-compose.override.yml
 .env.backup
 .env.staging.backup
+
+# -----------------------------------------------------------------------------
+# Analysis & Debug Scripts (Temporary)
+# -----------------------------------------------------------------------------
+analyze_*.py
+*_ANALYSIS.md
+company_tickers_raw.json
+company_tickers.ndjson.backup
+*.backup
