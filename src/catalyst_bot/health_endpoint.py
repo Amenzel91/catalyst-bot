@@ -181,9 +181,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+            # Return generic error to client, log full details server-side
             error_response = {
                 "status": "error",
-                "error": str(e),
+                "error": "Internal server error",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             self.wfile.write(json.dumps(error_response).encode())
@@ -219,8 +220,29 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(response, indent=2).encode())
 
     def _handle_discord_interaction(self):
-        """Handle Discord interaction (component interactions, slash commands)."""
+        """Handle Discord interaction (component interactions, slash commands).
+
+        WARNING: This endpoint is missing Discord signature verification.
+        If exposed publicly, it MUST implement signature verification using
+        X-Signature-Ed25519 and X-Signature-Timestamp headers.
+
+        See interaction_server.py for reference implementation with
+        verify_discord_signature() from discord_interactions module.
+
+        For production use, either:
+        1. Add signature verification (requires DISCORD_PUBLIC_KEY)
+        2. Only expose via authenticated proxy/tunnel
+        3. Use interaction_server.py instead
+        """
         try:
+            # TODO: Add Discord signature verification before production deployment
+            # signature = self.headers.get("X-Signature-Ed25519", "")
+            # timestamp = self.headers.get("X-Signature-Timestamp", "")
+            # if PUBLIC_KEY and not verify_discord_signature(
+            #     signature, timestamp, body, PUBLIC_KEY
+            # ):
+            #     return 401 Unauthorized
+
             # Read request body
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -260,10 +282,11 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
                     except Exception as e:
                         log.error(f"chart_interaction_error err={e}", exc_info=True)
+                        # Return generic error to user, log full details server-side
                         error_response = {
                             "type": 4,
                             "data": {
-                                "content": f"❌ Error: {str(e)}",
+                                "content": "❌ Error processing chart interaction",
                                 "flags": 64,
                             },
                         }
@@ -286,7 +309,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            error = {"error": str(e)}
+            # Return generic error to client, log full details server-side
+            error = {"error": "Internal server error"}
             self.wfile.write(json.dumps(error).encode())
 
 

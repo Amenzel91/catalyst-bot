@@ -32,7 +32,9 @@ from __future__ import annotations
 import hashlib
 import pickle
 import time
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import datetime
+from datetime import time as dt_time
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -135,7 +137,19 @@ class RVOLCache:
         cache_path = _get_disk_cache_path(ticker, date)
 
         if cache_path.exists():
+            # Validate cache file is within expected directory (path traversal protection)
             try:
+                cache_path.resolve().relative_to(RVOL_CACHE_DIR.resolve())
+            except ValueError:
+                log.debug(
+                    f"cache_path_traversal_attempt ticker={ticker} path={cache_path}"
+                )
+                self._cache_misses += 1
+                return None
+
+            try:
+                # Security Note: Loading pickle from application-controlled cache directory
+                # Files are created by this application only. Do not load from untrusted sources.
                 with open(cache_path, "rb") as f:
                     cache_data = pickle.load(f)
 
@@ -614,7 +628,9 @@ def get_volume_baseline(ticker: str, days: int = 20) -> Optional[float]:
                     end_date=end_date.strftime("%Y-%m-%d"),
                 )
             except Exception as e:
-                log.debug("tiingo_volume_baseline_failed ticker=%s err=%s", ticker, str(e))
+                log.debug(
+                    "tiingo_volume_baseline_failed ticker=%s err=%s", ticker, str(e)
+                )
 
         # Fallback to yfinance
         if hist_df is None or (hasattr(hist_df, "empty") and hist_df.empty):
@@ -883,7 +899,9 @@ def calculate_rvol_intraday(ticker: str) -> Optional[Dict[str, Any]]:
         # Extrapolate to full trading day (KEY INSIGHT: time-of-day adjustment)
         if hours_open < TRADING_HOURS and hours_open > 0.0:
             # During market hours: extrapolate to full day
-            estimated_full_day_volume = int(current_volume * (TRADING_HOURS / hours_open))
+            estimated_full_day_volume = int(
+                current_volume * (TRADING_HOURS / hours_open)
+            )
         else:
             # Pre-market, after-hours, or exactly at close: use current volume as-is
             estimated_full_day_volume = current_volume

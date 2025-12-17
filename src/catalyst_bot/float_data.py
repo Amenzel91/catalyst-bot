@@ -44,7 +44,10 @@ MIN_VALID_FLOAT = 1_000  # Minimum valid float: 1,000 shares
 MAX_VALID_FLOAT = 100_000_000_000  # Maximum valid float: 100B shares
 
 # User agent for FinViz requests (required to avoid 403)
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ def get_cache_path() -> Path:
     """
     try:
         from .config import get_settings
+
         settings = get_settings()
         cache_dir = settings.data_dir / "cache"
     except Exception:
@@ -103,17 +107,27 @@ def validate_float_value(float_shares: Optional[float]) -> bool:
         if float_val <= 0:
             return False
         if float_val < MIN_VALID_FLOAT:
-            log.debug("float_validation_failed reason=too_small value=%.0f min=%.0f", float_val, MIN_VALID_FLOAT)
+            log.debug(
+                "float_validation_failed reason=too_small value=%.0f min=%.0f",
+                float_val,
+                MIN_VALID_FLOAT,
+            )
             return False
         if float_val > MAX_VALID_FLOAT:
-            log.debug("float_validation_failed reason=too_large value=%.0f max=%.0f", float_val, MAX_VALID_FLOAT)
+            log.debug(
+                "float_validation_failed reason=too_large value=%.0f max=%.0f",
+                float_val,
+                MAX_VALID_FLOAT,
+            )
             return False
         return True
     except (ValueError, TypeError):
         return False
 
 
-def is_cache_fresh(cached_at_iso: str, max_age_hours: int = DEFAULT_CACHE_TTL_HOURS) -> bool:
+def is_cache_fresh(
+    cached_at_iso: str, max_age_hours: int = DEFAULT_CACHE_TTL_HOURS
+) -> bool:
     """Check if cached float data is still fresh.
 
     Wave 3 Enhancement: Configurable cache TTL in hours instead of fixed 30 days.
@@ -178,8 +192,11 @@ def _get_from_cache(ticker: str) -> Optional[Dict]:
         # Get TTL from config
         try:
             from .config import get_settings
+
             settings = get_settings()
-            ttl_hours = getattr(settings, "float_cache_max_age_hours", DEFAULT_CACHE_TTL_HOURS)
+            ttl_hours = getattr(
+                settings, "float_cache_max_age_hours", DEFAULT_CACHE_TTL_HOURS
+            )
         except Exception:
             ttl_hours = DEFAULT_CACHE_TTL_HOURS
 
@@ -191,7 +208,9 @@ def _get_from_cache(ticker: str) -> Optional[Dict]:
         # Wave 3: Validate cached float value
         float_shares = entry.get("float_shares")
         if float_shares is not None and not validate_float_value(float_shares):
-            log.warning("cache_invalid_data ticker=%s float=%.0f", ticker_upper, float_shares)
+            log.warning(
+                "cache_invalid_data ticker=%s float=%.0f", ticker_upper, float_shares
+            )
             return None
 
         return entry
@@ -216,7 +235,9 @@ def _save_to_cache(ticker: str, data: Dict) -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        log.warning("cache_dir_creation_failed path=%s err=%s", cache_path.parent, str(e))
+        log.warning(
+            "cache_dir_creation_failed path=%s err=%s", cache_path.parent, str(e)
+        )
         return
 
     # Load existing cache
@@ -385,8 +406,11 @@ def scrape_finviz(ticker: str) -> Dict[str, Any]:
         # Get request delay from config
         try:
             from .config import get_settings
+
             settings = get_settings()
-            request_delay = getattr(settings, "float_request_delay_sec", DEFAULT_REQUEST_DELAY_SEC)
+            request_delay = getattr(
+                settings, "float_request_delay_sec", DEFAULT_REQUEST_DELAY_SEC
+            )
         except Exception:
             request_delay = DEFAULT_REQUEST_DELAY_SEC
 
@@ -402,7 +426,11 @@ def scrape_finviz(ticker: str) -> Dict[str, Any]:
 
         if response.status_code != 200:
             result["error"] = f"HTTP {response.status_code}"
-            log.debug("finviz_request_failed ticker=%s status=%d", ticker_upper, response.status_code)
+            log.debug(
+                "finviz_request_failed ticker=%s status=%d",
+                ticker_upper,
+                response.status_code,
+            )
             return result
 
         # Parse HTML
@@ -429,9 +457,15 @@ def scrape_finviz(ticker: str) -> Dict[str, Any]:
 
         # Extract fields we care about
         result["float_shares"] = _parse_finviz_number(data_map.get("Float", ""))
-        result["shares_outstanding"] = _parse_finviz_number(data_map.get("Shs Outstand", ""))
-        result["short_interest_pct"] = _parse_finviz_number(data_map.get("Short Float", ""))
-        result["institutional_ownership_pct"] = _parse_finviz_number(data_map.get("Inst Own", ""))
+        result["shares_outstanding"] = _parse_finviz_number(
+            data_map.get("Shs Outstand", "")
+        )
+        result["short_interest_pct"] = _parse_finviz_number(
+            data_map.get("Short Float", "")
+        )
+        result["institutional_ownership_pct"] = _parse_finviz_number(
+            data_map.get("Inst Own", "")
+        )
 
         result["success"] = True
 
@@ -448,10 +482,17 @@ def scrape_finviz(ticker: str) -> Dict[str, Any]:
         log.warning("finviz_timeout ticker=%s", ticker_upper)
     except requests.RequestException as e:
         result["error"] = f"Request error: {e.__class__.__name__}"
-        log.warning("finviz_request_error ticker=%s err=%s", ticker_upper, e.__class__.__name__)
+        log.warning(
+            "finviz_request_error ticker=%s err=%s", ticker_upper, e.__class__.__name__
+        )
     except Exception as e:
         result["error"] = f"Parse error: {e.__class__.__name__}"
-        log.warning("finviz_parse_error ticker=%s err=%s", ticker_upper, e.__class__.__name__, exc_info=True)
+        log.warning(
+            "finviz_parse_error ticker=%s err=%s",
+            ticker_upper,
+            e.__class__.__name__,
+            exc_info=True,
+        )
 
     return result
 
@@ -483,6 +524,7 @@ def _fetch_tiingo(ticker: str) -> Dict[str, Any]:
 
     try:
         from .config import get_settings
+
         settings = get_settings()
 
         # Check if Tiingo is enabled and API key is available
@@ -501,18 +543,28 @@ def _fetch_tiingo(ticker: str) -> Dict[str, Any]:
 
         if response.status_code != 200:
             result["error"] = f"HTTP {response.status_code}"
-            log.debug("tiingo_request_failed ticker=%s status=%d", ticker.upper(), response.status_code)
+            log.debug(
+                "tiingo_request_failed ticker=%s status=%d",
+                ticker.upper(),
+                response.status_code,
+            )
             return result
 
         data = response.json()
 
         # Extract shares outstanding from latest quarterly data
         if data and isinstance(data, list) and len(data) > 0:
-            latest = data[0]
-            if "statementData" in latest and isinstance(latest["statementData"], dict):
+            latest = data[0] if data else None
+            if (
+                latest
+                and "statementData" in latest
+                and isinstance(latest["statementData"], dict)
+            ):
                 stmt_data = latest["statementData"]
                 # Tiingo provides shares outstanding in their fundamental data
-                shares_out = stmt_data.get("shareBasic") or stmt_data.get("weightedAverageShares")
+                shares_out = stmt_data.get("shareBasic") or stmt_data.get(
+                    "weightedAverageShares"
+                )
                 if shares_out:
                     result["shares_outstanding"] = float(shares_out)
                     # Use shares outstanding as proxy for float if actual float not available
@@ -529,7 +581,9 @@ def _fetch_tiingo(ticker: str) -> Dict[str, Any]:
         log.debug("tiingo_requests_not_available ticker=%s", ticker)
     except Exception as e:
         result["error"] = f"{e.__class__.__name__}: {str(e)}"
-        log.warning("tiingo_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__)
+        log.warning(
+            "tiingo_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__
+        )
 
     return result
 
@@ -573,7 +627,11 @@ def _fetch_yfinance(ticker: str) -> Dict[str, Any]:
         # Wave 3: Validate fetched float value
         if result["float_shares"] is not None:
             if not validate_float_value(result["float_shares"]):
-                log.warning("yfinance_invalid_float ticker=%s float=%.0f", ticker.upper(), result["float_shares"])
+                log.warning(
+                    "yfinance_invalid_float ticker=%s float=%.0f",
+                    ticker.upper(),
+                    result["float_shares"],
+                )
                 result["float_shares"] = None
 
         # Mark as successful if we got at least one valid value
@@ -591,7 +649,9 @@ def _fetch_yfinance(ticker: str) -> Dict[str, Any]:
         log.debug("yfinance_not_installed ticker=%s", ticker)
     except Exception as e:
         result["error"] = f"{e.__class__.__name__}: {str(e)}"
-        log.warning("yfinance_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__)
+        log.warning(
+            "yfinance_fetch_failed ticker=%s err=%s", ticker, e.__class__.__name__
+        )
 
     return result
 
@@ -628,7 +688,13 @@ def get_float_data(ticker: str) -> Dict[str, Any]:
     # Check if float data feature is enabled
     try:
         import os
-        feature_enabled = os.getenv("FEATURE_FLOAT_DATA", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+        feature_enabled = os.getenv("FEATURE_FLOAT_DATA", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         if not feature_enabled:
             log.debug("float_data_disabled ticker=%s", ticker)
             return {
@@ -653,7 +719,11 @@ def get_float_data(ticker: str) -> Dict[str, Any]:
 
     if cached_data:
         cached_data["source"] = "cache"
-        log.debug("float_cache_hit ticker=%s source=%s", ticker_upper, cached_data.get("source", "unknown"))
+        log.debug(
+            "float_cache_hit ticker=%s source=%s",
+            ticker_upper,
+            cached_data.get("source", "unknown"),
+        )
         return cached_data
 
     # Cache miss - scrape FinViz (primary source)
@@ -663,7 +733,9 @@ def get_float_data(ticker: str) -> Dict[str, Any]:
     # Wave 3: Validate FinViz float data
     finviz_float = scrape_result.get("float_shares")
     if finviz_float is not None and not validate_float_value(finviz_float):
-        log.warning("finviz_invalid_float ticker=%s float=%.0f", ticker_upper, finviz_float)
+        log.warning(
+            "finviz_invalid_float ticker=%s float=%.0f", ticker_upper, finviz_float
+        )
         scrape_result["float_shares"] = None
         scrape_result["success"] = False
 
@@ -677,8 +749,11 @@ def get_float_data(ticker: str) -> Dict[str, Any]:
         if yf_result.get("success") and yf_result.get("float_shares"):
             # yfinance succeeded - use its data
             scrape_result = yf_result
-            log.info("float_fetch_success ticker=%s source=yfinance float=%.2fM",
-                     ticker_upper, (yf_result["float_shares"] or 0) / 1_000_000)
+            log.info(
+                "float_fetch_success ticker=%s source=yfinance float=%.2fM",
+                ticker_upper,
+                (yf_result["float_shares"] or 0) / 1_000_000,
+            )
         else:
             # yfinance failed - try Tiingo fallback (tertiary source)
             log.debug("yfinance_failed_or_empty ticker=%s trying_tiingo", ticker_upper)
@@ -687,8 +762,11 @@ def get_float_data(ticker: str) -> Dict[str, Any]:
             if tiingo_result.get("success") and tiingo_result.get("float_shares"):
                 # Tiingo succeeded - use its data
                 scrape_result = tiingo_result
-                log.info("float_fetch_success ticker=%s source=tiingo float=%.2fM",
-                         ticker_upper, (tiingo_result["float_shares"] or 0) / 1_000_000)
+                log.info(
+                    "float_fetch_success ticker=%s source=tiingo float=%.2fM",
+                    ticker_upper,
+                    (tiingo_result["float_shares"] or 0) / 1_000_000,
+                )
             else:
                 # All sources failed
                 log.warning("float_fetch_all_sources_failed ticker=%s", ticker_upper)

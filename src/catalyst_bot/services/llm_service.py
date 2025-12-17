@@ -34,7 +34,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -49,17 +48,17 @@ log = get_logger("llm_service")
 class TaskComplexity(Enum):
     """Task complexity levels for intelligent routing."""
 
-    SIMPLE = "simple"        # Simple classification, keyword extraction (Gemini Flash Lite)
-    MEDIUM = "medium"        # Standard analysis, short summaries (Gemini Flash)
-    COMPLEX = "complex"      # Deep analysis, M&A deals, earnings (Gemini Pro)
-    CRITICAL = "critical"    # High-stakes compliance, complex financial (Claude Sonnet)
+    SIMPLE = "simple"  # Simple classification, keyword extraction (Gemini Flash Lite)
+    MEDIUM = "medium"  # Standard analysis, short summaries (Gemini Flash)
+    COMPLEX = "complex"  # Deep analysis, M&A deals, earnings (Gemini Pro)
+    CRITICAL = "critical"  # High-stakes compliance, complex financial (Claude Sonnet)
 
 
 class OutputFormat(Enum):
     """Expected output format from LLM."""
 
-    TEXT = "text"           # Free-form text response
-    JSON = "json"           # JSON object
+    TEXT = "text"  # Free-form text response
+    JSON = "json"  # JSON object
     STRUCTURED = "structured"  # Pydantic model validation
 
 
@@ -140,7 +139,6 @@ class LLMResponse:
 
 class LLMServiceError(Exception):
     """Base exception for LLM service errors."""
-    pass
 
 
 class LLMService:
@@ -176,21 +174,31 @@ class LLMService:
         log.info(
             "llm_service_initialized enabled=%s cost_tracking=%s",
             self.enabled,
-            self.config.get("cost_tracking_enabled", True)
+            self.config.get("cost_tracking_enabled", True),
         )
 
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from environment variables."""
         return {
-            "enabled": os.getenv("FEATURE_UNIFIED_LLM_SERVICE", "1") in ("1", "true", "yes"),
-            "cost_tracking_enabled": os.getenv("LLM_COST_TRACKING", "1") in ("1", "true", "yes"),
-            "cache_enabled": os.getenv("LLM_CACHE_ENABLED", "1") in ("1", "true", "yes"),
-            "cache_ttl_seconds": int(os.getenv("LLM_CACHE_TTL_SECONDS", "86400")),  # 24 hours
-            "prompt_compression": os.getenv("LLM_PROMPT_COMPRESSION", "1") in ("1", "true", "yes"),
-            "compression_target": float(os.getenv("LLM_PROMPT_COMPRESSION_TARGET", "0.6")),  # 40% reduction
+            "enabled": os.getenv("FEATURE_UNIFIED_LLM_SERVICE", "1")
+            in ("1", "true", "yes"),
+            "cost_tracking_enabled": os.getenv("LLM_COST_TRACKING", "1")
+            in ("1", "true", "yes"),
+            "cache_enabled": os.getenv("LLM_CACHE_ENABLED", "1")
+            in ("1", "true", "yes"),
+            "cache_ttl_seconds": int(
+                os.getenv("LLM_CACHE_TTL_SECONDS", "86400")
+            ),  # 24 hours
+            "prompt_compression": os.getenv("LLM_PROMPT_COMPRESSION", "1")
+            in ("1", "true", "yes"),
+            "compression_target": float(
+                os.getenv("LLM_PROMPT_COMPRESSION_TARGET", "0.6")
+            ),  # 40% reduction
             "daily_cost_alert": float(os.getenv("LLM_COST_ALERT_DAILY", "30.00")),
             "monthly_cost_alert": float(os.getenv("LLM_COST_ALERT_MONTHLY", "800.00")),
-            "monthly_cost_hard_limit": float(os.getenv("LLM_COST_HARD_LIMIT_MONTHLY", "1000.00")),
+            "monthly_cost_hard_limit": float(
+                os.getenv("LLM_COST_HARD_LIMIT_MONTHLY", "1000.00")
+            ),
             "default_timeout": float(os.getenv("LLM_DEFAULT_TIMEOUT_SEC", "10.0")),
         }
 
@@ -199,6 +207,7 @@ class LLMService:
         """Lazy-load router."""
         if self._router is None:
             from .llm_router import LLMRouter
+
             self._router = LLMRouter(self.config)
         return self._router
 
@@ -208,6 +217,7 @@ class LLMService:
         if self._cache is None and self.config.get("cache_enabled"):
             try:
                 from .llm_cache import LLMCache
+
                 self._cache = LLMCache(self.config)
             except Exception as e:
                 log.warning("llm_cache_init_failed err=%s fallback_to_nocache", str(e))
@@ -220,9 +230,12 @@ class LLMService:
         if self._monitor is None and self.config.get("cost_tracking_enabled"):
             try:
                 from .llm_monitor import LLMMonitor
+
                 self._monitor = LLMMonitor(self.config)
             except Exception as e:
-                log.warning("llm_monitor_init_failed err=%s fallback_to_nomonitor", str(e))
+                log.warning(
+                    "llm_monitor_init_failed err=%s fallback_to_nomonitor", str(e)
+                )
                 self._monitor = None
         return self._monitor
 
@@ -252,8 +265,7 @@ class LLMService:
         if not self.enabled:
             log.warning("llm_service_disabled returning_empty_response")
             return LLMResponse(
-                text="",
-                error="LLM service is disabled (FEATURE_UNIFIED_LLM_SERVICE=0)"
+                text="", error="LLM service is disabled (FEATURE_UNIFIED_LLM_SERVICE=0)"
             )
 
         start_time = datetime.now()
@@ -266,12 +278,14 @@ class LLMService:
 
             # 2. Check cache
             if request.enable_cache and self.cache:
-                cached_response = await self.cache.get(request.prompt, request.feature_name)
+                cached_response = await self.cache.get(
+                    request.prompt, request.feature_name
+                )
                 if cached_response:
                     log.info(
                         "llm_cache_hit feature=%s complexity=%s",
                         request.feature_name,
-                        request.complexity.value if request.complexity else "auto"
+                        request.complexity.value if request.complexity else "auto",
                     )
                     cached_response.cached = True
                     cached_response.request_id = request_id
@@ -294,13 +308,13 @@ class LLMService:
                 request.complexity.value if request.complexity else "auto",
                 provider_name,
                 model,
-                compressed
+                compressed,
             )
 
             # 5. Execute request with retry and fallback logic
             last_error = None
             retry_count = 0
-            max_retries = request.max_retries if hasattr(request, 'max_retries') else 2
+            max_retries = request.max_retries if hasattr(request, "max_retries") else 2
 
             for attempt in range(max_retries + 1):
                 try:
@@ -310,7 +324,7 @@ class LLMService:
                         model=model,
                         max_tokens=request.max_tokens,
                         temperature=request.temperature,
-                        timeout=request.timeout_seconds
+                        timeout=request.timeout_seconds,
                     )
                     # Success - break out of retry loop
                     break
@@ -324,18 +338,22 @@ class LLMService:
                         provider_name,
                         retry_count,
                         max_retries + 1,
-                        str(e)[:100]
+                        str(e)[:100],
                     )
 
                     # If this isn't the last attempt and fallback is enabled, try fallback provider
                     if attempt < max_retries:
-                        fallback_provider_name, fallback_model = self.router.get_fallback_provider(
-                            failed_provider=provider_name,
-                            complexity=request.complexity or TaskComplexity.MEDIUM
+                        fallback_provider_name, fallback_model = (
+                            self.router.get_fallback_provider(
+                                failed_provider=provider_name,
+                                complexity=request.complexity or TaskComplexity.MEDIUM,
+                            )
                         )
 
                         # Mark current provider as unhealthy temporarily (5 minutes)
-                        self.router.mark_provider_unhealthy(provider_name, duration_seconds=300)
+                        self.router.mark_provider_unhealthy(
+                            provider_name, duration_seconds=300
+                        )
 
                         # Switch to fallback provider
                         provider_name = fallback_provider_name
@@ -346,7 +364,7 @@ class LLMService:
                             "llm_fallback_provider from=%s to=%s model=%s",
                             provider_name,
                             fallback_provider_name,
-                            fallback_model
+                            fallback_model,
                         )
                     else:
                         # Last attempt failed - re-raise error
@@ -367,7 +385,7 @@ class LLMService:
                 confidence=response.get("confidence"),
                 request_id=request_id,
                 prompt_compressed=compressed,
-                retries=retry_count  # Track actual retry count
+                retries=retry_count,  # Track actual retry count
             )
 
             # 7. Track cost and performance
@@ -381,7 +399,7 @@ class LLMService:
                     cost_usd=llm_response.cost_usd,
                     latency_ms=latency_ms,
                     cached=False,
-                    error=None
+                    error=None,
                 )
 
             # 7b. Bridge to legacy monitor for heartbeat display
@@ -389,6 +407,7 @@ class LLMService:
             # to also log there for metrics to appear in admin alerts.
             try:
                 from ..llm_usage_monitor import get_monitor as get_legacy_monitor
+
                 legacy_monitor = get_legacy_monitor()
                 if legacy_monitor:
                     legacy_monitor.log_usage(
@@ -412,7 +431,7 @@ class LLMService:
                 request.feature_name,
                 provider_name,
                 latency_ms,
-                llm_response.cost_usd
+                llm_response.cost_usd,
             )
 
             return llm_response
@@ -424,7 +443,7 @@ class LLMService:
                 request.feature_name,
                 str(e),
                 latency_ms,
-                exc_info=True
+                exc_info=True,
             )
 
             # Track error
@@ -438,12 +457,13 @@ class LLMService:
                     cost_usd=0.0,
                     latency_ms=latency_ms,
                     cached=False,
-                    error=str(e)
+                    error=str(e),
                 )
 
             # Bridge error to legacy monitor
             try:
                 from ..llm_usage_monitor import get_monitor as get_legacy_monitor
+
                 legacy_monitor = get_legacy_monitor()
                 if legacy_monitor:
                     legacy_monitor.log_usage(
@@ -452,6 +472,7 @@ class LLMService:
                         operation=request.feature_name,
                         input_tokens=0,
                         output_tokens=0,
+                        success=False,
                         cost_estimate=0.0,
                         latency_ms=latency_ms,
                         error=str(e),
@@ -460,10 +481,7 @@ class LLMService:
                 pass
 
             return LLMResponse(
-                text="",
-                error=str(e),
-                request_id=request_id,
-                latency_ms=latency_ms
+                text="", error=str(e), request_id=request_id, latency_ms=latency_ms
             )
 
     async def query_batch(self, requests: List[LLMRequest]) -> List[LLMResponse]:
@@ -485,19 +503,18 @@ class LLMService:
 
         # Execute all requests in parallel
         responses = await asyncio.gather(
-            *[self.query(req) for req in requests],
-            return_exceptions=True
+            *[self.query(req) for req in requests], return_exceptions=True
         )
 
         # Convert exceptions to error responses
         final_responses = []
         for i, resp in enumerate(responses):
             if isinstance(resp, Exception):
-                final_responses.append(LLMResponse(
-                    text="",
-                    error=str(resp),
-                    request_id=requests[i].request_id
-                ))
+                final_responses.append(
+                    LLMResponse(
+                        text="", error=str(resp), request_id=requests[i].request_id
+                    )
+                )
             else:
                 final_responses.append(resp)
 
@@ -534,7 +551,7 @@ class LLMService:
         return provider.estimate_cost(
             model=model,
             tokens_input=estimated_input_tokens,
-            tokens_output=estimated_output_tokens
+            tokens_output=estimated_output_tokens,
         )
 
     def get_stats(self) -> Dict[str, Any]:
@@ -568,14 +585,26 @@ class LLMService:
         prompt_lower = prompt.lower()
 
         # Critical keywords
-        if any(kw in prompt_lower for kw in ["compliance", "legal", "regulatory", "audit"]):
+        if any(
+            kw in prompt_lower for kw in ["compliance", "legal", "regulatory", "audit"]
+        ):
             return TaskComplexity.CRITICAL
 
         # Complex keywords
-        if any(kw in prompt_lower for kw in [
-            "m&a", "merger", "acquisition", "earnings", "10-k", "10-q",
-            "partnership", "agreement", "contract"
-        ]):
+        if any(
+            kw in prompt_lower
+            for kw in [
+                "m&a",
+                "merger",
+                "acquisition",
+                "earnings",
+                "10-k",
+                "10-q",
+                "partnership",
+                "agreement",
+                "contract",
+            ]
+        ):
             return TaskComplexity.COMPLEX
 
         # Simple based on length
@@ -585,7 +614,9 @@ class LLMService:
         # Medium by default
         return TaskComplexity.MEDIUM
 
-    def _compress_prompt(self, prompt: str, complexity: Optional[TaskComplexity]) -> str:
+    def _compress_prompt(
+        self, prompt: str, complexity: Optional[TaskComplexity]
+    ) -> str:
         """
         Compress prompt to reduce token count (PHASE 4).
 
@@ -623,12 +654,14 @@ class LLMService:
         ]
 
         for pattern in boilerplate_patterns:
-            compressed = re.sub(pattern, '', compressed, flags=re.IGNORECASE | re.MULTILINE)
+            compressed = re.sub(
+                pattern, "", compressed, flags=re.IGNORECASE | re.MULTILINE
+            )
 
         # 2. Normalize whitespace (multiple newlines/spaces -> single)
-        compressed = re.sub(r'\n\s*\n\s*\n+', '\n\n', compressed)  # Max 2 newlines
-        compressed = re.sub(r' {2,}', ' ', compressed)  # Multiple spaces -> single
-        compressed = re.sub(r'\t+', ' ', compressed)  # Tabs -> spaces
+        compressed = re.sub(r"\n\s*\n\s*\n+", "\n\n", compressed)  # Max 2 newlines
+        compressed = re.sub(r" {2,}", " ", compressed)  # Multiple spaces -> single
+        compressed = re.sub(r"\t+", " ", compressed)  # Tabs -> spaces
 
         # 3. Remove common SEC filing phrases that don't add meaning
         filler_phrases = [
@@ -642,7 +675,7 @@ class LLMService:
         ]
 
         for phrase in filler_phrases:
-            compressed = re.sub(phrase, '', compressed, flags=re.IGNORECASE)
+            compressed = re.sub(phrase, "", compressed, flags=re.IGNORECASE)
 
         # 4. Smart truncation based on complexity
         target_ratio = self.config.get("compression_target", 0.6)  # Default: keep 60%
@@ -651,16 +684,29 @@ class LLMService:
         if len(compressed) > max_chars:
             # Priority sections to keep (in order)
             priority_keywords = [
-                "acquisition", "merger", "agreement", "partnership",
-                "revenue", "earnings", "loss", "profit",
-                "shares", "offering", "dilution",
-                "bankruptcy", "delisting",
-                "fda", "approval", "clinical",
-                "ceo", "cfo", "resignation",
+                "acquisition",
+                "merger",
+                "agreement",
+                "partnership",
+                "revenue",
+                "earnings",
+                "loss",
+                "profit",
+                "shares",
+                "offering",
+                "dilution",
+                "bankruptcy",
+                "delisting",
+                "fda",
+                "approval",
+                "clinical",
+                "ceo",
+                "cfo",
+                "resignation",
             ]
 
             # Find sentences containing priority keywords
-            sentences = re.split(r'[.!?]+\s+', compressed)
+            sentences = re.split(r"[.!?]+\s+", compressed)
             priority_sentences = []
             other_sentences = []
 
@@ -687,7 +733,7 @@ class LLMService:
                 else:
                     break
 
-            compressed = '. '.join(result)
+            compressed = ". ".join(result)
 
         # 5. Final cleanup
         compressed = compressed.strip()
@@ -695,13 +741,17 @@ class LLMService:
         # Log compression stats
         original_len = len(prompt)
         compressed_len = len(compressed)
-        reduction_pct = ((original_len - compressed_len) / original_len * 100) if original_len > 0 else 0
+        reduction_pct = (
+            ((original_len - compressed_len) / original_len * 100)
+            if original_len > 0
+            else 0
+        )
 
         log.debug(
             "prompt_compressed original_chars=%d compressed_chars=%d reduction=%.1f%%",
             original_len,
             compressed_len,
-            reduction_pct
+            reduction_pct,
         )
 
         return compressed
@@ -711,9 +761,11 @@ class LLMService:
         if provider_name not in self._providers:
             if provider_name.startswith("gemini"):
                 from .llm_providers.gemini import GeminiProvider
+
                 self._providers[provider_name] = GeminiProvider(self.config)
             elif provider_name.startswith("claude"):
                 from .llm_providers.claude import ClaudeProvider
+
                 self._providers[provider_name] = ClaudeProvider(self.config)
             else:
                 raise LLMServiceError(f"Unknown provider: {provider_name}")
@@ -723,4 +775,5 @@ class LLMService:
     def _generate_request_id(self) -> str:
         """Generate unique request ID."""
         import uuid
+
         return str(uuid.uuid4())[:8]

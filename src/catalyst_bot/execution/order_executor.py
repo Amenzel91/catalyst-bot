@@ -465,16 +465,28 @@ class OrderExecutor:
 
         Returns:
             Rounded price, or None if input was None
+
+        Raises:
+            ValueError: If price is invalid (negative or non-numeric)
         """
         if price is None:
             return None
 
-        if price >= Decimal("1.00"):
-            # Stocks >= $1: Round to 2 decimal places (penny increment)
-            return price.quantize(Decimal("0.01"))
-        else:
-            # Stocks < $1: Round to 4 decimal places (sub-penny allowed)
-            return price.quantize(Decimal("0.0001"))
+        try:
+            # Validate price is non-negative
+            if price < 0:
+                self.logger.error(f"Invalid negative price: {price}")
+                raise ValueError(f"Price cannot be negative: {price}")
+
+            if price >= Decimal("1.00"):
+                # Stocks >= $1: Round to 2 decimal places (penny increment)
+                return price.quantize(Decimal("0.01"))
+            else:
+                # Stocks < $1: Round to 4 decimal places (sub-penny allowed)
+                return price.quantize(Decimal("0.0001"))
+        except (ValueError, TypeError, ArithmeticError) as e:
+            self.logger.error(f"Failed to round price {price}: {e}")
+            raise ValueError(f"Invalid price value: {price}") from e
 
     async def execute_signal(
         self,

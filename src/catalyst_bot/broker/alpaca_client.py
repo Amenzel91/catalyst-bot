@@ -48,7 +48,6 @@ from .broker_interface import (
     OrderStatus,
     OrderType,
     Position,
-    PositionNotFoundError,
     PositionSide,
     RateLimitError,
     TimeInForce,
@@ -161,7 +160,14 @@ class AlpacaBrokerClient(BrokerInterface):
             )
 
             # Test connection by fetching account
-            await self._test_connection()
+            try:
+                await self._test_connection()
+            except Exception:
+                # Clean up session if connection test fails
+                if self.session:
+                    await self.session.close()
+                    self.session = None
+                raise
 
             self._connected = True
             self.logger.info("Successfully connected to Alpaca API")
@@ -200,7 +206,7 @@ class AlpacaBrokerClient(BrokerInterface):
             # TODO: Handle authentication errors specifically
 
             url = self._build_url(self.ACCOUNT_ENDPOINT)
-            response = await self._request("GET", url)
+            await self._request("GET", url)
 
             # If we get here, connection is successful
             self.logger.debug("Connection test successful")
@@ -290,7 +296,7 @@ class AlpacaBrokerClient(BrokerInterface):
                 if response.status == 429:
                     self.logger.warning("Rate limit exceeded, retrying...")
                     if retry_count < self.max_retries:
-                        await asyncio.sleep(self.retry_delay * (2 ** retry_count))
+                        await asyncio.sleep(self.retry_delay * (2**retry_count))
                         return await self._request(
                             method, url, json_data, params, retry_count + 1
                         )
@@ -316,7 +322,7 @@ class AlpacaBrokerClient(BrokerInterface):
 
                     # Retry on server errors
                     if response.status >= 500 and retry_count < self.max_retries:
-                        await asyncio.sleep(self.retry_delay * (2 ** retry_count))
+                        await asyncio.sleep(self.retry_delay * (2**retry_count))
                         return await self._request(
                             method, url, json_data, params, retry_count + 1
                         )
@@ -331,7 +337,7 @@ class AlpacaBrokerClient(BrokerInterface):
 
             # Retry on connection errors
             if retry_count < self.max_retries:
-                await asyncio.sleep(self.retry_delay * (2 ** retry_count))
+                await asyncio.sleep(self.retry_delay * (2**retry_count))
                 return await self._request(
                     method, url, json_data, params, retry_count + 1
                 )
@@ -896,9 +902,18 @@ class AlpacaBrokerClient(BrokerInterface):
     def _map_order_status_for_query(self, status: OrderStatus) -> str:
         """Map our OrderStatus to Alpaca status query parameter."""
         # Alpaca status query values: open, closed, all
-        if status in {OrderStatus.PENDING, OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED}:
+        if status in {
+            OrderStatus.PENDING,
+            OrderStatus.SUBMITTED,
+            OrderStatus.PARTIALLY_FILLED,
+        }:
             return "open"
-        elif status in {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.EXPIRED}:
+        elif status in {
+            OrderStatus.FILLED,
+            OrderStatus.CANCELLED,
+            OrderStatus.REJECTED,
+            OrderStatus.EXPIRED,
+        }:
             return "closed"
         return "all"
 
@@ -989,7 +1004,7 @@ if __name__ == "__main__":
 
             # Get account info
             account = await broker.get_account()
-            print(f"\nAccount Info:")
+            print("\nAccount Info:")
             print(f"  Cash: ${account.cash}")
             print(f"  Buying Power: ${account.buying_power}")
             print(f"  Portfolio Value: ${account.portfolio_value}")
@@ -1035,11 +1050,13 @@ if __name__ == "__main__":
             orders = await broker.get_orders()
             print(f"\nOpen Orders: {len(orders)}")
             for order in orders:
-                print(f"  {order.ticker} {order.side} {order.quantity} @ {order.status}")
+                print(
+                    f"  {order.ticker} {order.side} {order.quantity} @ {order.status}"
+                )
 
             # Health check
             health = await broker.health_check()
-            print(f"\nHealth Check:")
+            print("\nHealth Check:")
             print(f"  Connected: {health['connected']}")
             print(f"  Latency: {health['latency_ms']:.2f}ms")
             print(f"  Rate Limit Remaining: {health['rate_limit_remaining']}")

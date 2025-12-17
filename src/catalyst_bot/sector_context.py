@@ -426,10 +426,24 @@ class SectorContextManager:
 
         Returns:
             Cached info or None
+
+        Security Note:
+            This loads pickle files from application-controlled cache directory.
+            Files are created by this application only. Do not load pickle files
+            from untrusted sources.
         """
         cache_path = self._get_disk_cache_path("sector_info", ticker)
 
         if not cache_path.exists():
+            return None
+
+        # Validate that cache file is within expected cache directory (path traversal protection)
+        try:
+            cache_path.resolve().relative_to(self.cache_dir.resolve())
+        except ValueError:
+            log.warning(
+                f"cache_path_traversal_attempt ticker={ticker} path={cache_path}"
+            )
             return None
 
         try:

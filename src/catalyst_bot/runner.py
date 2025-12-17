@@ -2214,6 +2214,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                     )
     except Exception as e:
         log.debug("news_velocity_tracking_failed err=%s", e.__class__.__name__)
+        _record_and_track_error(
+            "warning", "Data", f"News velocity tracking failed: {str(e)[:80]}"
+        )
 
     # Dynamic keyword weights (with on-disk fallback)
     dyn_weights, dyn_loaded, dyn_path_str, dyn_path_exists = (
@@ -2434,6 +2437,9 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 log.info("sec_filings_marked_seen count=%d", sec_marked_count)
         except Exception as e:
             log.error("sec_batch_processing_failed err=%s", str(e), exc_info=True)
+            _record_and_track_error(
+                "error", "SEC", f"SEC batch processing failed: {str(e)[:80]}"
+            )
             # Fallback to empty results to prevent cycle crash
             sec_llm_cache = {}
 
@@ -3702,6 +3708,11 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                         str(e),
                         exc_info=True,
                     )
+                    _record_and_track_error(
+                        "error",
+                        "Trading",
+                        f"Trade execution failed for {ticker}: {str(e)[:60]}",
+                    )
 
             # Optional: subscribe to Alpaca stream after sending an alert.  Run
             # asynchronously so we do not block the runner loop.  The feature
@@ -4453,6 +4464,9 @@ def runner_main(
             log.info("paper_trading_monitor_enabled")
     except Exception as e:
         log.error("position_monitor_startup_failed error=%s", str(e))
+        _record_and_track_error(
+            "error", "Trading", f"Position monitor startup failed: {str(e)[:80]}"
+        )
 
     # signals
     try:
@@ -4526,6 +4540,9 @@ def runner_main(
             log.warning("sec_monitor_module_not_available")
         except Exception as e:
             log.error("sec_monitor_startup_failed err=%s", str(e))
+            _record_and_track_error(
+                "error", "SEC", f"SEC monitor startup failed: {str(e)[:80]}"
+            )
 
     # Auto-refresh CIK mappings if stale (>7 days old)
     try:
@@ -4557,6 +4574,9 @@ def runner_main(
                 trading_engine = None
         except Exception as e:
             log.error("trading_engine_startup_failed err=%s", str(e), exc_info=True)
+            _record_and_track_error(
+                "error", "Trading", f"Trading engine startup failed: {str(e)[:80]}"
+            )
             trading_engine = None
 
     # Send boot heartbeat AFTER TradingEngine initialization
@@ -4576,6 +4596,9 @@ def runner_main(
         except Exception as test_err:
             log.error(
                 "startup_test_alert_exception err=%s", str(test_err), exc_info=True
+            )
+            _record_and_track_error(
+                "warning", "Discord", f"Startup test alert failed: {str(test_err)[:80]}"
             )
 
     do_loop = loop or (not once)

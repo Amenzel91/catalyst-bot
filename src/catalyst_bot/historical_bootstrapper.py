@@ -64,11 +64,13 @@ except Exception as e:
 
 # Initialize Finnhub API client for historical price data
 try:
-    _finnhub_api_key = os.getenv(
-        "FINNHUB_API_KEY", "d26q8dhr01qvrairld20d26q8dhr01qvrairld2g"
-    )
-    _finnhub_client = finnhub.Client(api_key=_finnhub_api_key)
-    log.info("finnhub_client_initialized")
+    _finnhub_api_key = os.getenv("FINNHUB_API_KEY")
+    if not _finnhub_api_key:
+        log.warning("finnhub_api_key_missing set FINNHUB_API_KEY environment variable")
+        _finnhub_client = None
+    else:
+        _finnhub_client = finnhub.Client(api_key=_finnhub_api_key)
+        log.info("finnhub_client_initialized")
 except Exception as e:
     log.warning(f"finnhub_client_init_failed err={e}")
     _finnhub_client = None
@@ -922,7 +924,18 @@ class HistoricalBootstrapper:
         cache_path = _get_disk_cache_path(self.cache_dir, ticker, date)
 
         if cache_path.exists():
+            # Validate cache file is within expected directory (path traversal protection)
             try:
+                cache_path.resolve().relative_to(self.cache_dir.resolve())
+            except ValueError:
+                log.warning(
+                    f"cache_path_traversal_attempt ticker={ticker} path={cache_path}"
+                )
+                return None
+
+            try:
+                # Security Note: Loading pickle from application-controlled cache directory
+                # Files are created by this application only. Do not load from untrusted sources.
                 with open(cache_path, "rb") as f:
                     cache_data = pickle.load(f)
 

@@ -908,9 +908,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
         # If discord_test, fall through to send to Discord too
 
     # If a prior error downgraded alerts, record-only
-    with alert_lock:
-        downgraded = _alert_downgraded
-    if downgraded:
+    # CRITICAL BUG FIX: Use thread-safe accessor instead of direct access
+    if get_alert_downgraded():
         log.info("alert_record_only source=%s ticker=%s downgraded", source, ticker)
         return True
 
@@ -1533,74 +1532,73 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         posted_price=last_price,
                     )
 
-                    # Execute trade using TradingEngine (MIGRATED 2025-11-26)
-                    if HAS_PAPER_TRADING and paper_trading_enabled():
-                        try:
-                            # Import extended hours detection
-                            from decimal import Decimal
-
-                            from .market_hours import is_extended_hours
-                            from .runner import TRADING_ACTIVITY_STATS
-
-                            # Get current settings
-                            s = get_settings()
-
-                            # Track signal generation attempt
-                            TRADING_ACTIVITY_STATS["signals_generated"] = (
-                                TRADING_ACTIVITY_STATS.get("signals_generated", 0) + 1
-                            )
-
-                            # Execute trade via TradingEngine adapter
-                            success = execute_with_trading_engine(
-                                item=scored,  # ScoredItem from classify()
-                                ticker=ticker,
-                                current_price=(
-                                    Decimal(str(last_price)) if last_price else None
-                                ),
-                                extended_hours=is_extended_hours(),
-                                settings=s,
-                            )
-
-                            if success:
-                                # Track successful trade execution
-                                TRADING_ACTIVITY_STATS["trades_executed"] = (
-                                    TRADING_ACTIVITY_STATS.get("trades_executed", 0) + 1
-                                )
-                                log.info(
-                                    "trading_engine_signal_executed ticker=%s extended_hours=%s",
-                                    ticker,
-                                    is_extended_hours(),
-                                )
-                            else:
-                                log.debug(
-                                    "trading_engine_signal_skipped ticker=%s "
-                                    "reason=low_confidence_or_hold",
-                                    ticker,
-                                )
-                        except Exception as trade_err:
-                            log.error(
-                                "trading_engine_execution_failed ticker=%s error=%s",
-                                ticker,
-                                str(trade_err),
-                                exc_info=True,
-                            )
-                            # Track trading errors for heartbeat visibility
-                            try:
-                                from .runner import _record_and_track_error
-
-                                _record_and_track_error(
-                                    "error",
-                                    "Trading",
-                                    f"Trade execution failed for {ticker}: {str(trade_err)[:60]}",
-                                )
-                            except Exception:
-                                pass
-
                 except Exception as feedback_err:
                     # Don't fail the alert if feedback recording fails
                     log.debug("feedback_recording_failed error=%s", str(feedback_err))
         except Exception:
             pass
+
+        # Execute trade using TradingEngine (MIGRATED 2025-11-26)
+        # NOTE: Trading execution is independent of feedback loop feature
+        if HAS_PAPER_TRADING and paper_trading_enabled():
+            try:
+                # Import extended hours detection
+                from decimal import Decimal
+
+                from .market_hours import is_extended_hours
+                from .runner import TRADING_ACTIVITY_STATS
+
+                # Get current settings
+                s = get_settings()
+
+                # Track signal generation attempt
+                TRADING_ACTIVITY_STATS["signals_generated"] = (
+                    TRADING_ACTIVITY_STATS.get("signals_generated", 0) + 1
+                )
+
+                # Execute trade via TradingEngine adapter
+                success = execute_with_trading_engine(
+                    item=scored,  # ScoredItem from classify()
+                    ticker=ticker,
+                    current_price=(Decimal(str(last_price)) if last_price else None),
+                    extended_hours=is_extended_hours(),
+                    settings=s,
+                )
+
+                if success:
+                    # Track successful trade execution
+                    TRADING_ACTIVITY_STATS["trades_executed"] = (
+                        TRADING_ACTIVITY_STATS.get("trades_executed", 0) + 1
+                    )
+                    log.info(
+                        "trading_engine_signal_executed ticker=%s extended_hours=%s",
+                        ticker,
+                        is_extended_hours(),
+                    )
+                else:
+                    log.debug(
+                        "trading_engine_signal_skipped ticker=%s "
+                        "reason=low_confidence_or_hold",
+                        ticker,
+                    )
+            except Exception as trade_err:
+                log.error(
+                    "trading_engine_execution_failed ticker=%s error=%s",
+                    ticker,
+                    str(trade_err),
+                    exc_info=True,
+                )
+                # Track trading errors for heartbeat visibility
+                try:
+                    from .runner import _record_and_track_error
+
+                    _record_and_track_error(
+                        "error",
+                        "Trading",
+                        f"Trade execution failed for {ticker}: {str(trade_err)[:60]}",
+                    )
+                except Exception:
+                    pass
 
     return ok
 
@@ -1702,7 +1700,20 @@ async def send_progressive_alert(
             message = await webhook.send(embed=embed, wait=True)
 
         # Phase 2: Queue for LLM processing (background task)
-        asyncio.create_task(
+        # CRITICAL BUG FIX: Add done callback to handle exceptions
+        def _handle_task_exception(task):
+            """Handle exceptions from background LLM enrichment task."""
+            try:
+                task.result()
+            except Exception as e:
+                log.error(
+                    "async_llm_enrichment_failed ticker=%s error=%s",
+                    alert_data.get("item", {}).get("ticker", "???"),
+                    e.__class__.__name__,
+                    exc_info=True,
+                )
+
+        task = asyncio.create_task(
             _enrich_alert_with_llm(
                 message_id=message.id,
                 webhook_url=webhook_url,
@@ -1710,6 +1721,7 @@ async def send_progressive_alert(
                 initial_embed=embed,
             )
         )
+        task.add_done_callback(_handle_task_exception)
 
         return {"id": message.id, "channel_id": message.channel_id}
     except Exception as e:

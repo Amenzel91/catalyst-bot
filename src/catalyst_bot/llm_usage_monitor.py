@@ -25,7 +25,7 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 _logger = logging.getLogger(__name__)
 
@@ -165,6 +165,7 @@ class LLMUsageMonitor:
             else:
                 # Default to data/logs/llm_usage.jsonl
                 from .config import get_settings
+
                 settings = get_settings()
                 self.log_path = settings.data_dir / "logs" / "llm_usage.jsonl"
         else:
@@ -175,7 +176,9 @@ class LLMUsageMonitor:
 
         # Alert thresholds (USD)
         self.daily_alert_threshold = float(os.getenv("LLM_COST_ALERT_DAILY", "5.00"))
-        self.monthly_alert_threshold = float(os.getenv("LLM_COST_ALERT_MONTHLY", "50.00"))
+        self.monthly_alert_threshold = float(
+            os.getenv("LLM_COST_ALERT_MONTHLY", "50.00")
+        )
 
         # Agent 4: Real-time cost accumulator (resets daily)
         self.realtime_cost_today = 0.0
@@ -207,6 +210,8 @@ class LLMUsageMonitor:
         error: Optional[str] = None,
         article_length: Optional[int] = None,
         ticker: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        cost_estimate: Optional[float] = None,
     ) -> LLMUsageEvent:
         """
         Log a single LLM API call.
@@ -221,15 +226,26 @@ class LLMUsageMonitor:
             error: Error message if failed
             article_length: Article length in characters
             ticker: Stock ticker if applicable
+            latency_ms: Request latency in milliseconds (optional)
+            cost_estimate: Pre-calculated cost estimate in USD (optional, overrides calc)
 
         Returns:
             LLMUsageEvent with calculated costs
         """
         # Calculate costs
-        pricing = PRICING.get(provider, {}).get(model, {"input": 0.0, "output": 0.0})
-        input_cost = input_tokens * pricing["input"]
-        output_cost = output_tokens * pricing["output"]
-        total_cost = input_cost + output_cost
+        # Use cost_estimate if provided, otherwise calculate from tokens
+        if cost_estimate is not None:
+            total_cost = cost_estimate
+            # Estimate breakdown (60% output, 40% input is typical)
+            output_cost = total_cost * 0.6
+            input_cost = total_cost * 0.4
+        else:
+            pricing = PRICING.get(provider, {}).get(
+                model, {"input": 0.0, "output": 0.0}
+            )
+            input_cost = input_tokens * pricing["input"]
+            output_cost = output_tokens * pricing["output"]
+            total_cost = input_cost + output_cost
 
         # Create event
         event = LLMUsageEvent(
@@ -316,6 +332,7 @@ class LLMUsageMonitor:
             True if threshold exceeded
         """
         from .config import get_settings
+
         settings = get_settings()
 
         thresholds = {
@@ -444,7 +461,9 @@ class LLMUsageMonitor:
                                     pstats.failed_requests += 1
 
                                 pstats.total_input_tokens += event_data["input_tokens"]
-                                pstats.total_output_tokens += event_data["output_tokens"]
+                                pstats.total_output_tokens += event_data[
+                                    "output_tokens"
+                                ]
                                 pstats.total_tokens += event_data["total_tokens"]
 
                                 pstats.total_input_cost += event_data["input_cost"]
@@ -453,7 +472,8 @@ class LLMUsageMonitor:
 
                             # Update operation costs
                             cost_by_operation[operation] = (
-                                cost_by_operation.get(operation, 0.0) + event_data["total_cost"]
+                                cost_by_operation.get(operation, 0.0)
+                                + event_data["total_cost"]
                             )
 
                             # Update totals
@@ -462,7 +482,11 @@ class LLMUsageMonitor:
                             total_cost += event_data["total_cost"]
 
                         except (json.JSONDecodeError, KeyError, ValueError) as e:
-                            _logger.debug("llm_usage_parse_error line=%s err=%s", line[:50], str(e))
+                            _logger.debug(
+                                "llm_usage_parse_error line=%s err=%s",
+                                line[:50],
+                                str(e),
+                            )
             except Exception as e:
                 _logger.warning("llm_usage_log_read_failed err=%s", str(e))
 
@@ -508,6 +532,7 @@ class LLMUsageMonitor:
 
         # Agent 4: Multi-tier alerting (warn/crit/emergency)
         from .config import get_settings
+
         settings = get_settings()
 
         warn_threshold = getattr(settings, "llm_cost_alert_warn", 5.0)
@@ -518,7 +543,7 @@ class LLMUsageMonitor:
 
         if daily_cost >= emergency_threshold:
             _logger.critical(
-                "llm_cost_alert_EMERGENCY cost=$%.2f threshold=$%.2f providers=%s - DISABLING EXPENSIVE MODELS",
+                "llm_cost_alert_EMERGENCY cost=$%.2f threshold=$%.2f providers=%s",
                 daily_cost,
                 emergency_threshold,
                 {k: f"${v:.2f}" for k, v in daily_stats.cost_by_provider.items()},
@@ -529,7 +554,7 @@ class LLMUsageMonitor:
 
         elif daily_cost >= crit_threshold:
             _logger.error(
-                "llm_cost_alert_CRITICAL cost=$%.2f threshold=$%.2f providers=%s - DISABLING PRO MODEL",
+                "llm_cost_alert_CRITICAL cost=$%.2f threshold=$%.2f providers=%s",
                 daily_cost,
                 crit_threshold,
                 {k: f"${v:.2f}" for k, v in daily_stats.cost_by_provider.items()},
@@ -571,18 +596,18 @@ class LLMUsageMonitor:
         for provider, cost in summary.cost_by_provider.items():
             if cost > 0:
                 pstats = getattr(summary, provider)
-                print(f"{provider.capitalize():15s} ${cost:8.4f}  "
-                      f"({pstats.total_requests} requests, "
-                      f"{pstats.total_tokens:,} tokens)")
+                print(
+                    f"{provider.capitalize():15s} ${cost:8.4f}  "
+                    f"({pstats.total_requests} requests, "
+                    f"{pstats.total_tokens:,} tokens)"
+                )
 
         print("\n" + "-" * 70)
         print("COST BY OPERATION:")
         print("-" * 70)
         # Sort by cost descending
         sorted_ops = sorted(
-            summary.cost_by_operation.items(),
-            key=lambda x: x[1],
-            reverse=True
+            summary.cost_by_operation.items(), key=lambda x: x[1], reverse=True
         )
         for operation, cost in sorted_ops[:10]:  # Top 10
             print(f"{operation:30s} ${cost:8.4f}")
@@ -595,12 +620,18 @@ class LLMUsageMonitor:
             pstats = getattr(summary, provider)
             if pstats.total_requests > 0:
                 print(f"\n{provider.upper()} ({pstats.model}):")
-                print(f"  Requests: {pstats.total_requests} "
-                      f"(OK:{pstats.successful_requests} FAIL:{pstats.failed_requests})")
-                print(f"  Tokens:   {pstats.total_tokens:,} "
-                      f"(in: {pstats.total_input_tokens:,}, out: {pstats.total_output_tokens:,})")
-                print(f"  Cost:     ${pstats.total_cost:.4f} "
-                      f"(in: ${pstats.total_input_cost:.4f}, out: ${pstats.total_output_cost:.4f})")
+                print(
+                    f"  Requests: {pstats.total_requests} "
+                    f"(OK:{pstats.successful_requests} FAIL:{pstats.failed_requests})"
+                )
+                print(
+                    f"  Tokens:   {pstats.total_tokens:,} "
+                    f"(in: {pstats.total_input_tokens:,}, out: {pstats.total_output_tokens:,})"
+                )
+                print(
+                    f"  Cost:     ${pstats.total_cost:.4f} "
+                    f"(in: ${pstats.total_input_cost:.4f}, out: ${pstats.total_output_cost:.4f})"
+                )
 
         print("\n" + "=" * 70 + "\n")
 

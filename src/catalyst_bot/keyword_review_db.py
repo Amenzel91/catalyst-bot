@@ -51,7 +51,8 @@ def init_review_database() -> Path:
     conn.execute("PRAGMA foreign_keys=ON")
 
     # Table 1: keyword_reviews - Main review record
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS keyword_reviews (
             review_id TEXT PRIMARY KEY,
             state TEXT NOT NULL,
@@ -69,10 +70,12 @@ def init_review_database() -> Path:
             source_analysis_path TEXT,
             notes TEXT
         )
-    """)
+    """
+    )
 
     # Table 2: keyword_changes - Individual keyword changes
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS keyword_changes (
             change_id INTEGER PRIMARY KEY AUTOINCREMENT,
             review_id TEXT NOT NULL,
@@ -89,10 +92,12 @@ def init_review_database() -> Path:
             reviewed_at TEXT,
             FOREIGN KEY (review_id) REFERENCES keyword_reviews(review_id) ON DELETE CASCADE
         )
-    """)
+    """
+    )
 
     # Table 3: keyword_stats_snapshots - Rollback support
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS keyword_stats_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
             review_id TEXT NOT NULL,
@@ -100,16 +105,31 @@ def init_review_database() -> Path:
             snapshot_data TEXT NOT NULL,
             FOREIGN KEY (review_id) REFERENCES keyword_reviews(review_id) ON DELETE CASCADE
         )
-    """)
+    """
+    )
 
     # Indexes for fast queries
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_state ON keyword_reviews(state)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_created ON keyword_reviews(created_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_reviews_expires ON keyword_reviews(expires_at)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_changes_review ON keyword_changes(review_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_changes_keyword ON keyword_changes(keyword)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_changes_status ON keyword_changes(status)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_review ON keyword_stats_snapshots(review_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reviews_state ON keyword_reviews(state)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reviews_created ON keyword_reviews(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reviews_expires ON keyword_reviews(expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_changes_review ON keyword_changes(review_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_changes_keyword ON keyword_changes(keyword)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_changes_status ON keyword_changes(status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_review ON keyword_stats_snapshots(review_id)"
+    )
 
     conn.commit()
     conn.close()
@@ -162,16 +182,32 @@ def create_review_record(
 
     try:
         conn = get_connection()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO keyword_reviews (
                 review_id, state, created_at, updated_at, expires_at,
                 total_keywords, source_analysis_path
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (review_id, "PENDING", now, now, expires_at, total_keywords, source_analysis_path))
+        """,
+            (
+                review_id,
+                "PENDING",
+                now,
+                now,
+                expires_at,
+                total_keywords,
+                source_analysis_path,
+            ),
+        )
         conn.commit()
         conn.close()
 
-        log.info(f"review_record_created review_id={review_id} keywords={total_keywords} expires_at={expires_at}")
+        log.info(
+            "review_record_created review_id=%s keywords=%s expires_at=%s",
+            review_id,
+            total_keywords,
+            expires_at,
+        )
         return True
 
     except sqlite3.IntegrityError:
@@ -224,25 +260,43 @@ def insert_keyword_change(
 
     try:
         conn = get_connection()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO keyword_changes (
                 review_id, keyword, old_weight, new_weight, weight_delta,
                 confidence, occurrences, success_rate, avg_return_pct,
                 evidence_json, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            review_id, keyword, old_weight, new_weight, weight_delta,
-            confidence, occurrences, success_rate, avg_return_pct,
-            evidence_json, "PENDING"
-        ))
+        """,
+            (
+                review_id,
+                keyword,
+                old_weight,
+                new_weight,
+                weight_delta,
+                confidence,
+                occurrences,
+                success_rate,
+                avg_return_pct,
+                evidence_json,
+                "PENDING",
+            ),
+        )
         conn.commit()
         conn.close()
 
-        log.debug(f"keyword_change_inserted review_id={review_id} keyword={keyword} delta={weight_delta:+.2f}")
+        log.debug(
+            "keyword_change_inserted review_id=%s keyword=%s delta=%+.2f",
+            review_id,
+            keyword,
+            weight_delta,
+        )
         return True
 
     except Exception as e:
-        log.error(f"keyword_change_insert_failed review_id={review_id} keyword={keyword} err={e}")
+        log.error(
+            f"keyword_change_insert_failed review_id={review_id} keyword={keyword} err={e}"
+        )
         return False
 
 
@@ -267,14 +321,19 @@ def create_snapshot(review_id: str, snapshot_data: Dict[str, Any]) -> bool:
 
     try:
         conn = get_connection()
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO keyword_stats_snapshots (review_id, snapshot_at, snapshot_data)
             VALUES (?, ?, ?)
-        """, (review_id, now, snapshot_json))
+        """,
+            (review_id, now, snapshot_json),
+        )
         conn.commit()
         conn.close()
 
-        log.info(f"snapshot_created review_id={review_id} size={len(snapshot_json)} bytes")
+        log.info(
+            f"snapshot_created review_id={review_id} size={len(snapshot_json)} bytes"
+        )
         return True
 
     except Exception as e:
@@ -298,9 +357,12 @@ def get_review(review_id: str) -> Optional[Dict[str, Any]]:
     """
     try:
         conn = get_connection()
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT * FROM keyword_reviews WHERE review_id = ?
-        """, (review_id,))
+        """,
+            (review_id,),
+        )
         row = cursor.fetchone()
         conn.close()
 
@@ -313,7 +375,9 @@ def get_review(review_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_keyword_changes(review_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_keyword_changes(
+    review_id: str, status: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     Get all keyword changes for a review, optionally filtered by status.
 
@@ -333,17 +397,23 @@ def get_keyword_changes(review_id: str, status: Optional[str] = None) -> List[Di
         conn = get_connection()
 
         if status:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM keyword_changes
                 WHERE review_id = ? AND status = ?
                 ORDER BY confidence DESC, avg_return_pct DESC
-            """, (review_id, status))
+            """,
+                (review_id, status),
+            )
         else:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM keyword_changes
                 WHERE review_id = ?
                 ORDER BY confidence DESC, avg_return_pct DESC
-            """, (review_id,))
+            """,
+                (review_id,),
+            )
 
         rows = cursor.fetchall()
         conn.close()
@@ -392,7 +462,12 @@ def update_review_state(review_id: str, new_state: str, **kwargs) -> bool:
         conn.commit()
         conn.close()
 
-        log.info(f"review_state_updated review_id={review_id} new_state={new_state} fields={list(kwargs.keys())}")
+        log.info(
+            "review_state_updated review_id=%s new_state=%s fields=%s",
+            review_id,
+            new_state,
+            list(kwargs.keys()),
+        )
         return True
 
     except Exception as e:
@@ -425,35 +500,59 @@ def update_keyword_status(
     bool
         True if updated successfully
     """
+    # Whitelist validation for new_status to prevent SQL injection
+    VALID_STATUSES = {"APPROVED", "REJECTED", "SKIPPED"}
+    if new_status not in VALID_STATUSES:
+        log.error(
+            f"update_keyword_status_invalid_status status={new_status} valid={VALID_STATUSES}"
+        )
+        return False
+
     now = datetime.now(timezone.utc).isoformat()
+
+    # Column name mapping for safe SQL construction
+    STATUS_COLUMN_MAP = {
+        "APPROVED": "approved_count",
+        "REJECTED": "rejected_count",
+        "SKIPPED": "skipped_count",
+    }
+    count_column = STATUS_COLUMN_MAP[new_status]
 
     try:
         conn = get_connection()
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE keyword_changes
             SET status = ?, reviewed_at = ?
             WHERE review_id = ? AND keyword = ?
-        """, (new_status, now, review_id, keyword))
+        """,
+            (new_status, now, review_id, keyword),
+        )
 
-        # Update parent review counts
-        conn.execute(f"""
+        # Update parent review counts - using whitelisted column name
+        query = f"""
             UPDATE keyword_reviews
-            SET {new_status.lower()}_count = (
+            SET {count_column} = (
                 SELECT COUNT(*) FROM keyword_changes
                 WHERE review_id = ? AND status = ?
             ),
             updated_at = ?
             WHERE review_id = ?
-        """, (review_id, new_status, now, review_id))
+        """
+        conn.execute(query, (review_id, new_status, now, review_id))
 
         conn.commit()
         conn.close()
 
-        log.debug(f"keyword_status_updated review_id={review_id} keyword={keyword} status={new_status}")
+        log.debug(
+            f"keyword_status_updated review_id={review_id} keyword={keyword} status={new_status}"
+        )
         return True
 
     except Exception as e:
-        log.error(f"update_keyword_status_failed review_id={review_id} keyword={keyword} err={e}")
+        log.error(
+            f"update_keyword_status_failed review_id={review_id} keyword={keyword} err={e}"
+        )
         return False
 
 
@@ -468,11 +567,13 @@ def get_pending_reviews() -> List[Dict[str, Any]]:
     """
     try:
         conn = get_connection()
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT * FROM keyword_reviews
             WHERE state = 'PENDING'
             ORDER BY created_at DESC
-        """)
+        """
+        )
         rows = cursor.fetchall()
         conn.close()
 
@@ -501,11 +602,14 @@ def get_expired_reviews(timeout_hours: int = 48) -> List[Dict[str, Any]]:
         now = datetime.now(timezone.utc).isoformat()
 
         conn = get_connection()
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT * FROM keyword_reviews
             WHERE state = 'PENDING' AND expires_at IS NOT NULL AND expires_at < ?
             ORDER BY expires_at ASC
-        """, (now,))
+        """,
+            (now,),
+        )
         rows = cursor.fetchall()
         conn.close()
 
@@ -532,12 +636,15 @@ def get_latest_snapshot(review_id: str) -> Optional[Dict[str, Any]]:
     """
     try:
         conn = get_connection()
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT snapshot_data FROM keyword_stats_snapshots
             WHERE review_id = ?
             ORDER BY snapshot_at DESC
             LIMIT 1
-        """, (review_id,))
+        """,
+            (review_id,),
+        )
         row = cursor.fetchone()
         conn.close()
 

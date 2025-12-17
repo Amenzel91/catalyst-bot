@@ -34,8 +34,7 @@ scipy>=1.11,<2  # Required for pattern recognition (find_peaks)
 # NEW: Process management (for WAVE 2.3)
 psutil>=5.9,<6
 
-# NEW: Python 3.9 compatibility
-backports.zoneinfo>=0.2.1;python_version<"3.9"
+# Python 3.11+ is required - no backports needed
 
 # NEW: API clients (optional - for WAVE 0.1)
 finnhub-python>=2.4,<3
@@ -63,9 +62,9 @@ discord.py>=2.0,<3
 # WAVE 3: Hybrid LLM Router (optional - for cloud API fallback)
 # These dependencies enable cloud API fallback when local LLM fails
 # Google Gemini API (free tier: 1500 req/day)
-google-generativeai>=0.3.0,<1;python_version>="3.9"
+google-generativeai>=0.7.0,<1
 # Anthropic Claude API (paid, high-accuracy fallback)
-anthropic>=0.18.0,<1
+anthropic>=0.35.0,<1
 
 # WAVE 3: Semantic Caching (optional - for LLM response caching)
 # Requires Redis server running (local or cloud)

@@ -52,11 +52,9 @@ Usage:
 """
 
 import hashlib
-import logging
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 from .logging_utils import get_logger
 from .storage import init_optimized_connection
@@ -93,7 +91,8 @@ class NewsVelocityTracker:
             cursor = conn.cursor()
 
             # Create table
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS article_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
@@ -103,19 +102,24 @@ class NewsVelocityTracker:
                     source TEXT,
                     title_hash TEXT
                 )
-            """)
+            """
+            )
 
             # Create index for fast ticker+time lookups
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_ticker_time
                 ON article_history(ticker, timestamp)
-            """)
+            """
+            )
 
             # Create index for deduplication
-            cursor.execute("""
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_title_hash
                 ON article_history(title_hash)
-            """)
+            """
+            )
 
             conn.commit()
             log.debug("news_velocity_db_initialized")
@@ -261,7 +265,8 @@ class NewsVelocityTracker:
                         """,
                         (ticker_upper, now_ts - window_seconds),
                     )
-                    count = cursor.fetchone()[0]
+                    result = cursor.fetchone()
+                    count = result[0] if result else 0
                     article_counts[window_name] = count
 
                 # Extract counts
@@ -379,7 +384,9 @@ class NewsVelocityTracker:
                 deleted = cursor.rowcount
                 conn.commit()
 
-            log.info("article_history_cleanup deleted=%d days_kept=%d", deleted, days_to_keep)
+            log.info(
+                "article_history_cleanup deleted=%d days_kept=%d", deleted, days_to_keep
+            )
             return deleted
 
         except Exception as e:
@@ -400,11 +407,13 @@ class NewsVelocityTracker:
 
                 # Total articles
                 cursor.execute("SELECT COUNT(*) FROM article_history")
-                total_articles = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                total_articles = result[0] if result else 0
 
                 # Unique tickers
                 cursor.execute("SELECT COUNT(DISTINCT ticker) FROM article_history")
-                unique_tickers = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                unique_tickers = result[0] if result else 0
 
                 # Articles in last 24h
                 now_ts = int(datetime.now(timezone.utc).timestamp())
@@ -412,7 +421,8 @@ class NewsVelocityTracker:
                     "SELECT COUNT(*) FROM article_history WHERE timestamp >= ?",
                     (now_ts - 86400,),
                 )
-                articles_24h = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                articles_24h = result[0] if result else 0
 
                 return {
                     "total_articles": total_articles,

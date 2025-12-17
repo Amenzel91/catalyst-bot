@@ -254,10 +254,24 @@ class SECFilingRAG:
         return index
 
     def _load_chunks(self) -> dict[str, FilingChunk]:
-        """Load chunk metadata from disk."""
+        """
+        Load chunk metadata from disk.
+
+        Security Note:
+            This loads pickle files from application-controlled index directory.
+            Files are created by this application only. Do not load pickle files
+            from untrusted sources.
+        """
         chunks_file = self.index_path / "chunks.pkl"
 
         if chunks_file.exists():
+            # Validate chunks file is within expected directory (path traversal protection)
+            try:
+                chunks_file.resolve().relative_to(self.index_path.resolve())
+            except ValueError:
+                log.warning(f"chunks_path_traversal_attempt path={chunks_file}")
+                return {}
+
             try:
                 with open(chunks_file, "rb") as f:
                     chunks = pickle.load(f)

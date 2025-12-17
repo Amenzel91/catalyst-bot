@@ -21,7 +21,7 @@ import hashlib
 import pickle
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -112,7 +112,18 @@ def _get_from_cache(accession_number: str) -> Optional[str]:
     cache_path = _get_disk_cache_path(accession_number)
 
     if cache_path.exists():
+        # Validate that cache file is within expected cache directory (path traversal protection)
         try:
+            cache_path.resolve().relative_to(CACHE_DIR.resolve())
+        except ValueError:
+            log.warning(
+                f"cache_path_traversal_attempt accession={accession_number} path={cache_path}"
+            )
+            return None
+
+        try:
+            # Security Note: Loading pickle from application-controlled cache directory
+            # Files are created by this application only. Do not load from untrusted sources.
             with open(cache_path, "rb") as f:
                 cache_data = pickle.load(f)
 
@@ -129,8 +140,9 @@ def _get_from_cache(accession_number: str) -> Optional[str]:
                     # Limit memory cache size
                     if len(_memory_cache) > MEMORY_CACHE_SIZE:
                         # Remove oldest entry
-                        oldest_key = min(_memory_cache.keys(),
-                                       key=lambda k: _memory_cache[k][0])
+                        oldest_key = min(
+                            _memory_cache.keys(), key=lambda k: _memory_cache[k][0]
+                        )
                         del _memory_cache[oldest_key]
 
                     return text
@@ -156,8 +168,7 @@ def _put_in_cache(accession_number: str, text: str) -> None:
 
     # Limit memory cache size
     if len(_memory_cache) > MEMORY_CACHE_SIZE:
-        oldest_key = min(_memory_cache.keys(),
-                        key=lambda k: _memory_cache[k][0])
+        oldest_key = min(_memory_cache.keys(), key=lambda k: _memory_cache[k][0])
         del _memory_cache[oldest_key]
 
     # Store in disk cache
@@ -181,7 +192,7 @@ def _extract_accession_from_link(link: str) -> Optional[str]:
     Extract accession number from SEC EDGAR link.
 
     Args:
-        link: EDGAR link (e.g., https://www.sec.gov/cgi-bin/viewer?action=view&cik=6201&accession_number=0001193125-24-249922)
+        link: EDGAR viewer link (e.g., https://www.sec.gov/cgi-bin/viewer?...)
 
     Returns:
         Accession number or None if not found
@@ -241,7 +252,7 @@ def _build_document_url(accession_number: str, cik: Optional[str] = None) -> str
         URL to document
     """
     # Remove dashes from accession number for URL
-    accession_clean = accession_number.replace("-", "")
+    accession_number.replace("-", "")
 
     # Extract CIK from accession number if not provided
     # First 10 digits of accession number are often the filer CIK
@@ -252,7 +263,10 @@ def _build_document_url(accession_number: str, cik: Optional[str] = None) -> str
 
     # Build URL to filing index page
     # Format: https://www.sec.gov/cgi-bin/viewer?action=view&cik=CIK&accession_number=ACCESSION
-    url = f"https://www.sec.gov/cgi-bin/viewer?action=view&cik={cik}&accession_number={accession_number}&xbrl_type=v"
+    base = "https://www.sec.gov/cgi-bin/viewer"
+    url = (
+        f"{base}?action=view&cik={cik}&accession_number={accession_number}&xbrl_type=v"
+    )
 
     return url
 
@@ -344,9 +358,12 @@ def _get_primary_document_via_api(cik: str, accession: str) -> Optional[str]:
 
         # Construct full URL
         accession_clean = accession.replace("-", "")
-        primary_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_clean}/{primary_doc_filename}"
+        base = "https://www.sec.gov/Archives/edgar/data"
+        primary_url = f"{base}/{cik}/{accession_clean}/{primary_doc_filename}"
 
-        log.debug(f"primary_doc_found via_api cik={cik} accession={accession} doc={primary_doc_filename}")
+        log.debug(
+            f"primary_doc_found via_api cik={cik} accession={accession} doc={primary_doc_filename}"
+        )
         return primary_url
 
     except requests.RequestException as e:
@@ -467,17 +484,26 @@ def fetch_sec_document_text(link: str, accession_number: Optional[str] = None) -
     if not primary_doc_url:
         # Construct index URL from accession and CIK
         accession_clean = accession_number.replace("-", "")
-        index_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_clean}/{accession_number}-index.htm"
+        base = "https://www.sec.gov/Archives/edgar/data"
+        index_url = f"{base}/{cik}/{accession_clean}/{accession_number}-index.htm"
 
-        log.debug(f"trying_index_parse cik={cik} accession={accession_number} url={index_url}")
+        log.debug(
+            f"trying_index_parse cik={cik} accession={accession_number} url={index_url}"
+        )
         primary_doc_url = _extract_primary_doc_from_index(index_url)
 
     # If we still don't have a primary document URL, try the original link as last resort
     if not primary_doc_url:
-        log.warning(f"all_strategies_failed falling_back_to_original accession={accession_number} original_link={link}")
+        log.warning(
+            "all_strategies_failed accession=%s original_link=%s",
+            accession_number,
+            link,
+        )
         primary_doc_url = link
     else:
-        log.info(f"primary_doc_discovered accession={accession_number} url={primary_doc_url}")
+        log.info(
+            f"primary_doc_discovered accession={accession_number} url={primary_doc_url}"
+        )
 
     # Now fetch and parse the primary document
     try:
@@ -504,14 +530,23 @@ def fetch_sec_document_text(link: str, accession_number: Optional[str] = None) -
         # Cache the result
         _put_in_cache(accession_number, text)
 
-        log.info(f"sec_fetch_success accession={accession_number} length={len(text)} url={primary_doc_url}")
+        log.info(
+            "sec_fetch_success accession=%s length=%d url=%s",
+            accession_number,
+            len(text),
+            primary_doc_url,
+        )
         return text
 
     except requests.RequestException as e:
-        log.warning(f"sec_fetch_failed accession={accession_number} url={primary_doc_url} err={e}")
+        log.warning(
+            f"sec_fetch_failed accession={accession_number} url={primary_doc_url} err={e}"
+        )
         return ""
     except Exception as e:
-        log.error(f"sec_fetch_error accession={accession_number} url={primary_doc_url} err={e}")
+        log.error(
+            f"sec_fetch_error accession={accession_number} url={primary_doc_url} err={e}"
+        )
         return ""
 
 
