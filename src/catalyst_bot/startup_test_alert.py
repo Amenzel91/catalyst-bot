@@ -16,12 +16,12 @@ The test alert uses real data acquisition and scoring but:
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from . import market
-from .classify import enrich_scored_item, fast_classify
+from .classify import fast_classify
 from .enrichment_worker import enqueue_for_enrichment, get_enriched_item
-from .models import NewsItem, ScoredItem
+from .models import NewsItem
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +77,22 @@ def send_startup_test_alert(
     Returns:
         True if test alert sent successfully, False otherwise
     """
+    import os
+
+    from catalyst_bot.time_utils import is_simulation as is_sim_mode
+
+    # --- Simulation mode: respect SIMULATION_ALERT_OUTPUT setting ---
+    # "discord_test" (default) = send to Discord, "local_only"/"disabled" = skip
+    if is_sim_mode():
+        alert_output = os.getenv("SIMULATION_ALERT_OUTPUT", "discord_test")
+        if alert_output in ("local_only", "disabled"):
+            log.debug(
+                "startup_test_alert_skipped_simulation alert_output=%s",
+                alert_output,
+            )
+            return True  # Return success in simulation mode
+        # If discord_test, fall through to send alert normally
+
     try:
         log.info("startup_test_alert_begin")
 
@@ -107,9 +123,13 @@ def send_startup_test_alert(
             enriched_result = get_enriched_item(enrichment_task_id, timeout=10.0)
             if enriched_result:
                 enriched_scored = enriched_result
-                log.info("startup_test_enrichment_completed task_id=%s", enrichment_task_id)
+                log.info(
+                    "startup_test_enrichment_completed task_id=%s", enrichment_task_id
+                )
             else:
-                log.warning("startup_test_enrichment_timeout task_id=%s", enrichment_task_id)
+                log.warning(
+                    "startup_test_enrichment_timeout task_id=%s", enrichment_task_id
+                )
         except Exception as enrich_err:
             log.warning("startup_test_enrichment_failed err=%s", str(enrich_err))
 

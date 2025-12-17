@@ -25,12 +25,11 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from ..logging_utils import get_logger
-from ..services import LLMService, LLMRequest, TaskComplexity
+from ..services import LLMRequest, LLMService, TaskComplexity
 from .base import BaseProcessor
 
 log = get_logger("sec_processor")
@@ -39,6 +38,7 @@ log = get_logger("sec_processor")
 @dataclass
 class MaterialEvent:
     """Material event extracted from filing."""
+
     event_type: str  # "M&A", "Partnership", "FDA Approval", etc.
     description: str
     significance: str  # "high", "medium", "low"
@@ -47,6 +47,7 @@ class MaterialEvent:
 @dataclass
 class FinancialMetric:
     """Financial metric extracted from filing."""
+
     metric_name: str  # "deal_size", "shares", "price_per_share", etc.
     value: float
     unit: str  # "USD", "shares", etc.
@@ -88,32 +89,32 @@ class SECProcessor(BaseProcessor):
 
     # 8-K Item complexity mapping
     ITEM_COMPLEXITY = {
-        "1.01": TaskComplexity.COMPLEX,    # Material agreements (M&A, partnerships)
-        "1.02": TaskComplexity.MEDIUM,     # Termination of agreements
-        "1.03": TaskComplexity.MEDIUM,     # Bankruptcy/receivership
-        "1.04": TaskComplexity.MEDIUM,     # Mine safety disclosures
-        "2.01": TaskComplexity.COMPLEX,    # Completion of acquisition
-        "2.02": TaskComplexity.COMPLEX,    # Earnings results
-        "2.03": TaskComplexity.MEDIUM,     # Creation of obligation
-        "2.04": TaskComplexity.MEDIUM,     # Triggering events
-        "2.05": TaskComplexity.MEDIUM,     # Costs associated with exit
-        "2.06": TaskComplexity.MEDIUM,     # Credit enhancement
-        "3.01": TaskComplexity.MEDIUM,     # Notice of delisting
-        "3.02": TaskComplexity.MEDIUM,     # Unregistered sales of equity
-        "3.03": TaskComplexity.MEDIUM,     # Material modifications
-        "4.01": TaskComplexity.MEDIUM,     # Changes in registrant's certifying accountant
-        "4.02": TaskComplexity.MEDIUM,     # Non-reliance on financial statements
-        "5.01": TaskComplexity.MEDIUM,     # Changes in control
-        "5.02": TaskComplexity.MEDIUM,     # Departure of directors/officers
-        "5.03": TaskComplexity.MEDIUM,     # Amendments to articles
-        "5.04": TaskComplexity.MEDIUM,     # Temporary suspension of trading
-        "5.05": TaskComplexity.MEDIUM,     # Amendments to bylaws
-        "5.06": TaskComplexity.MEDIUM,     # Change in shell company status
-        "5.07": TaskComplexity.MEDIUM,     # Submission of matters to vote
-        "5.08": TaskComplexity.MEDIUM,     # Shareholder director nominations
-        "7.01": TaskComplexity.MEDIUM,     # Regulation FD disclosure
-        "8.01": TaskComplexity.SIMPLE,     # Other events (most common, varied)
-        "9.01": TaskComplexity.SIMPLE,     # Financial statements and exhibits
+        "1.01": TaskComplexity.COMPLEX,  # Material agreements (M&A, partnerships)
+        "1.02": TaskComplexity.MEDIUM,  # Termination of agreements
+        "1.03": TaskComplexity.MEDIUM,  # Bankruptcy/receivership
+        "1.04": TaskComplexity.MEDIUM,  # Mine safety disclosures
+        "2.01": TaskComplexity.COMPLEX,  # Completion of acquisition
+        "2.02": TaskComplexity.COMPLEX,  # Earnings results
+        "2.03": TaskComplexity.MEDIUM,  # Creation of obligation
+        "2.04": TaskComplexity.MEDIUM,  # Triggering events
+        "2.05": TaskComplexity.MEDIUM,  # Costs associated with exit
+        "2.06": TaskComplexity.MEDIUM,  # Credit enhancement
+        "3.01": TaskComplexity.MEDIUM,  # Notice of delisting
+        "3.02": TaskComplexity.MEDIUM,  # Unregistered sales of equity
+        "3.03": TaskComplexity.MEDIUM,  # Material modifications
+        "4.01": TaskComplexity.MEDIUM,  # Changes in registrant's certifying accountant
+        "4.02": TaskComplexity.MEDIUM,  # Non-reliance on financial statements
+        "5.01": TaskComplexity.MEDIUM,  # Changes in control
+        "5.02": TaskComplexity.MEDIUM,  # Departure of directors/officers
+        "5.03": TaskComplexity.MEDIUM,  # Amendments to articles
+        "5.04": TaskComplexity.MEDIUM,  # Temporary suspension of trading
+        "5.05": TaskComplexity.MEDIUM,  # Amendments to bylaws
+        "5.06": TaskComplexity.MEDIUM,  # Change in shell company status
+        "5.07": TaskComplexity.MEDIUM,  # Submission of matters to vote
+        "5.08": TaskComplexity.MEDIUM,  # Shareholder director nominations
+        "7.01": TaskComplexity.MEDIUM,  # Regulation FD disclosure
+        "8.01": TaskComplexity.SIMPLE,  # Other events (most common, varied)
+        "9.01": TaskComplexity.SIMPLE,  # Financial statements and exhibits
     }
 
     def __init__(self, config: Dict[str, Any] = None):
@@ -131,7 +132,7 @@ class SECProcessor(BaseProcessor):
         ticker: str,
         item: str,
         title: str,
-        summary: Optional[str] = None
+        summary: Optional[str] = None,
     ) -> SECAnalysisResult:
         """
         Process 8-K filing and extract material information.
@@ -150,7 +151,7 @@ class SECProcessor(BaseProcessor):
             "processing_8k ticker=%s item=%s title=%s",
             ticker,
             item,
-            title[:50] if title else "none"
+            title[:50] if title else "none",
         )
 
         # Detect complexity based on item
@@ -167,7 +168,7 @@ class SECProcessor(BaseProcessor):
             max_tokens=500,
             temperature=0.1,
             enable_cache=True,
-            compress_prompt=True
+            compress_prompt=True,
         )
 
         # Query LLM service
@@ -183,7 +184,7 @@ class SECProcessor(BaseProcessor):
             llm_provider=response.provider,
             llm_cost_usd=response.cost_usd,
             llm_latency_ms=response.latency_ms,
-            raw_response=response.text
+            raw_response=response.text,
         )
 
         log.info(
@@ -193,7 +194,7 @@ class SECProcessor(BaseProcessor):
             result.sentiment,
             len(result.material_events),
             len(result.financial_metrics),
-            result.llm_cost_usd
+            result.llm_cost_usd,
         )
 
         return result
@@ -213,15 +214,14 @@ class SECProcessor(BaseProcessor):
 
         complexity = self.ITEM_COMPLEXITY.get(clean_item, TaskComplexity.MEDIUM)
 
-        log.debug("detected_8k_complexity item=%s complexity=%s", clean_item, complexity.value)
+        log.debug(
+            "detected_8k_complexity item=%s complexity=%s", clean_item, complexity.value
+        )
 
         return complexity
 
     def _build_8k_prompt(
-        self,
-        item: str,
-        title: str,
-        summary: Optional[str] = None
+        self, item: str, title: str, summary: Optional[str] = None
     ) -> str:
         """
         Build optimized prompt for 8-K analysis.
@@ -308,7 +308,7 @@ If no material events or financial metrics are found, use empty arrays [].
         llm_provider: str,
         llm_cost_usd: float,
         llm_latency_ms: float,
-        raw_response: str
+        raw_response: str,
     ) -> SECAnalysisResult:
         """
         Parse LLM response into structured result.
@@ -336,19 +336,31 @@ If no material events or financial metrics are found, use empty arrays [].
 
         try:
             # Try to parse JSON response
-            # NOTE: Markdown code block stripping is now handled by the LLM provider (gemini.py)
-            # The response should already be clean JSON at this point
+            # Strip markdown code blocks if present (LLMs often wrap JSON in ```json ... ```)
             clean_response = llm_response.strip()
+
+            # Handle markdown code blocks: ```json\n...\n``` or ```\n...\n```
+            if clean_response.startswith("```"):
+                # Remove opening code fence (with optional language tag)
+                lines = clean_response.split("\n", 1)
+                if len(lines) > 1:
+                    clean_response = lines[1]
+                # Remove closing code fence
+                if clean_response.endswith("```"):
+                    clean_response = clean_response[:-3]
+                clean_response = clean_response.strip()
 
             data = json.loads(clean_response)
 
             # Parse material events
             for event_data in data.get("material_events", []):
-                material_events.append(MaterialEvent(
-                    event_type=event_data.get("event_type", "unknown"),
-                    description=event_data.get("description", ""),
-                    significance=event_data.get("significance", "medium")
-                ))
+                material_events.append(
+                    MaterialEvent(
+                        event_type=event_data.get("event_type", "unknown"),
+                        description=event_data.get("description", ""),
+                        significance=event_data.get("significance", "medium"),
+                    )
+                )
 
             # Parse financial metrics
             for metric_data in data.get("financial_metrics", []):
@@ -357,12 +369,14 @@ If no material events or financial metrics are found, use empty arrays [].
                 except (ValueError, TypeError):
                     value = 0.0
 
-                financial_metrics.append(FinancialMetric(
-                    metric_name=metric_data.get("metric_name", "unknown"),
-                    value=value,
-                    unit=metric_data.get("unit", ""),
-                    context=metric_data.get("context", "")
-                ))
+                financial_metrics.append(
+                    FinancialMetric(
+                        metric_name=metric_data.get("metric_name", "unknown"),
+                        value=value,
+                        unit=metric_data.get("unit", ""),
+                        context=metric_data.get("context", ""),
+                    )
+                )
 
             # Parse sentiment with validation
             sentiment_data = data.get("sentiment", {})
@@ -377,7 +391,7 @@ If no material events or financial metrics are found, use empty arrays [].
                 log.warning(
                     "invalid_sentiment_from_llm ticker=%s sentiment=%s defaulting_to_neutral",
                     ticker,
-                    raw_sentiment
+                    raw_sentiment,
                 )
                 sentiment = "neutral"
             else:
@@ -400,7 +414,7 @@ If no material events or financial metrics are found, use empty arrays [].
                 ticker,
                 len(material_events),
                 len(financial_metrics),
-                sentiment
+                sentiment,
             )
 
         except json.JSONDecodeError as e:
@@ -408,7 +422,7 @@ If no material events or financial metrics are found, use empty arrays [].
                 "failed_to_parse_json ticker=%s err=%s response=%s",
                 ticker,
                 str(e),
-                llm_response[:200]
+                llm_response[:200],
             )
             summary = "Failed to parse LLM response as JSON"
 
@@ -417,7 +431,7 @@ If no material events or financial metrics are found, use empty arrays [].
                 "error_parsing_8k_response ticker=%s err=%s",
                 ticker,
                 str(e),
-                exc_info=True
+                exc_info=True,
             )
             summary = f"Error parsing response: {str(e)}"
 
@@ -435,7 +449,7 @@ If no material events or financial metrics are found, use empty arrays [].
             llm_cost_usd=llm_cost_usd,
             llm_latency_ms=llm_latency_ms,
             raw_llm_response=raw_response,
-            filing_url=filing_url
+            filing_url=filing_url,
         )
 
     async def process(self, *args, **kwargs) -> SECAnalysisResult:

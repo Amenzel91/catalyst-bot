@@ -5,7 +5,6 @@ import asyncio
 import base64
 import os
 import threading
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -21,6 +20,12 @@ from .logging_utils import get_logger
 from .market import get_intraday, get_intraday_indicators, get_momentum_indicators
 from .ml_utils import extract_features, load_model, score_alerts
 from .quickchart_post import get_quickchart_png_path
+
+# Simulation-aware time utilities
+from .time_utils import is_simulation as is_sim_mode
+from .time_utils import now as sim_now
+from .time_utils import sleep as sim_sleep
+from .time_utils import time as sim_time
 
 # Paper trading integration - MIGRATED TO TradingEngine (2025-11-26)
 try:
@@ -81,6 +86,35 @@ _cached_ml_model_path = None
 # Webhook validation cache: stores validated webhooks to avoid repeated checks
 _validated_webhooks = set()
 _validation_lock = threading.Lock()
+
+# --- Simulation mode support ---
+# When running in simulation mode, alerts are routed to the simulation logger
+# instead of being posted to Discord. This prevents real notifications during
+# backtesting while still capturing alert events for analysis.
+_simulation_logger = None
+
+
+def set_simulation_logger(logger) -> None:
+    """Set the simulation logger for routing alerts during simulation.
+
+    Parameters
+    ----------
+    logger : SimulationLogger or None
+        Logger instance with log_alert() method, or None to disable
+    """
+    global _simulation_logger
+    _simulation_logger = logger
+
+
+def get_simulation_logger():
+    """Get the current simulation logger.
+
+    Returns
+    -------
+    SimulationLogger or None
+        The active simulation logger, or None if not in simulation
+    """
+    return _simulation_logger
 
 
 def get_alert_downgraded() -> bool:
@@ -301,7 +335,7 @@ def _rl_should_wait(url: str) -> float:
     multiple bot processes. For multi-instance deployments, implement a
     Redis-based solution (see module-level comments above).
     """
-    now = time.time()
+    now = sim_time()
     with _RL_LOCK:
         st = _RL_STATE.get(url) or {}
         next_ok_at = float(st.get("next_ok_at", 0.0))
@@ -356,7 +390,7 @@ def _rl_note_headers(url: str, headers: Any, is_429: bool = False) -> None:
         with _RL_LOCK:
             st = _RL_STATE.get(url) or {}
             st["next_ok_at"] = max(
-                float(st.get("next_ok_at", 0.0)), time.time() + wait_s + 0.05
+                float(st.get("next_ok_at", 0.0)), sim_time() + wait_s + 0.05
             )
             _RL_STATE[url] = st
         if _RL_DEBUG:
@@ -388,7 +422,7 @@ def _post_discord_with_backoff(
     # 0) pre-wait if a previous call asked us to
     wait = _rl_should_wait(url)
     if wait > 0:
-        time.sleep(wait)
+        sim_sleep(wait)
 
     def _do_post():
         resp = (session or requests).post(url, json=payload, timeout=10)
@@ -408,7 +442,7 @@ def _post_discord_with_backoff(
         # If a proxy gave milliseconds, scale to seconds
         if wait > 1000:
             wait = wait / 1000.0
-        time.sleep(min(max(wait, 0.5), 5.0))
+        sim_sleep(min(max(wait, 0.5), 5.0))
         resp2 = _do_post()
         ok = 200 <= resp2.status_code < 300
         error_text = None if ok else resp2.text[:500]  # Limit error text to 500 chars
@@ -477,7 +511,7 @@ def _format_time_ago(published_at: str) -> str:
         if pub_time.tzinfo is None:
             pub_time = pub_time.replace(tzinfo=timezone.utc)
 
-        now = datetime.now(timezone.utc)
+        now = sim_now()
         diff = (now - pub_time).total_seconds()
 
         if diff < 60:
@@ -762,7 +796,7 @@ def post_discord_json(
             return True
         # Retry on rate-limit or transient 5xx; small exponential backoff.
         if status is None or status == 429 or (500 <= status < 600):
-            time.sleep(min(0.5 * attempt, 3.0))
+            sim_sleep(min(0.5 * attempt, 3.0))
             continue
         # Non-retryable error (4xx other than 429)
         if error_details:
@@ -827,6 +861,51 @@ def send_alert_safe(*args, **kwargs) -> bool:
     if record_only:
         log.info("alert_record_only source=%s ticker=%s", source, ticker)
         return True
+
+    # --- Simulation mode: check SIMULATION_ALERT_OUTPUT setting ---
+    # "discord_test" = log AND send to Discord (default)
+    # "local_only" = log only, skip Discord
+    # "disabled" = skip both
+    alert_output = os.getenv("SIMULATION_ALERT_OUTPUT", "discord_test")
+
+    if is_sim_mode() and _simulation_logger is not None:
+        try:
+            # Extract score for logging
+            total_score = None
+            if scored is not None:
+                if hasattr(scored, "total_score"):
+                    total_score = scored.total_score
+                elif hasattr(scored, "relevance"):
+                    total_score = getattr(scored, "relevance", 0)
+                elif isinstance(scored, dict):
+                    total_score = scored.get("total_score") or scored.get("relevance")
+
+            _simulation_logger.log_alert(
+                ticker=ticker,
+                title=item_dict.get("title", ""),
+                score=total_score,
+                price=last_price,
+                change_pct=last_change_pct,
+                source=source,
+                link=item_dict.get("link") or item_dict.get("url"),
+                tags=getattr(scored, "tags", []) if scored else [],
+            )
+            log.debug(
+                "alert_simulation source=%s ticker=%s score=%s alert_output=%s",
+                source,
+                ticker,
+                total_score,
+                alert_output,
+            )
+        except Exception as e:
+            log.warning(
+                "alert_simulation_error source=%s ticker=%s err=%s", source, ticker, e
+            )
+
+        # If local_only or disabled, skip Discord
+        if alert_output in ("local_only", "disabled"):
+            return True  # Treat as success in simulation
+        # If discord_test, fall through to send to Discord too
 
     # If a prior error downgraded alerts, record-only
     with alert_lock:
@@ -1029,7 +1108,7 @@ def send_alert_safe(*args, **kwargs) -> bool:
                             last_price,
                             metadata={
                                 "source": source,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": sim_now().isoformat(),
                             },
                         )
                     except Exception:
@@ -1180,7 +1259,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     if chart_path.exists():
                         file_stat = chart_path.stat()
                         log.info(
-                            "CHART_DEBUG chart_file_stats ticker=%s size=%d modified=%s absolute_path=%s",
+                            "CHART_DEBUG chart_file_stats ticker=%s size=%d "
+                            "modified=%s absolute_path=%s",
                             ticker,
                             file_stat.st_size,
                             file_stat.st_mtime,
@@ -1217,7 +1297,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
 
                 # Log embed BEFORE modification
                 log.info(
-                    "EMBED_DEBUG before_modification ticker=%s embed_has_image=%s embed_has_thumbnail=%s",
+                    "EMBED_DEBUG before_modification ticker=%s "
+                    "embed_has_image=%s embed_has_thumbnail=%s",
                     ticker,
                     "image" in embed0,
                     "thumbnail" in embed0,
@@ -1279,7 +1360,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                         ticker,
                     )
                     log.info(
-                        "CHART_DEBUG pre_post ticker=%s chart_path=%s chart_exists=%s chart_size=%d",
+                        "CHART_DEBUG pre_post ticker=%s chart_path=%s "
+                        "chart_exists=%s chart_size=%d",
                         ticker,
                         chart_path,
                         chart_path.exists(),
@@ -1322,7 +1404,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                     )
                     if not ok_file:
                         log.error(
-                            "CHART_ERROR post_embed_failed ticker=%s chart_path=%s webhook_url_present=%s",
+                            "CHART_ERROR post_embed_failed ticker=%s "
+                            "chart_path=%s webhook_url_present=%s",
                             ticker,
                             chart_path,
                             bool(webhook_url),
@@ -1379,7 +1462,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
             else "no"
         )
         log.warning(
-            "alert_error source=%s ticker=%s webhook=%s env_webhook=%s has_embeds=%s payload_keys=%s",
+            "alert_error source=%s ticker=%s webhook=%s env_webhook=%s "
+            "has_embeds=%s payload_keys=%s",
             source,
             ticker,
             webhook_status,
@@ -1489,7 +1573,8 @@ def send_alert_safe(*args, **kwargs) -> bool:
                                 )
                             else:
                                 log.debug(
-                                    "trading_engine_signal_skipped ticker=%s reason=low_confidence_or_hold",
+                                    "trading_engine_signal_skipped ticker=%s "
+                                    "reason=low_confidence_or_hold",
                                     ticker,
                                 )
                         except Exception as trade_err:
@@ -1607,9 +1692,8 @@ async def send_progressive_alert(
     )
 
     embed.set_footer(text="Real-time alert • AI analysis pending")
-    from datetime import datetime, timezone
 
-    embed.timestamp = datetime.now(timezone.utc)
+    embed.timestamp = sim_now()
 
     # Phase 1: Send immediately
     try:
@@ -3198,7 +3282,7 @@ def _build_discord_embed(
             next_str: Optional[str] = None
             if isinstance(next_dt, datetime):
                 try:
-                    now = datetime.now(timezone.utc)
+                    now = sim_now()
                     delta = next_dt - now
                     if delta.total_seconds() >= 0:
                         # upcoming
@@ -3280,7 +3364,7 @@ def _build_discord_embed(
         recs = item_dict.get("recent_sec_filings")
         if isinstance(recs, list) and recs:
             lines: List[str] = []
-            now_ts = datetime.now(timezone.utc)
+            now_ts = sim_now()
             for entry in recs[:2]:
                 ts_str = entry.get("ts")  # type: ignore[attr-defined]
                 lbl = entry.get("label")  # type: ignore[attr-defined]
@@ -3378,21 +3462,24 @@ def _build_discord_embed(
             if "announced" in combined or "announces" in combined:
                 offering_education = (
                     "📚 **Offering Stage: Announced**\n"
-                    "Company has announced intent to raise capital but hasn't priced the offering yet. "
-                    "Price may drop as market anticipates dilution. Wait for pricing details."
+                    "Company has announced intent to raise capital but hasn't priced "
+                    "the offering yet. Price may drop as market anticipates dilution. "
+                    "Wait for pricing details."
                 )
             elif "priced" in combined or "pricing" in combined:
                 offering_education = (
                     "📚 **Offering Stage: Priced**\n"
                     "Offering has been priced. Typically 5-15% discount to market. "
-                    "Short-term bearish as new shares hit market. Price often bottoms at offering price."
+                    "Short-term bearish as new shares hit market. "
+                    "Price often bottoms at offering price."
                 )
             elif "closing" in combined or "closed" in combined or "closes" in combined:
                 offering_education = (
                     "📚 **Offering Stage: Closed**\n"
                     "Offering has completed. Capital is now in company's bank. "
-                    "Initial selling pressure over. If stock held offering price, may signal strength. "
-                    "Watch for post-offering bounce if fundamentals improve."
+                    "Initial selling pressure over. If stock held offering price, "
+                    "may signal strength. Watch for post-offering bounce if "
+                    "fundamentals improve."
                 )
             elif "exercise" in combined and "warrant" in combined:
                 offering_education = (
@@ -3406,7 +3493,8 @@ def _build_discord_embed(
                     "📚 **About Offerings**\n"
                     "Offerings raise capital but dilute existing shareholders. "
                     "Announced → Priced (discount set) → Closed (shares hit market). "
-                    "Price typically bottoms near offering price, then may recover if use-of-proceeds is strong."
+                    "Price typically bottoms near offering price, then may recover "
+                    "if use-of-proceeds is strong."
                 )
 
             if offering_education:

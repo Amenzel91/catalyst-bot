@@ -17,6 +17,11 @@ import requests
 from .config import get_settings
 from .logging_utils import get_logger
 from .models import NewsItem, ScoredItem  # re-export for market.NewsItem
+
+# Simulation-aware time utilities
+from .time_utils import is_simulation as is_sim_mode
+from .time_utils import now as sim_now
+from .time_utils import sleep as sim_sleep
 from .validation import validate_ticker
 
 log = get_logger("market")
@@ -29,6 +34,38 @@ except Exception:  # pragma: no cover
 # Pandas is used for calculating momentum indicators when requested. The
 # computation functions below will import pandas and yfinance lazily as
 # needed. Do not import pandas at module load time to keep startup overhead minimal.
+
+# ---------------------------------------------------------------------------
+# Simulation mode support
+#
+# When running in simulation mode, market data can be served from a MockMarketDataFeed
+# instead of making real API calls to Tiingo, Alpha Vantage, or yfinance.
+_mock_market_data_feed = None
+
+
+def set_mock_market_data_feed(feed) -> None:
+    """
+    Set the mock market data feed for simulation mode.
+
+    Called by SimulationController during setup to inject historical
+    price data. Pass None to clear and return to live APIs.
+
+    Args:
+        feed: MockMarketDataFeed instance or None
+    """
+    global _mock_market_data_feed
+    _mock_market_data_feed = feed
+
+
+def get_mock_market_data_feed():
+    """
+    Get the current mock market data feed (if set).
+
+    Returns:
+        MockMarketDataFeed instance or None
+    """
+    return _mock_market_data_feed
+
 
 # ---------------------------------------------------------------------------
 # Alpha Vantage caching
@@ -564,6 +601,19 @@ def get_last_price_snapshot(
     nt = _norm_ticker(ticker)
     if not nt:
         return None, None
+
+    # --- Simulation mode: return mock price data ---
+    if is_sim_mode() and _mock_market_data_feed is not None:
+        try:
+            result = _mock_market_data_feed.get_last_price_snapshot(nt)
+            if result is not None:
+                return result
+            # If mock returns None, return (None, None) to stay in sim mode
+            return None, None
+        except Exception as e:
+            log.debug("mock_market_data_error ticker=%s error=%s", nt, e)
+            # Fall through to real providers if mock fails
+
     last: Optional[float] = None
     prev: Optional[float] = None
 
@@ -672,7 +722,7 @@ def get_last_price_snapshot(
                         _log_provider(
                             "tiingo", t0, None, None, error=str(e.__class__.__name__)
                         )
-                    time.sleep(0.35 * (attempt + 1))  # brief backoff between attempts
+                    sim_sleep(0.35 * (attempt + 1))  # brief backoff between attempts
             continue
 
         if pname in {"av", "alpha", "alphavantage", "alpha_vantage"}:
@@ -700,7 +750,7 @@ def get_last_price_snapshot(
                     _log_provider(
                         "alpha", t0, None, None, error=str(e.__class__.__name__)
                     )
-                time.sleep(0.35 * (attempt + 1))
+                sim_sleep(0.35 * (attempt + 1))
             continue
 
         if pname in {"yf", "yahoo", "yfinance"}:
@@ -757,7 +807,7 @@ def get_last_price_snapshot(
                     _log_provider("yf", t0, None, None, error=str(e.__class__.__name__))
                     if attempt >= retries:
                         break
-                    time.sleep(0.4 * (attempt + 1))
+                    sim_sleep(0.4 * (attempt + 1))
             # (We don't break the outer loop here,
             # to allow merging values from other providers if needed)
             continue
@@ -829,6 +879,38 @@ def batch_get_prices(
     """
     if not tickers:
         return {}
+
+    # --- Simulation mode: return mock prices from cached data ---
+    if is_sim_mode() and _mock_market_data_feed is not None:
+        results = {}
+        for ticker in tickers:
+            norm_t = _norm_ticker(ticker)
+            if not norm_t:
+                continue
+            try:
+                snapshot = _mock_market_data_feed.get_last_price_snapshot(norm_t)
+                if snapshot is not None:
+                    last_px, prev_px = snapshot
+                    if (
+                        last_px is not None
+                        and prev_px is not None
+                        and abs(prev_px) > 1e-9
+                    ):
+                        change_pct = ((last_px - prev_px) / prev_px) * 100.0
+                        results[norm_t] = (last_px, change_pct)
+                    else:
+                        results[norm_t] = (last_px, None)
+                else:
+                    results[norm_t] = (None, None)
+            except Exception as e:
+                log.debug("batch_sim_price_failed ticker=%s err=%s", norm_t, str(e))
+                results[norm_t] = (None, None)
+        log.info(
+            "batch_fetch_simulation tickers=%d success=%d",
+            len(tickers),
+            sum(1 for v in results.values() if v[0] is not None),
+        )
+        return results
 
     # OPTIMIZATION: Try Tiingo batch API first if enabled
     try:
@@ -1079,7 +1161,7 @@ def sample_alpaca_stream(tickers: list[str] | tuple[str, ...], secs: int) -> Non
         pass
     try:
         wait_time = min(max(secs_int, 0), 30)
-        time.sleep(wait_time)
+        sim_sleep(wait_time)
     except Exception:
         pass
     try:
@@ -1137,7 +1219,7 @@ def get_volatility(ticker: str, *, days: int = 14) -> Optional[float]:
         hist_df: Optional[pd.DataFrame] = None
         if use_tiingo and tiingo_key:
             try:
-                end_dt = datetime.now().date()
+                end_dt = sim_now().date()
                 start_dt = end_dt - timedelta(days=period_days)
                 tiingo_df = _tiingo_daily_history(
                     nt,
@@ -1206,7 +1288,7 @@ def get_intraday(
         # Try Tiingo intraday if enabled
         if use_tiingo and tiingo_key:
             try:
-                end_date = datetime.now().date()
+                end_date = sim_now().date()
                 start_date = end_date - timedelta(
                     days=(7 if output_size.lower() == "compact" else 60)
                 )
@@ -1290,7 +1372,7 @@ def get_intraday_snapshots(
         return None
     try:
         if target_date is None:
-            target_date = datetime.now().date()
+            target_date = sim_now().date()
         df = None
         if use_tiingo and tiingo_key:
             try:
@@ -1427,7 +1509,7 @@ def get_intraday_indicators(
         return {}
     try:
         if target_date is None:
-            target_date = datetime.now().date()
+            target_date = sim_now().date()
         df = None
         if use_tiingo and tiingo_key:
             try:
@@ -1518,7 +1600,7 @@ def get_momentum_indicators(
         return {}
     try:
         if target_date is None:
-            target_date = datetime.now().date()
+            target_date = sim_now().date()
         df = None
         try:
             settings = get_settings()

@@ -1,0 +1,46 @@
+[
+  {
+    "accession_number": "0001234567-24-000001",
+    "timestamp": "2024-11-12T14:33:00+00:00",
+    "ticker": "ABCD",
+    "company_name": "ABCD Therapeutics Inc.",
+    "form_type": "8-K",
+    "description": "Current Report - FDA Approval Announcement",
+    "url": "https://www.sec.gov/Archives/edgar/data/1234567/000123456724000001/abcd-8k.htm",
+    "filing_date": "2024-11-12",
+    "cik": "0001234567"
+  },
+  {
+    "accession_number": "0001234568-24-000002",
+    "timestamp": "2024-11-12T14:40:00+00:00",
+    "ticker": "AAPL",
+    "company_name": "Apple Inc.",
+    "form_type": "10-Q",
+    "description": "Quarterly Report",
+    "url": "https://www.sec.gov/Archives/edgar/data/320193/000032019324000002/aapl-10q.htm",
+    "filing_date": "2024-11-12",
+    "cik": "0000320193"
+  },
+  {
+    "accession_number": "0001234569-24-000003",
+    "timestamp": "2024-11-12T14:46:00+00:00",
+    "ticker": "ABCD",
+    "company_name": "ABCD Therapeutics Inc.",
+    "form_type": "8-K",
+    "description": "Current Report - Strategic Investment",
+    "url": "https://www.sec.gov/Archives/edgar/data/1234567/000123456724000003/abcd-8k-2.htm",
+    "filing_date": "2024-11-12",
+    "cik": "0001234567"
+  },
+  {
+    "accession_number": "0001234570-24-000004",
+    "timestamp": "2024-11-12T14:50:00+00:00",
+    "ticker": "NVDA",
+    "company_name": "NVIDIA Corporation",
+    "form_type": "8-K",
+    "description": "Current Report - Material Agreement",
+    "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581024000004/nvda-8k.htm",
+    "filing_date": "2024-11-12",
+    "cik": "0001045810"
+  }
+]

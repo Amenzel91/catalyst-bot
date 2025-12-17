@@ -12,6 +12,9 @@ from datetime import datetime, time
 from typing import Dict, Literal
 from zoneinfo import ZoneInfo
 
+# Import simulation-aware now() for simulation mode compatibility
+from catalyst_bot.time_utils import now as sim_now
+
 # Market status types
 MarketStatus = Literal["pre_market", "regular", "after_hours", "closed"]
 
@@ -95,9 +98,8 @@ def get_market_status(dt: datetime | None = None) -> MarketStatus:
         One of "pre_market", "regular", "after_hours", or "closed".
     """
     if dt is None:
-        from datetime import timezone
-
-        dt = datetime.now(timezone.utc)
+        # Use simulation-aware time for simulation mode compatibility
+        dt = sim_now()
 
     # Convert to Eastern Time
     dt_et = dt.astimezone(ET)
@@ -144,9 +146,8 @@ def is_preopen_warmup(dt: datetime | None = None) -> bool:
         True if in warmup period, False otherwise.
     """
     if dt is None:
-        from datetime import timezone
-
-        dt = datetime.now(timezone.utc)
+        # Use simulation-aware time for simulation mode compatibility
+        dt = sim_now()
 
     # Convert to Eastern Time
     dt_et = dt.astimezone(ET)
@@ -282,9 +283,8 @@ def get_market_info(dt: datetime | None = None) -> Dict[str, object]:
         - is_extended_hours: bool
     """
     if dt is None:
-        from datetime import timezone
-
-        dt = datetime.now(timezone.utc)
+        # Use simulation-aware time for simulation mode compatibility
+        dt = sim_now()
 
     status = get_market_status(dt)
 

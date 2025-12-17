@@ -1,0 +1,72 @@
+[
+  {
+    "id": "news_001",
+    "timestamp": "2024-11-12T14:32:00+00:00",
+    "title": "ABCD Announces FDA Approval for Novel Cancer Treatment",
+    "summary": "ABCD Therapeutics today announced that the FDA has granted approval for its groundbreaking cancer treatment drug, marking a significant milestone for the company.",
+    "source": "PRNewswire",
+    "url": "https://example.com/news/abcd-fda-approval",
+    "related_tickers": ["ABCD"],
+    "category": "biotech"
+  },
+  {
+    "id": "news_002",
+    "timestamp": "2024-11-12T14:35:00+00:00",
+    "title": "Apple Reports Strong Q4 Earnings, Beats Expectations",
+    "summary": "Apple Inc. reported quarterly earnings that exceeded analyst expectations, driven by strong iPhone sales and growing services revenue.",
+    "source": "Reuters",
+    "url": "https://example.com/news/apple-earnings",
+    "related_tickers": ["AAPL"],
+    "category": "earnings"
+  },
+  {
+    "id": "news_003",
+    "timestamp": "2024-11-12T14:38:00+00:00",
+    "title": "NVDA Partners with Major Cloud Provider for AI Infrastructure",
+    "summary": "NVIDIA announces strategic partnership with leading cloud provider to expand AI computing infrastructure globally.",
+    "source": "BusinessWire",
+    "url": "https://example.com/news/nvda-partnership",
+    "related_tickers": ["NVDA"],
+    "category": "partnership"
+  },
+  {
+    "id": "news_004",
+    "timestamp": "2024-11-12T14:42:00+00:00",
+    "title": "Tesla Announces New Battery Technology Breakthrough",
+    "summary": "Tesla reveals significant advancement in battery technology that could reduce EV costs by 30% while improving range.",
+    "source": "GlobeNewswire",
+    "url": "https://example.com/news/tsla-battery",
+    "related_tickers": ["TSLA"],
+    "category": "technology"
+  },
+  {
+    "id": "news_005",
+    "timestamp": "2024-11-12T14:45:00+00:00",
+    "title": "ABCD Receives $50M Strategic Investment from Major Pharma",
+    "summary": "ABCD Therapeutics secures $50 million investment from top pharmaceutical company to accelerate clinical trials.",
+    "source": "PRNewswire",
+    "url": "https://example.com/news/abcd-investment",
+    "related_tickers": ["ABCD"],
+    "category": "financing"
+  },
+  {
+    "id": "news_006",
+    "timestamp": "2024-11-12T14:48:00+00:00",
+    "title": "Market Update: Tech Stocks Rally on Strong Earnings Reports",
+    "summary": "Technology sector leads market gains as multiple companies report better-than-expected quarterly results.",
+    "source": "MarketWatch",
+    "url": "https://example.com/news/market-update",
+    "related_tickers": ["AAPL", "NVDA", "TSLA"],
+    "category": "market"
+  },
+  {
+    "id": "news_007",
+    "timestamp": "2024-11-12T14:52:00+00:00",
+    "title": "ABCD Stock Surges 20% Following FDA News",
+    "summary": "Shares of ABCD Therapeutics jumped significantly in early trading following the FDA approval announcement.",
+    "source": "Benzinga",
+    "url": "https://example.com/news/abcd-surge",
+    "related_tickers": ["ABCD"],
+    "category": "market_movers"
+  }
+]

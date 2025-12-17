@@ -18,6 +18,10 @@ from typing import Dict, List, Optional
 
 from .ai_adapter import AIEnrichment, get_adapter
 
+# Simulation-aware time utilities
+from .time_utils import sleep as sim_sleep
+from .time_utils import time as sim_time
+
 try:
     from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 except Exception:  # pragma: no cover
@@ -31,6 +35,7 @@ from .source_credibility import get_source_category, get_source_tier, get_source
 # Ticker profiler for per-ticker keyword affinity (optional)
 try:
     from .ticker_profiler import get_ticker_profiler
+
     TICKER_PROFILER_AVAILABLE = True
 except ImportError:
     TICKER_PROFILER_AVAILABLE = False
@@ -38,15 +43,18 @@ except ImportError:
     def get_ticker_profiler():
         return None
 
+
 # Dynamic source scorer for performance-based source weighting (optional)
 try:
     from .dynamic_source_scorer import get_dynamic_source_weight
+
     DYNAMIC_SOURCE_SCORER_AVAILABLE = True
 except ImportError:
     DYNAMIC_SOURCE_SCORER_AVAILABLE = False
 
     def get_dynamic_source_weight(url: str) -> float:
         return 1.0
+
 
 # Module-level logger
 log = get_logger(__name__)
@@ -335,11 +343,12 @@ def aggregate_sentiment_sources(
                 sentiment_sources["google_trends"] = float(trends_score)
 
                 log.debug(
-                    "google_trends_sentiment_aggregated ticker=%s score=%.3f spike_ratio=%.2fx direction=%s",
+                    "google_trends_sentiment_aggregated ticker=%s score=%.3f "
+                    "spike_ratio=%.2fx direction=%s",
                     ticker,
                     trends_score,
                     trends_metadata.get("spike_ratio", 0.0),
-                    trends_metadata.get("trend_direction", "UNKNOWN")
+                    trends_metadata.get("trend_direction", "UNKNOWN"),
                 )
         except Exception as e:
             log.debug("google_trends_sentiment_failed ticker=%s err=%s", ticker, str(e))
@@ -358,17 +367,21 @@ def aggregate_sentiment_sources(
 
             si_result = calculate_si_sentiment(ticker, sentiment=temp_sentiment)
             if si_result and si_result.get("sentiment_boost", 0.0) != 0.0:
-                sentiment_sources["short_interest"] = float(si_result["sentiment_boost"])
+                sentiment_sources["short_interest"] = float(
+                    si_result["sentiment_boost"]
+                )
 
                 log.debug(
                     "short_interest_sentiment ticker=%s si_pct=%.1f%% multiplier=%.2fx boost=%.3f",
                     ticker,
                     si_result.get("short_interest_pct", 0.0),
                     si_result.get("squeeze_multiplier", 1.0),
-                    si_result["sentiment_boost"]
+                    si_result["sentiment_boost"],
                 )
         except Exception as e:
-            log.debug("short_interest_sentiment_failed ticker=%s err=%s", ticker, str(e))
+            log.debug(
+                "short_interest_sentiment_failed ticker=%s err=%s", ticker, str(e)
+            )
 
     # 7. Pre-Market Action Sentiment (leading price indicator)
     # Only active during pre-market hours (4am-10am ET)
@@ -385,7 +398,7 @@ def aggregate_sentiment_sources(
                     "premarket_sentiment ticker=%s change_pct=%.2f%% score=%.3f",
                     ticker,
                     pm_metadata.get("premarket_change_pct", 0.0),
-                    pm_score
+                    pm_score,
                 )
         except Exception as e:
             log.debug("premarket_sentiment_failed ticker=%s err=%s", ticker, str(e))
@@ -405,7 +418,7 @@ def aggregate_sentiment_sources(
                     "aftermarket_sentiment ticker=%s change_pct=%.2f%% score=%.3f",
                     ticker,
                     am_metadata.get("aftermarket_change_pct", 0.0),
-                    am_score
+                    am_score,
                 )
         except Exception as e:
             log.debug("aftermarket_sentiment_failed ticker=%s err=%s", ticker, str(e))
@@ -423,11 +436,12 @@ def aggregate_sentiment_sources(
                 sentiment_sources["news_velocity"] = float(velocity_result["sentiment"])
 
                 log.debug(
-                    "news_velocity_sentiment ticker=%s articles_1h=%d velocity_score=%.3f is_spike=%s",
+                    "news_velocity_sentiment ticker=%s articles_1h=%d "
+                    "velocity_score=%.3f is_spike=%s",
                     ticker,
                     velocity_result.get("articles_1h", 0),
                     velocity_result["sentiment"],
-                    velocity_result.get("is_spike", False)
+                    velocity_result.get("is_spike", False),
                 )
         except Exception as e:
             log.debug("news_velocity_sentiment_failed ticker=%s err=%s", ticker, str(e))
@@ -446,12 +460,13 @@ def aggregate_sentiment_sources(
                     sentiment_sources["insider"] = float(insider_score)
 
                     log.debug(
-                        "insider_sentiment ticker=%s score=%.3f signal=%s net_value=$%.0f key_insiders=%s",
+                        "insider_sentiment ticker=%s score=%.3f signal=%s "
+                        "net_value=$%.0f key_insiders=%s",
                         ticker,
                         insider_score,
                         insider_metadata.get("signal_strength", "NEUTRAL"),
                         insider_metadata.get("net_value_usd", 0.0),
-                        insider_metadata.get("key_insiders", [])
+                        insider_metadata.get("key_insiders", []),
                     )
         except Exception as e:
             log.debug("insider_sentiment_failed ticker=%s err=%s", ticker, str(e))
@@ -459,8 +474,12 @@ def aggregate_sentiment_sources(
     # 11. Volume-Price Divergence (technical signal - weak rally / strong selloff detection)
     if ticker and os.getenv("FEATURE_VOLUME_PRICE_DIVERGENCE", "1") == "1":
         try:
-            from .volume_price_divergence import detect_divergence, calculate_price_change, calculate_volume_change_from_rvol
             from .rvol import calculate_rvol_intraday
+            from .volume_price_divergence import (
+                calculate_price_change,
+                calculate_volume_change_from_rvol,
+                detect_divergence,
+            )
 
             # Get RVol data (already calculated earlier in classify())
             rvol_data = calculate_rvol_intraday(ticker)
@@ -473,23 +492,27 @@ def aggregate_sentiment_sources(
 
                 if price_change is not None and volume_change is not None:
                     divergence_result = detect_divergence(
-                        ticker,
-                        price_change,
-                        volume_change
+                        ticker, price_change, volume_change
                     )
 
-                    if divergence_result and divergence_result.get("sentiment_adjustment") != 0.0:
+                    if (
+                        divergence_result
+                        and divergence_result.get("sentiment_adjustment") != 0.0
+                    ):
                         # Add divergence sentiment adjustment
-                        sentiment_sources["divergence"] = float(divergence_result["sentiment_adjustment"])
+                        sentiment_sources["divergence"] = float(
+                            divergence_result["sentiment_adjustment"]
+                        )
 
                         log.debug(
-                            "divergence_detected ticker=%s type=%s strength=%s adjustment=%.3f price_change=%.2f%% volume_change=%.2f%%",
+                            "divergence_detected ticker=%s type=%s strength=%s "
+                            "adjustment=%.3f price_change=%.2f%% volume_change=%.2f%%",
                             ticker,
                             divergence_result.get("divergence_type", "UNKNOWN"),
                             divergence_result.get("signal_strength", "UNKNOWN"),
                             divergence_result["sentiment_adjustment"],
                             price_change * 100,
-                            volume_change * 100
+                            volume_change * 100,
                         )
         except Exception as e:
             log.debug("divergence_detection_failed ticker=%s error=%s", ticker, str(e))
@@ -590,7 +613,9 @@ def aggregate_sentiment_sources(
         # market_regime module not available yet
         pass
     except Exception as e:
-        log.debug("vix_confidence_scaling_failed ticker=%s err=%s", ticker or "N/A", str(e))
+        log.debug(
+            "vix_confidence_scaling_failed ticker=%s err=%s", ticker or "N/A", str(e)
+        )
 
     # Log sentiment breakdown for debugging
     if sentiment_sources:
@@ -628,8 +653,6 @@ def classify_batch_with_llm(
     Returns:
         List of ScoredItem objects with LLM sentiment added where applicable
     """
-    import time
-
     from .config import get_settings
     from .logging_utils import get_logger
 
@@ -741,7 +764,7 @@ def classify_batch_with_llm(
                 # Delay between batches (except last batch)
                 if i + batch_size < len(llm_candidates):
                     log.debug("llm_batch_delay delay=%.1fs", batch_delay)
-                    time.sleep(batch_delay)
+                    sim_sleep(batch_delay)
 
         except ImportError:
             log.warning("llm_client_not_available skipping_llm_enrichment")
@@ -956,7 +979,8 @@ def fast_classify(
                     kw for kw in negative_keywords if kw != "offering_negative"
                 ]
                 log.info(
-                    "offering_non_dilutive_detected ticker=%s stage=%s removed_from_negative_alerts=True",
+                    "offering_non_dilutive_detected ticker=%s stage=%s "
+                    "removed_from_negative_alerts=True",
                     getattr(item, "ticker", "N/A"),
                     offering_stage,
                 )
@@ -987,7 +1011,10 @@ def fast_classify(
 
         # --- DYNAMIC SOURCE SCORER INTEGRATION ---
         # Optionally replace static weight with dynamic performance-based weight
-        if DYNAMIC_SOURCE_SCORER_AVAILABLE and os.getenv("FEATURE_DYNAMIC_SOURCE_SCORER", "0") == "1":
+        if (
+            DYNAMIC_SOURCE_SCORER_AVAILABLE
+            and os.getenv("FEATURE_DYNAMIC_SOURCE_SCORER", "0") == "1"
+        ):
             try:
                 dynamic_weight = get_dynamic_source_weight(source_url)
 
@@ -995,17 +1022,24 @@ def fast_classify(
                 # This provides stability while incorporating performance data
                 if dynamic_weight != 1.0:
                     original_weight = credibility_weight
-                    credibility_weight = (credibility_weight * 0.5) + (dynamic_weight * 0.5)
+                    credibility_weight = (credibility_weight * 0.5) + (
+                        dynamic_weight * 0.5
+                    )
 
                     log.info(
-                        "dynamic_source_weight_applied url=%s static=%.2f dynamic=%.2f blended=%.2f",
+                        "dynamic_source_weight_applied url=%s static=%.2f "
+                        "dynamic=%.2f blended=%.2f",
                         source_url[:80] if source_url else "N/A",
                         original_weight,
                         dynamic_weight,
                         credibility_weight,
                     )
             except Exception as e:
-                log.debug("dynamic_source_scorer_failed url=%s err=%s", source_url[:50] if source_url else "N/A", str(e))
+                log.debug(
+                    "dynamic_source_scorer_failed url=%s err=%s",
+                    source_url[:50] if source_url else "N/A",
+                    str(e),
+                )
 
         if credibility_tier == 3 and credibility_weight < 1.0:
             log.debug(
@@ -1051,7 +1085,11 @@ def fast_classify(
     ticker_multiplier = 1.0
     ticker = getattr(item, "ticker", None)
 
-    if ticker and TICKER_PROFILER_AVAILABLE and os.getenv("FEATURE_TICKER_PROFILER", "1") == "1":
+    if (
+        ticker
+        and TICKER_PROFILER_AVAILABLE
+        and os.getenv("FEATURE_TICKER_PROFILER", "1") == "1"
+    ):
         try:
             profiler = get_ticker_profiler()
             if profiler:
@@ -1061,9 +1099,7 @@ def fast_classify(
                     sector = item.raw.get("sector")
 
                 ticker_multiplier = profiler.get_ticker_multiplier(
-                    ticker=ticker,
-                    keywords=hits,
-                    sector=sector
+                    ticker=ticker, keywords=hits, sector=sector
                 )
 
                 if ticker_multiplier != 1.0:
@@ -1181,7 +1217,9 @@ def fast_classify(
         except ImportError:
             pass
         except Exception as e:
-            log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+            log.debug(
+                "regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e)
+            )
 
     # Build ScoredItem with enriched=False
     scored: ScoredItem | dict
@@ -1226,7 +1264,9 @@ def fast_classify(
         _set_attr(scored, "sentiment_confidence", multi_dim_sentiment.confidence)
         _set_attr(scored, "urgency", multi_dim_sentiment.urgency)
         _set_attr(scored, "risk_level", multi_dim_sentiment.risk_level)
-        _set_attr(scored, "institutional_interest", multi_dim_sentiment.institutional_interest)
+        _set_attr(
+            scored, "institutional_interest", multi_dim_sentiment.institutional_interest
+        )
         _set_attr(scored, "retail_hype_score", multi_dim_sentiment.retail_hype_score)
         _set_attr(scored, "sentiment_reasoning", multi_dim_sentiment.reasoning)
 
@@ -1242,23 +1282,43 @@ def fast_classify(
     # Earnings metadata
     if earnings_result:
         _set_attr(scored, "is_earnings_result", True)
-        _set_attr(scored, "earnings_sentiment_score", earnings_result.get("sentiment_score"))
-        _set_attr(scored, "earnings_sentiment_label", earnings_result.get("sentiment_label"))
+        _set_attr(
+            scored, "earnings_sentiment_score", earnings_result.get("sentiment_score")
+        )
+        _set_attr(
+            scored, "earnings_sentiment_label", earnings_result.get("sentiment_label")
+        )
         _set_attr(scored, "earnings_eps_actual", earnings_result.get("eps_actual"))
         _set_attr(scored, "earnings_eps_estimate", earnings_result.get("eps_estimate"))
-        _set_attr(scored, "earnings_revenue_actual", earnings_result.get("revenue_actual"))
-        _set_attr(scored, "earnings_revenue_estimate", earnings_result.get("revenue_estimate"))
+        _set_attr(
+            scored, "earnings_revenue_actual", earnings_result.get("revenue_actual")
+        )
+        _set_attr(
+            scored, "earnings_revenue_estimate", earnings_result.get("revenue_estimate")
+        )
         _set_attr(scored, "earnings_data_source", earnings_result.get("data_source"))
 
     # Fundamental metadata
     if fundamental_metadata:
         _set_attr(scored, "fundamental_score", fundamental_score)
-        _set_attr(scored, "fundamental_float_shares", fundamental_metadata.get("float_shares"))
-        _set_attr(scored, "fundamental_short_interest", fundamental_metadata.get("short_interest"))
-        _set_attr(scored, "fundamental_float_score", fundamental_metadata.get("float_score"))
+        _set_attr(
+            scored, "fundamental_float_shares", fundamental_metadata.get("float_shares")
+        )
+        _set_attr(
+            scored,
+            "fundamental_short_interest",
+            fundamental_metadata.get("short_interest"),
+        )
+        _set_attr(
+            scored, "fundamental_float_score", fundamental_metadata.get("float_score")
+        )
         _set_attr(scored, "fundamental_si_score", fundamental_metadata.get("si_score"))
-        _set_attr(scored, "fundamental_float_reason", fundamental_metadata.get("float_reason"))
-        _set_attr(scored, "fundamental_si_reason", fundamental_metadata.get("si_reason"))
+        _set_attr(
+            scored, "fundamental_float_reason", fundamental_metadata.get("float_reason")
+        )
+        _set_attr(
+            scored, "fundamental_si_reason", fundamental_metadata.get("si_reason")
+        )
 
     # Market regime metadata
     if regime_data:
@@ -1347,7 +1407,6 @@ def enrich_scored_item(
         Enriched scored item with enriched=True
     """
     import os
-    import time
 
     # Helper to set attributes
     def _set_attr(obj, key, value):
@@ -1363,7 +1422,7 @@ def enrich_scored_item(
     if not ticker or not ticker.strip():
         # No ticker, can't enrich with these data sources
         _set_attr(scored, "enriched", True)
-        _set_attr(scored, "enrichment_timestamp", time.time())
+        _set_attr(scored, "enrichment_timestamp", sim_time())
         return scored
 
     # Get current total_score from scored item
@@ -1454,7 +1513,9 @@ def enrich_scored_item(
                 )
 
                 if divergence_data:
-                    divergence_adjustment = divergence_data.get("sentiment_adjustment", 0.0)
+                    divergence_adjustment = divergence_data.get(
+                        "sentiment_adjustment", 0.0
+                    )
 
                     pre_divergence_score = total_score
                     total_score = total_score + divergence_adjustment
@@ -1510,9 +1571,7 @@ def enrich_scored_item(
     except ImportError:
         pass
     except Exception as e:
-        log.debug(
-            "vwap_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e)
-        )
+        log.debug("vwap_calculation_failed ticker=%s err=%s", ticker or "N/A", str(e))
 
     # Update the scored item's total_score
     _set_attr(scored, "source_weight", total_score)
@@ -1533,11 +1592,15 @@ def enrich_scored_item(
 
     if divergence_data:
         _set_attr(scored, "divergence_type", divergence_data.get("divergence_type"))
-        _set_attr(scored, "divergence_signal_strength", divergence_data.get("signal_strength"))
+        _set_attr(
+            scored, "divergence_signal_strength", divergence_data.get("signal_strength")
+        )
         _set_attr(scored, "divergence_sentiment_adjustment", divergence_adjustment)
         _set_attr(scored, "price_change_pct", divergence_data.get("price_change"))
         _set_attr(scored, "volume_change_pct", divergence_data.get("volume_change"))
-        _set_attr(scored, "divergence_interpretation", divergence_data.get("interpretation"))
+        _set_attr(
+            scored, "divergence_interpretation", divergence_data.get("interpretation")
+        )
 
     if vwap_data:
         _set_attr(scored, "vwap", vwap_data.get("vwap"))
@@ -1550,7 +1613,7 @@ def enrich_scored_item(
 
     # Mark as enriched
     _set_attr(scored, "enriched", True)
-    _set_attr(scored, "enrichment_timestamp", time.time())
+    _set_attr(scored, "enrichment_timestamp", sim_time())
 
     return scored
 
@@ -1606,16 +1669,16 @@ def is_substantive_news(title: str, text: str = "") -> bool:
     # Post-mortem patterns: "[Action] after [Event]" = explaining what already happened
     # "Stock Plunges After Company Cuts Outlook"
     # "Shares Drop After Missing Estimates"
-    # Note: Pattern matches ticker with optional parentheses/apostrophes (e.g., "Chegg (CHGG)" or "Denny's (DENN)")
+    # Note: Pattern matches ticker with optional parens/apostrophes  # noqa: E501
     summary_patterns = [
-        r"why\s+[\w'\s()]+\s+shares?\s+(are\s+)?(plunging|soaring|moving|rallying|dropping|falling|rising|climbing|surging|tumbling)",
+        r"why\s+[\w'\s()]+\s+shares?\s+(are\s+)?(plunging|soaring|moving|rallying|dropping|falling|rising|climbing|surging|tumbling)",  # noqa: E501
         r"why\s+[\w'\s()]+\s+stock\s+is\s+(up|down|moving|higher|lower)",
-        r"what\s+investors\s+need\s+to\s+know\s*$",  # Standalone "What Investors Need to Know"
+        r"what\s+investors\s+need\s+to\s+know\s*$",  # "What Investors Need to Know"
         r"why\s+[\w'\s()]+\s+shares?\s+(are\s+)?(up|down)\s+today",
         r"^why\s+(is\s+)?[\w'\s()]+\s+(stock|shares?)\s+(rising|falling|moving)",
         # Post-mortem patterns (stock moved, then news explains why)
-        r"(stock|shares?)\s+(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after",
-        r"(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after\s+[\w'\s]+\s+(cut|lower|reduce|miss|disappoint)",
+        r"(stock|shares?)\s+(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after",  # noqa: E501
+        r"(plunge|plummet|drop|fall|surge|soar|jump|climb|rally|tumble)s?\s+after\s+[\w'\s]+\s+(cut|lower|reduce|miss|disappoint)",  # noqa: E501
         r"[\w'\s()]+\s+(stock|shares?)\s+(tank|crater|nosedive)s?\s+after",
     ]
 
@@ -1876,7 +1939,8 @@ def classify_legacy(
                     kw for kw in negative_keywords if kw != "offering_negative"
                 ]
                 log.info(
-                    "offering_non_dilutive_detected ticker=%s stage=%s removed_from_negative_alerts=True",
+                    "offering_non_dilutive_detected ticker=%s stage=%s "
+                    "removed_from_negative_alerts=True",
                     getattr(item, "ticker", "N/A"),
                     offering_stage,
                 )
@@ -2067,7 +2131,9 @@ def classify_legacy(
             # market_regime module not available yet
             pass
         except Exception as e:
-            log.debug("regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e))
+            log.debug(
+                "regime_adjustment_failed ticker=%s err=%s", ticker or "N/A", str(e)
+            )
 
     # --- RVOL (RELATIVE VOLUME) BOOST ---
     # PHASE 1 FIX (2025-11-27): Feature flag check ADDED (SEC Digester)
@@ -2170,7 +2236,9 @@ def classify_legacy(
                 )
 
                 if divergence_data:
-                    divergence_adjustment = divergence_data.get("sentiment_adjustment", 0.0)
+                    divergence_adjustment = divergence_data.get(
+                        "sentiment_adjustment", 0.0
+                    )
 
                     # Apply sentiment adjustment to total_score
                     pre_divergence_score = total_score
@@ -2528,19 +2596,27 @@ def classify_legacy(
                     except Exception:
                         pass
 
-            _set_div_attr(scored, "divergence_type", divergence_data.get("divergence_type"))
             _set_div_attr(
-                scored, "divergence_signal_strength", divergence_data.get("signal_strength")
+                scored, "divergence_type", divergence_data.get("divergence_type")
+            )
+            _set_div_attr(
+                scored,
+                "divergence_signal_strength",
+                divergence_data.get("signal_strength"),
             )
             _set_div_attr(
                 scored, "divergence_sentiment_adjustment", divergence_adjustment
             )
-            _set_div_attr(scored, "price_change_pct", divergence_data.get("price_change"))
+            _set_div_attr(
+                scored, "price_change_pct", divergence_data.get("price_change")
+            )
             _set_div_attr(
                 scored, "volume_change_pct", divergence_data.get("volume_change")
             )
             _set_div_attr(
-                scored, "divergence_interpretation", divergence_data.get("interpretation")
+                scored,
+                "divergence_interpretation",
+                divergence_data.get("interpretation"),
             )
         except Exception:
             # Don't let metadata attachment break the pipeline

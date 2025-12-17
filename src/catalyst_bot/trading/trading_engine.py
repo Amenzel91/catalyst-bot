@@ -15,55 +15,76 @@ ensuring proper risk management, error handling, and Discord alerting.
 """
 
 import asyncio
-import json
-import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-# Internal imports - Broker
-from ..broker.broker_interface import (
-    BrokerInterface,
-    Order,
-    OrderSide,
-    OrderStatus,
-    OrderType,
-    TimeInForce,
-    BrokerError,
-    BrokerConnectionError,
-    InsufficientFundsError,
-)
 from ..broker.alpaca_client import AlpacaBrokerClient
 
-# Internal imports - Execution & Portfolio
-from ..execution.order_executor import (
-    OrderExecutor,
-    TradingSignal,
-    PositionSizingConfig,
-    ExecutionResult,
-)
-from ..portfolio.position_manager import (
-    PositionManager,
-    ManagedPosition,
-    ClosedPosition,
-    PortfolioMetrics,
-)
+# Internal imports - Broker
+from ..broker.broker_interface import InsufficientFundsError
+from ..classify import ScoredItem  # Keyword scoring output
 
 # Internal imports - Core
 from ..config import get_settings
+
+# Internal imports - Execution & Portfolio
+from ..execution.order_executor import (
+    ExecutionResult,
+    OrderExecutor,
+    PositionSizingConfig,
+    TradingSignal,
+)
 from ..logging_utils import get_logger
-from ..classify import ScoredItem  # Keyword scoring output
+from ..portfolio.position_manager import (
+    ClosedPosition,
+    ManagedPosition,
+    PositionManager,
+)
+
+# Simulation-aware time utilities
+from ..time_utils import is_simulation as is_sim_mode
+from ..time_utils import now as sim_now
 from .market_data import MarketDataFeed  # Market data provider (Agent 3)
 
 logger = get_logger(__name__)
+
+# --- Simulation mode support ---
+# When running in simulation mode, the TradingEngine uses a MockBroker
+# instead of the real Alpaca broker client.
+_simulation_broker = None
+
+
+def set_simulation_broker(broker) -> None:
+    """Set the simulation broker for testing.
+
+    Parameters
+    ----------
+    broker : MockBroker or None
+        Mock broker instance to use in simulation, or None to disable
+    """
+    global _simulation_broker
+    _simulation_broker = broker
+
+
+def get_simulation_broker():
+    """Get the current simulation broker.
+
+    Returns
+    -------
+    MockBroker or None
+        The active simulation broker, or None if not in simulation
+    """
+    return _simulation_broker
 
 
 # ============================================================================
 # Type Definitions
 # ============================================================================
+
 
 @dataclass
 class TradingEngineConfig:
@@ -98,6 +119,7 @@ class TradingEngineConfig:
 # Trading Engine
 # ============================================================================
 
+
 class TradingEngine:
     """
     Orchestrates the complete trading workflow.
@@ -130,20 +152,29 @@ class TradingEngine:
         # Parse configuration
         config = config or {}
         self.config = TradingEngineConfig(
-            trading_enabled=config.get("trading_enabled",
-                getattr(settings, "feature_paper_trading", False)),
-            paper_trading=config.get("paper_trading",
-                getattr(settings, "alpaca_paper_mode", True)),
-            send_discord_alerts=config.get("send_discord_alerts",
-                getattr(settings, "trading_discord_alerts", True)),
-            max_portfolio_exposure_pct=config.get("max_portfolio_exposure_pct",
-                getattr(settings, "max_portfolio_exposure_pct", 50.0)),
-            max_daily_loss_pct=config.get("max_daily_loss_pct",
-                getattr(settings, "max_daily_loss_pct", 10.0)),
-            position_size_base_pct=config.get("position_size_base_pct",
-                getattr(settings, "position_size_base_pct", 2.0)),
-            position_size_max_pct=config.get("position_size_max_pct",
-                getattr(settings, "position_size_max_pct", 5.0)),
+            trading_enabled=config.get(
+                "trading_enabled", getattr(settings, "feature_paper_trading", False)
+            ),
+            paper_trading=config.get(
+                "paper_trading", getattr(settings, "alpaca_paper_mode", True)
+            ),
+            send_discord_alerts=config.get(
+                "send_discord_alerts", getattr(settings, "trading_discord_alerts", True)
+            ),
+            max_portfolio_exposure_pct=config.get(
+                "max_portfolio_exposure_pct",
+                getattr(settings, "max_portfolio_exposure_pct", 50.0),
+            ),
+            max_daily_loss_pct=config.get(
+                "max_daily_loss_pct", getattr(settings, "max_daily_loss_pct", 10.0)
+            ),
+            position_size_base_pct=config.get(
+                "position_size_base_pct",
+                getattr(settings, "position_size_base_pct", 2.0),
+            ),
+            position_size_max_pct=config.get(
+                "position_size_max_pct", getattr(settings, "position_size_max_pct", 5.0)
+            ),
             db_path=config.get("db_path"),
         )
 
@@ -152,7 +183,9 @@ class TradingEngine:
         self.order_executor: Optional[OrderExecutor] = None
         self.position_manager: Optional[PositionManager] = None
         self.signal_generator = None  # Will be set after SignalGenerator is implemented
-        self.market_data_feed: Optional[MarketDataFeed] = None  # Market data provider (Agent 3)
+        self.market_data_feed: Optional[MarketDataFeed] = (
+            None  # Market data provider (Agent 3)
+        )
 
         # Circuit breaker state
         self.circuit_breaker_active = False
@@ -185,31 +218,41 @@ class TradingEngine:
                 self.logger.info("Trading engine disabled via configuration")
                 return False
 
-            # Verify paper trading mode
-            if not self.config.paper_trading:
+            # Verify paper trading mode (skip in simulation mode)
+            if not self.config.paper_trading and not is_sim_mode():
                 self.logger.error("CRITICAL: Live trading not yet supported!")
                 return False
 
-            # Initialize broker client
-            self.logger.info("Initializing Alpaca broker client...")
-            self.broker = AlpacaBrokerClient(
-                api_key=os.getenv("ALPACA_API_KEY"),
-                api_secret=os.getenv("ALPACA_SECRET") or os.getenv("ALPACA_API_SECRET"),
-                paper_trading=True,
-            )
+            # --- Simulation mode: use MockBroker ---
+            if is_sim_mode() and _simulation_broker is not None:
+                self.logger.info("Initializing simulation broker (MockBroker)...")
+                self.broker = _simulation_broker
+                self.daily_start_balance = Decimal(str(_simulation_broker.cash))
+                self.logger.info(
+                    f"Connected to MockBroker: cash=${self.daily_start_balance}"
+                )
+            else:
+                # Initialize real broker client
+                self.logger.info("Initializing Alpaca broker client...")
+                self.broker = AlpacaBrokerClient(
+                    api_key=os.getenv("ALPACA_API_KEY"),
+                    api_secret=os.getenv("ALPACA_SECRET")
+                    or os.getenv("ALPACA_API_SECRET"),
+                    paper_trading=True,
+                )
 
-            # Connect to broker
-            await self.broker.connect()
+                # Connect to broker
+                await self.broker.connect()
 
-            # Verify account
-            account = await self.broker.get_account()
-            self.logger.info(
-                f"Connected to Alpaca: equity=${account.equity}, "
-                f"buying_power=${account.buying_power}"
-            )
+                # Verify account
+                account = await self.broker.get_account()
+                self.logger.info(
+                    f"Connected to Alpaca: equity=${account.equity}, "
+                    f"buying_power=${account.buying_power}"
+                )
 
-            # Store daily start balance for circuit breaker
-            self.daily_start_balance = account.equity
+                # Store daily start balance for circuit breaker
+                self.daily_start_balance = account.equity
 
             # Initialize order executor
             self.logger.info("Initializing OrderExecutor...")
@@ -311,7 +354,9 @@ class TradingEngine:
             # 4. Check risk limits
             account = await self.broker.get_account()
             if not self._check_risk_limits(signal, account.equity):
-                self.logger.warning(f"Risk limits exceeded for {ticker}, rejecting trade")
+                self.logger.warning(
+                    f"Risk limits exceeded for {ticker}, rejecting trade"
+                )
                 return None
 
             # 5. Execute signal
@@ -327,8 +372,7 @@ class TradingEngine:
 
         except Exception as e:
             self.logger.error(
-                f"execution_failed ticker={ticker} err={str(e)}",
-                exc_info=True
+                f"execution_failed ticker={ticker} err={str(e)}", exc_info=True
             )
             return None
 
@@ -372,7 +416,7 @@ class TradingEngine:
             account = await self.broker.get_account()
             metrics = self.position_manager.calculate_portfolio_metrics(account.equity)
 
-            self._last_position_update = datetime.now()
+            self._last_position_update = sim_now()
 
             return {
                 "positions": metrics.total_positions,
@@ -417,8 +461,10 @@ class TradingEngine:
         if self.circuit_breaker_active:
             # Check if cooldown period has expired
             if self.circuit_breaker_triggered_at:
-                cooldown = timedelta(minutes=self.config.circuit_breaker_cooldown_minutes)
-                if datetime.now() - self.circuit_breaker_triggered_at > cooldown:
+                cooldown = timedelta(
+                    minutes=self.config.circuit_breaker_cooldown_minutes
+                )
+                if sim_now() - self.circuit_breaker_triggered_at > cooldown:
                     self.logger.info("Circuit breaker cooldown expired, resetting")
                     self.circuit_breaker_active = False
                     self.circuit_breaker_triggered_at = None
@@ -444,19 +490,20 @@ class TradingEngine:
         """
         try:
             # Calculate position value
-            position_value = (
-                account_value * Decimal(str(signal.position_size_pct))
-            )
+            position_value = account_value * Decimal(str(signal.position_size_pct))
 
             # Check minimum account balance
             if account_value < self.config.min_account_balance:
                 self.logger.warning(
-                    f"Account balance too low: ${account_value} < ${self.config.min_account_balance}"
+                    f"Account balance too low: ${account_value} < "
+                    f"${self.config.min_account_balance}"
                 )
                 return False
 
             # Check position size within limits
-            max_position_value = account_value * Decimal(str(self.config.position_size_max_pct / 100.0))
+            max_position_value = account_value * Decimal(
+                str(self.config.position_size_max_pct / 100.0)
+            )
             if position_value > max_position_value:
                 self.logger.warning(
                     f"Position size too large: ${position_value} > ${max_position_value}"
@@ -466,7 +513,9 @@ class TradingEngine:
             # Check max portfolio exposure
             if self.position_manager:
                 current_exposure = self.position_manager.get_portfolio_exposure()
-                max_exposure = account_value * Decimal(str(self.config.max_portfolio_exposure_pct / 100.0))
+                max_exposure = account_value * Decimal(
+                    str(self.config.max_portfolio_exposure_pct / 100.0)
+                )
 
                 if current_exposure + position_value > max_exposure:
                     self.logger.warning(
@@ -506,7 +555,7 @@ class TradingEngine:
             if daily_pnl_pct < -self.config.max_daily_loss_pct:
                 if not self.circuit_breaker_active:
                     self.circuit_breaker_active = True
-                    self.circuit_breaker_triggered_at = datetime.now()
+                    self.circuit_breaker_triggered_at = sim_now()
 
                     self.logger.error(
                         f"CIRCUIT BREAKER TRIGGERED: Daily loss {daily_pnl_pct:.2f}% "
@@ -519,7 +568,8 @@ class TradingEngine:
                         f"Daily Loss: {daily_pnl_pct:.2f}%\n"
                         f"P&L: ${daily_pnl:.2f}\n"
                         f"Current Balance: ${current_value:.2f}\n"
-                        f"Trading disabled for {self.config.circuit_breaker_cooldown_minutes} minutes"
+                        f"Trading disabled for "
+                        f"{self.config.circuit_breaker_cooldown_minutes} minutes"
                     )
 
         except Exception as e:
@@ -542,14 +592,11 @@ class TradingEngine:
         try:
             # Determine if we should use extended hours trading
             # Import here to avoid circular dependency
-            from ..market_hours import is_extended_hours
             from ..config import get_settings
+            from ..market_hours import is_extended_hours
 
             settings = get_settings()
-            use_extended_hours = (
-                settings.trading_extended_hours and
-                is_extended_hours()
-            )
+            use_extended_hours = settings.trading_extended_hours and is_extended_hours()
 
             if use_extended_hours:
                 self.logger.info(
@@ -602,7 +649,9 @@ class TradingEngine:
             self.logger.warning(f"Insufficient funds for {signal.ticker}: {e}")
             return None
         except Exception as e:
-            self.logger.error(f"Failed to execute signal for {signal.ticker}: {e}", exc_info=True)
+            self.logger.error(
+                f"Failed to execute signal for {signal.ticker}: {e}", exc_info=True
+            )
             return None
 
     async def _handle_close_signal(self, ticker: str) -> bool:
@@ -638,7 +687,9 @@ class TradingEngine:
             return False
 
         except Exception as e:
-            self.logger.error(f"Failed to handle close signal for {ticker}: {e}", exc_info=True)
+            self.logger.error(
+                f"Failed to handle close signal for {ticker}: {e}", exc_info=True
+            )
             return False
 
     # ========================================================================
@@ -646,8 +697,7 @@ class TradingEngine:
     # ========================================================================
 
     async def _fetch_current_prices(
-        self,
-        positions: List[ManagedPosition]
+        self, positions: List[ManagedPosition]
     ) -> Dict[str, Decimal]:
         """
         Fetch current prices for positions using MarketDataFeed.
@@ -678,11 +728,15 @@ class TradingEngine:
                 return prices
             else:
                 # Fallback to broker API if MarketDataFeed not available
-                self.logger.warning("MarketDataFeed not initialized, using broker API fallback")
+                self.logger.warning(
+                    "MarketDataFeed not initialized, using broker API fallback"
+                )
                 prices = {}
                 for position in positions:
                     try:
-                        broker_position = await self.broker.get_position(position.ticker)
+                        broker_position = await self.broker.get_position(
+                            position.ticker
+                        )
                         if broker_position:
                             prices[position.ticker] = broker_position.current_price
                     except Exception as e:
@@ -692,10 +746,7 @@ class TradingEngine:
                 return prices
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to fetch current prices: {e}",
-                exc_info=True
-            )
+            self.logger.error(f"Failed to fetch current prices: {e}", exc_info=True)
             return {}
 
     # ========================================================================
@@ -729,9 +780,9 @@ class TradingEngine:
 
             # Simple buy signal
             signal = TradingSignal(
-                signal_id=f"stub_{ticker}_{datetime.now().timestamp()}",
+                signal_id=f"stub_{ticker}_{sim_now().timestamp()}",
                 ticker=ticker,
-                timestamp=datetime.now(),
+                timestamp=sim_now(),
                 action="buy",
                 confidence=min(scored_item.total_score / 5.0, 1.0),
                 entry_price=current_price,
@@ -810,7 +861,9 @@ class TradingEngine:
     ) -> str:
         """Format Discord alert for closed position."""
         emoji = "=â" if position.realized_pnl > 0 else "=4"
-        reason_label = "SIGNAL" if event_type == "closed_signal" else position.exit_reason.upper()
+        reason_label = (
+            "SIGNAL" if event_type == "closed_signal" else position.exit_reason.upper()
+        )
 
         return (
             f"{emoji} **POSITION CLOSED - {reason_label}**\n"
@@ -929,7 +982,8 @@ class TradingEngine:
             "broker_connected": bool(self.broker),
             "last_position_update": (
                 self._last_position_update.isoformat()
-                if self._last_position_update else None
+                if self._last_position_update
+                else None
             ),
         }
 
@@ -961,7 +1015,7 @@ if __name__ == "__main__":
 
         # Get portfolio metrics
         metrics = await engine.get_portfolio_metrics()
-        print(f"\nPortfolio Metrics:")
+        print("\nPortfolio Metrics:")
         print(f"  Account Value: ${metrics.get('account_value', 0):.2f}")
         print(f"  Buying Power: ${metrics.get('buying_power', 0):.2f}")
         print(f"  Positions: {metrics.get('total_positions', 0)}")
@@ -969,7 +1023,7 @@ if __name__ == "__main__":
 
         # Update positions
         update_result = await engine.update_positions()
-        print(f"\nPosition Update:")
+        print("\nPosition Update:")
         print(f"  Positions: {update_result.get('positions', 0)}")
         print(f"  P&L: ${update_result.get('pnl', 0):.2f}")
 

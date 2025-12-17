@@ -16,6 +16,11 @@ import threading
 import time
 from typing import Any, Dict, List, Tuple
 
+# Simulation-aware time utilities (drop-in for datetime.now/time.sleep)
+from catalyst_bot.time_utils import is_simulation as is_sim_mode
+from catalyst_bot.time_utils import now as sim_now
+from catalyst_bot.time_utils import sleep as sim_sleep
+
 # Load .env early so config is available to subsequent imports.
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -247,7 +252,8 @@ class HeartbeatAccumulator:
         self.total_alerts = 0
         self.total_errors = 0
         self.cycles_completed = 0
-        self.last_heartbeat_time = datetime.now(timezone.utc)
+        # Use simulation-aware time for simulation mode compatibility
+        self.last_heartbeat_time = sim_now()
 
     def add_cycle(self, scanned: int, alerts: int, errors: int):
         """Record stats from a completed cycle."""
@@ -258,9 +264,8 @@ class HeartbeatAccumulator:
 
     def should_send_heartbeat(self, interval_minutes: int = 60) -> bool:
         """Check if it's time to send heartbeat."""
-        elapsed = (
-            datetime.now(timezone.utc) - self.last_heartbeat_time
-        ).total_seconds()
+        # Use simulation-aware time for simulation mode compatibility
+        elapsed = (sim_now() - self.last_heartbeat_time).total_seconds()
         return elapsed >= (interval_minutes * 60)
 
     def _format_avg_alerts(self) -> str:
@@ -288,9 +293,8 @@ class HeartbeatAccumulator:
 
     def get_stats(self) -> dict:
         """Get cumulative stats for heartbeat message."""
-        elapsed_min = (
-            datetime.now(timezone.utc) - self.last_heartbeat_time
-        ).total_seconds() / 60
+        # Use simulation-aware time for simulation mode compatibility
+        elapsed_min = (sim_now() - self.last_heartbeat_time).total_seconds() / 60
         return {
             "total_scanned": self.total_scanned,
             "total_alerts": self.total_alerts,
@@ -703,7 +707,7 @@ def _get_feed_activity_summary() -> Dict[str, Any]:
         total_deduped = TOTAL_STATS.get("deduped", 0)
 
         if total_items > 0:
-            dedup_pct = (total_deduped / total_items * 100)
+            dedup_pct = total_deduped / total_items * 100
             dedup_display = f"{dedup_pct:.0f}%"
         else:
             dedup_display = "—"
@@ -1063,6 +1067,22 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         "on",
     }:
         return
+
+    # --- Simulation mode: respect SIMULATION_ALERT_OUTPUT setting ---
+    # "discord_test" (default) = send to Discord, "local_only"/"disabled" = skip
+    from catalyst_bot.time_utils import is_simulation as is_sim_mode
+
+    if is_sim_mode():
+        alert_output = os.getenv("SIMULATION_ALERT_OUTPUT", "discord_test")
+        if alert_output in ("local_only", "disabled"):
+            log.debug(
+                "heartbeat_skipped_simulation reason=%s alert_output=%s",
+                reason,
+                alert_output,
+            )
+            return
+        # If discord_test, fall through to send heartbeat normally
+
     # Prefer an explicit admin/dev webhook (env) if provided,
     # else fall back to the normal alerts webhook from settings/env via resolver.
     admin_url = os.getenv("DISCORD_ADMIN_WEBHOOK", "").strip()
@@ -2018,6 +2038,7 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
     seen_store = None
     try:
         import os
+        from pathlib import Path
 
         if os.getenv("FEATURE_PERSIST_SEEN", "true").strip().lower() in {
             "1",
@@ -2025,7 +2046,22 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             "yes",
             "on",
         }:
-            seen_store = SeenStore()
+            # Use simulation-specific seen store to avoid polluting production dedup
+            if is_sim_mode():
+                from .seen_store import SeenStoreConfig
+
+                sim_seen_path = Path(
+                    os.getenv("SIMULATION_SEEN_DB_PATH", "data/simulation_seen.sqlite")
+                )
+                seen_store = SeenStore(
+                    SeenStoreConfig(
+                        path=sim_seen_path,
+                        ttl_days=1,  # Short TTL for simulation
+                        cache_enabled=True,
+                    )
+                )
+            else:
+                seen_store = SeenStore()
     except Exception:
         log.warning("seen_store_init_failed", exc_info=True)
 
@@ -3772,7 +3808,6 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
             pass
         # WAVE ALPHA Agent 1: Update heartbeat accumulator with cycle stats
         try:
-            global _heartbeat_acc
             _heartbeat_acc.add_cycle(
                 scanned=len(items),
                 alerts=alerted,
@@ -4289,10 +4324,90 @@ def runner_main(
 ) -> int:
     global FEEDBACK_AVAILABLE
     global trading_engine
+    global _heartbeat_acc
 
     settings = get_settings()
     setup_logging(settings.log_level)
     log = get_logger("runner")
+
+    # =========================================================================
+    # SIMULATION MODE: Auto-initialize mock providers for full pipeline testing
+    # =========================================================================
+    # When SIMULATION_MODE=1, this initializes the SimulationController which
+    # wires up MockFeedProvider, MockMarketDataFeed, MockBroker, etc.
+    # The rest of the runner then operates normally, but feeds.py returns
+    # cached historical data instead of making real API calls.
+    # =========================================================================
+    _simulation_controller = None
+    # Check env var directly since is_sim_mode() requires clock to be initialized first
+    if os.getenv("SIMULATION_MODE", "0") == "1":
+        try:
+            import asyncio
+
+            from catalyst_bot.simulation import SimulationController
+
+            log.info("simulation_mode_detected initializing_mock_providers")
+
+            # Create controller from environment config
+            _simulation_controller = SimulationController.from_config()
+
+            # Run async setup synchronously to wire up mock providers
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            loop.run_until_complete(_simulation_controller.setup())
+
+            # Get simulation info for logging
+            sim_date = _simulation_controller.config.simulation_date or "2024-11-12"
+            sim_preset = _simulation_controller.config.time_preset or "morning"
+            sim_speed = _simulation_controller.config.speed_multiplier
+
+            log.info(
+                "simulation_initialized date=%s preset=%s speed=%sx run_id=%s",
+                sim_date,
+                sim_preset,
+                sim_speed,
+                _simulation_controller.run_id,
+            )
+            log.info(
+                "simulation_mock_providers feeds=MockFeedProvider "
+                "market=MockMarketDataFeed broker=MockBroker"
+            )
+
+            # Reset heartbeat accumulator to use simulation time (not module load time)
+            _heartbeat_acc.reset()
+            log.debug("heartbeat_accumulator_reset for_simulation_time")
+
+            # Clear simulation seen store to ensure fresh state for each run
+            from pathlib import Path as _SimPath
+
+            sim_seen_path = _SimPath(
+                os.getenv("SIMULATION_SEEN_DB_PATH", "data/simulation_seen.sqlite")
+            )
+            if sim_seen_path.exists():
+                try:
+                    sim_seen_path.unlink()
+                    log.info("simulation_seen_store_cleared path=%s", sim_seen_path)
+                except Exception as e:
+                    log.warning("simulation_seen_store_clear_failed err=%s", str(e))
+
+            # For instant mode (speed=0), jump clock to end so all items are available
+            if sim_speed == 0:
+                from catalyst_bot.simulation.clock_provider import jump_to
+
+                end_time = _simulation_controller.clock.end_time
+                if end_time:
+                    jump_to(end_time)
+                    log.info(
+                        "simulation_instant_mode clock_jumped_to=%s",
+                        end_time.isoformat(),
+                    )
+
+        except Exception as e:
+            log.error("simulation_init_failed err=%s", str(e), exc_info=True)
+            log.warning("continuing_in_live_mode simulation initialization failed")
 
     # Set process priority (Windows only)
     _set_process_priority(log, settings)
@@ -4620,7 +4735,7 @@ def runner_main(
                     market_status,
                     int(sleep_interval),
                 )
-                time.sleep(sleep_interval)
+                sim_sleep(sleep_interval)  # Simulation-aware sleep
                 continue
 
         t0 = time.time()
@@ -4638,7 +4753,7 @@ def runner_main(
         try:
             update_health_status(
                 status="healthy",
-                last_cycle_time=datetime.now(timezone.utc),
+                last_cycle_time=sim_now(),  # Simulation-aware timestamp
                 total_cycles=TOTAL_STATS.get("items", 0),
                 total_alerts=TOTAL_STATS.get("alerts", 0),
             )
@@ -4663,7 +4778,6 @@ def runner_main(
 
         # WAVE ALPHA Agent 1: Check if it's time to send heartbeat with cumulative stats
         try:
-            global _heartbeat_acc
             # Get interval from env (default 60 minutes)
             heartbeat_interval = (
                 HEARTBEAT_INTERVAL_S // 60 if HEARTBEAT_INTERVAL_S > 0 else 60
@@ -4682,11 +4796,16 @@ def runner_main(
         if not do_loop or STOP:
             break
         # sleep between cycles, but wake early if STOP flips
-        end = time.time() + sleep_interval
-        while time.time() < end:
-            if STOP:
-                break
-            time.sleep(0.2)
+        if is_sim_mode():
+            # In simulation mode, use sim_sleep (instant in fast mode)
+            sim_sleep(sleep_interval)
+        else:
+            # In production, sleep interruptibly
+            end = time.time() + sleep_interval
+            while time.time() < end:
+                if STOP:
+                    break
+                time.sleep(0.2)
 
     log.info("boot_end")
     # At the end of the run, send a final heartbeat summarising totals.  This

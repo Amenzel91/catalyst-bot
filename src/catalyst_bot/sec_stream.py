@@ -378,7 +378,7 @@ class SECStreamClient:
 
                 log.info(
                     f"📄 New filing: {filing.ticker} - {filing.filing_type} "
-                    f"(market cap: ${filing.market_cap:,.0f if filing.market_cap else 0})"
+                    f"(market cap: ${filing.market_cap or 0:,.0f})"
                 )
 
                 # Add to queue for backpressure handling

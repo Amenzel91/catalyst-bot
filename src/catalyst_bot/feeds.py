@@ -20,6 +20,11 @@ import requests
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparse
 
+# Simulation-aware time utilities
+from catalyst_bot.time_utils import is_simulation as is_sim_mode
+from catalyst_bot.time_utils import now as sim_now
+from catalyst_bot.time_utils import sleep as sim_sleep
+
 # Async HTTP support for 10-20x faster concurrent feed fetching
 try:
     import aiohttp
@@ -52,6 +57,86 @@ from .market import get_volatility
 from .ticker_validation import TickerValidator
 from .utils.event_loop_manager import run_async
 from .watchlist import load_watchlist_set
+
+# --- Simulation mode support -----------------------------------------------
+# When running in simulation mode, feeds can be injected from MockFeedProvider
+# instead of making real API calls to external services.
+_mock_feed_provider = None
+
+
+def set_mock_feed_provider(provider) -> None:
+    """
+    Set the mock feed provider for simulation mode.
+
+    Called by SimulationController during setup to inject historical
+    feed data. Pass None to clear and return to live feeds.
+
+    Args:
+        provider: MockFeedProvider instance or None
+    """
+    global _mock_feed_provider
+    _mock_feed_provider = provider
+
+
+def get_mock_feed_provider():
+    """
+    Get the current mock feed provider (if set).
+
+    Returns:
+        MockFeedProvider instance or None
+    """
+    return _mock_feed_provider
+
+
+def _get_simulation_items() -> List[Dict]:
+    """
+    Get feed items from the mock provider in simulation mode.
+
+    Converts MockFeedProvider items to the format expected by
+    the rest of the feed processing pipeline.
+
+    Returns:
+        List of feed item dicts in standard format
+    """
+    if not _mock_feed_provider:
+        return []
+
+    all_items = []
+
+    # Get news items from mock provider
+    news_items = _mock_feed_provider.get_new_items()
+    for item in news_items:
+        # Convert to standard feed item format
+        converted = {
+            "id": item.get("id") or item.get("url") or "",
+            "title": item.get("title", ""),
+            "link": item.get("url") or item.get("link", ""),
+            "ts": item.get("timestamp", sim_now().isoformat()),
+            "source": item.get("source", "simulation"),
+            "ticker": item.get("ticker"),
+            "tickers": item.get("tickers", []),
+            "summary": item.get("summary", ""),
+        }
+        all_items.append(converted)
+
+    # Get SEC filings from mock provider
+    sec_filings = _mock_feed_provider.get_new_sec_filings()
+    for filing in sec_filings:
+        converted = {
+            "id": filing.get("accession_number") or filing.get("id", ""),
+            "title": filing.get("title")
+            or f"{filing.get('form_type', 'SEC')} - {filing.get('company', '')}",
+            "link": filing.get("url") or filing.get("link", ""),
+            "ts": filing.get("timestamp", sim_now().isoformat()),
+            "source": "sec_rss",
+            "ticker": filing.get("ticker"),
+            "tickers": [filing.get("ticker")] if filing.get("ticker") else [],
+            "summary": filing.get("summary", ""),
+            "form_type": filing.get("form_type"),
+        }
+        all_items.append(converted)
+
+    return all_items
 
 
 # --- Noise filtering -------------------------------------------------------
@@ -265,7 +350,7 @@ def _filter_by_freshness(
     if max_age_minutes <= 0:
         return items, 0
 
-    now = datetime.now(timezone.utc)
+    now = sim_now()
     cutoff = now - timedelta(minutes=max_age_minutes)
 
     fresh_items = []
@@ -560,7 +645,7 @@ ENV_URL_OVERRIDES = {
 
 def _sleep_backoff(attempt: int) -> None:
     base = min(2**attempt, 4)
-    time.sleep(base + random.uniform(0, 0.25))
+    sim_sleep(base + random.uniform(0, 0.25))
 
 
 def _get(url: str, timeout: int = 12) -> Tuple[int, Optional[str]]:
@@ -997,7 +1082,7 @@ def _normalize_entry(source: str, e) -> Optional[Dict]:
     ts_iso = _to_utc_iso(published)
     # Fallback to current time for RSS feeds without valid timestamps
     if not ts_iso:
-        ts_iso = datetime.now(timezone.utc).isoformat()
+        ts_iso = sim_now().isoformat()
     guid = getattr(e, "id", None) or getattr(e, "guid", None)
 
     # Primary ticker extraction from title
@@ -1574,9 +1659,21 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
     Returns normalized list of dicts. If everything fails and DEMO_IF_EMPTY=true,
     injects a single demo item for end-to-end alert validation.
 
+    In simulation mode (when MockFeedProvider is set), returns historical
+    data from the mock provider instead of making real API calls.
+
     Args:
         seen_store: Optional SeenStore instance for SEC filing deduplication optimization
     """
+    # --- Simulation mode: return mock data instead of real API calls ---
+    if is_sim_mode() and _mock_feed_provider is not None:
+        sim_items = _get_simulation_items()
+        log.info(
+            "fetch_pr_feeds_simulation mode=simulation items=%d",
+            len(sim_items),
+        )
+        return sim_items
+
     all_items: List[Dict] = []
     summary = {"sources": len(FEEDS), "items": 0, "t_ms": 0.0, "by_source": {}}
     t0 = time.time()
@@ -2196,7 +2293,7 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
                     except Exception:
-                        dt = datetime.now(timezone.utc)
+                        dt = sim_now()
                     # Record the filing using the summary instead of the raw
                     # classifier reason.  This reduces the storage size and
                     # ensures that recent filings presented in alerts remain
@@ -2357,7 +2454,7 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
         if earn_enabled:
             earn_cache: Dict[str, Optional[Dict[str, Any]]] = {}
             # Precompute cutoff date; only include upcoming earnings within this window
-            now_utc = datetime.now(timezone.utc)
+            now_utc = sim_now()
             cutoff = now_utc + timedelta(days=lookahead_days)
             for it in all_items:
                 try:
@@ -2774,7 +2871,7 @@ def fetch_pr_feeds(seen_store=None) -> List[Dict]:
 
     # If EVERYTHING failed and user wants to validate alerts, inject demo
     if not all_items and os.getenv("DEMO_IF_EMPTY", "").lower() in ("1", "true", "yes"):
-        now = datetime.now(timezone.utc).isoformat()
+        now = sim_now().isoformat()
         demo = {
             "id": _stable_id("demo", "https://example.local/demo", None),
             "title": "Demo: Feeds empty, testing alert pipeline",
@@ -3133,7 +3230,7 @@ def _fetch_finviz_news_from_env() -> list[dict]:
             # Parse timestamp, fallback to current time if missing/invalid
             parsed_ts = _parse_finviz_ts(ts) if ts else None
             if not parsed_ts:
-                parsed_ts = datetime.now(timezone.utc).isoformat()
+                parsed_ts = sim_now().isoformat()
 
             item = {
                 "source": "finviz_news",
@@ -3313,7 +3410,7 @@ def _fetch_finviz_news_export(url: str) -> list[dict]:
         # Parse timestamp, fallback to current time if missing/invalid
         parsed_ts = _parse_finviz_ts(ts) if ts else None
         if not parsed_ts:
-            parsed_ts = datetime.now(timezone.utc).isoformat()
+            parsed_ts = sim_now().isoformat()
         item = {
             "source": "finviz_export",
             "title": title,
@@ -3362,7 +3459,7 @@ def _get_lookback_data(
     # Read recent events from the events JSONL file
     events_path = os.getenv("EVENTS_PATH", "data/events.jsonl")
     try:
-        now = datetime.now(timezone.utc)
+        now = sim_now()
         cutoff = now - timedelta(days=lookback_days)
         headlines: List[Dict[str, str]] = []
         if os.path.exists(events_path):

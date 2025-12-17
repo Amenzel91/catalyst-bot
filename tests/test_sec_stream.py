@@ -3,15 +3,15 @@
 import asyncio
 import json
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from catalyst_bot.sec_stream import (
     DEFAULT_MARKET_CAP_MAX,
+    FilingEvent,
     SECStreamClient,
     SECStreamException,
-    FilingEvent,
     get_market_cap_max,
     get_reconnect_delay,
     get_sec_api_key,
@@ -30,7 +30,7 @@ def sample_filing_payload():
         "companyName": "Apple Inc.",
         "formType": "8-K",
         "filedAt": "2025-01-15T14:30:00Z",
-        "linkToFilingDetails": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193",
+        "linkToFilingDetails": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0000320193",  # noqa: E501
         "cik": "0000320193",
         "accessionNo": "0000320193-25-000001",
         "items": "1.01,2.02",
@@ -112,7 +112,9 @@ def test_filing_event_datetime_parsing():
     assert filing.filed_at.day == 15
 
 
-def test_sec_stream_client_market_cap_filtering(sample_filing_payload, high_market_cap_payload):
+def test_sec_stream_client_market_cap_filtering(
+    sample_filing_payload, high_market_cap_payload
+):
     """Test market cap filtering logic."""
     client = SECStreamClient(api_key="test_key", market_cap_max=5_000_000_000)
 
@@ -125,7 +127,9 @@ def test_sec_stream_client_market_cap_filtering(sample_filing_payload, high_mark
     assert not client.filter_by_market_cap(filing_high)
 
     # Should pass: None market cap (err on inclusion)
-    filing_unknown = FilingEvent.from_websocket_payload({"type": "filing", "ticker": "TEST"})
+    filing_unknown = FilingEvent.from_websocket_payload(
+        {"type": "filing", "ticker": "TEST"}
+    )
     assert client.filter_by_market_cap(filing_unknown)
 
 
@@ -133,13 +137,19 @@ def test_sec_stream_client_filing_type_filtering():
     """Test filing type filtering."""
     client = SECStreamClient(api_key="test_key", filing_types=["8-K", "10-Q"])
 
-    filing_8k = FilingEvent.from_websocket_payload({"type": "filing", "ticker": "AAPL", "formType": "8-K"})
+    filing_8k = FilingEvent.from_websocket_payload(
+        {"type": "filing", "ticker": "AAPL", "formType": "8-K"}
+    )
     assert client.filter_by_filing_type(filing_8k)
 
-    filing_10q = FilingEvent.from_websocket_payload({"type": "filing", "ticker": "AAPL", "formType": "10-Q"})
+    filing_10q = FilingEvent.from_websocket_payload(
+        {"type": "filing", "ticker": "AAPL", "formType": "10-Q"}
+    )
     assert client.filter_by_filing_type(filing_10q)
 
-    filing_s1 = FilingEvent.from_websocket_payload({"type": "filing", "ticker": "AAPL", "formType": "S-1"})
+    filing_s1 = FilingEvent.from_websocket_payload(
+        {"type": "filing", "ticker": "AAPL", "formType": "S-1"}
+    )
     assert not client.filter_by_filing_type(filing_s1)
 
 
@@ -148,7 +158,7 @@ async def test_sec_stream_client_connection():
     """Test WebSocket connection establishment."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         # Mock auth response
         auth_response = json.dumps({"type": "auth_success"})
@@ -167,10 +177,12 @@ async def test_sec_stream_client_auth_failure():
     """Test handling of authentication failure."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         # Mock auth failure response
-        auth_response = json.dumps({"type": "auth_failed", "message": "Invalid API key"})
+        auth_response = json.dumps(
+            {"type": "auth_failed", "message": "Invalid API key"}
+        )
         mock_websocket.recv.return_value = auth_response
 
         client = SECStreamClient(api_key="bad_key")
@@ -184,7 +196,7 @@ async def test_sec_stream_client_disconnect():
     """Test graceful disconnection."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         auth_response = json.dumps({"type": "auth_success"})
         mock_websocket.recv.return_value = auth_response
@@ -202,28 +214,25 @@ async def test_sec_stream_client_reconnection():
     """Test reconnection with exponential backoff."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
 
         auth_response = json.dumps({"type": "auth_success"})
         mock_websocket.recv.return_value = auth_response
 
         client = SECStreamClient(api_key="test_key", reconnect_delay=1)
 
-        # First connection fails
-        mock_ws.connect.side_effect = [
-            Exception("Connection refused"),
-            mock_websocket,  # Succeeds on retry
-        ]
+        # First connection fails - use AsyncMock with side_effect
+        mock_ws.connect = AsyncMock(side_effect=Exception("Connection refused"))
 
         with pytest.raises(SECStreamException):
             await client.connect()
 
-        # Reconnect should work
-        mock_ws.connect.side_effect = [mock_websocket]
+        # Reconnect should work - reset mock to succeed
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
         await client._reconnect()
 
         assert client.is_connected
-        assert client.reconnect_attempts == 1
+        # reconnect_attempts is reset to 0 on successful connect()
+        assert client.reconnect_attempts == 0
 
 
 @pytest.mark.asyncio
@@ -231,7 +240,7 @@ async def test_stream_filings_basic(sample_filing_payload):
     """Test basic filing streaming."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         # Mock responses
         auth_response = json.dumps({"type": "auth_success"})
@@ -258,11 +267,13 @@ async def test_stream_filings_basic(sample_filing_payload):
 
 
 @pytest.mark.asyncio
-async def test_stream_filings_filters_high_market_cap(sample_filing_payload, high_market_cap_payload):
+async def test_stream_filings_filters_high_market_cap(
+    sample_filing_payload, high_market_cap_payload
+):
     """Test that high market cap filings are filtered out."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         auth_response = json.dumps({"type": "auth_success"})
         filing1 = json.dumps(sample_filing_payload)  # $2.5B - should pass
@@ -295,12 +306,14 @@ async def test_stream_filings_queue_full_handling(sample_filing_payload):
     """Test handling of queue overflow."""
     with patch("catalyst_bot.sec_stream.websockets") as mock_ws:
         mock_websocket = AsyncMock()
-        mock_ws.connect.return_value = mock_websocket
+        mock_ws.connect = AsyncMock(return_value=mock_websocket)
 
         client = SECStreamClient(api_key="test_key")
         # Fill the queue manually
         for _ in range(1000):  # Max queue size
-            await client.filing_queue.put(FilingEvent.from_websocket_payload(sample_filing_payload))
+            await client.filing_queue.put(
+                FilingEvent.from_websocket_payload(sample_filing_payload)
+            )
 
         assert client.filing_queue.full()
 
@@ -341,7 +354,8 @@ async def test_monitor_sec_stream():
                     {"type": "filing", "ticker": "AAPL", "formType": "8-K"}
                 )
 
-            mock_client.stream_filings.return_value = mock_stream()
+            # Use MagicMock for stream_filings since it's an async generator, not async function
+            mock_client.stream_filings = MagicMock(return_value=mock_stream())
 
             # Run monitor with timeout to prevent hanging
             try:
@@ -368,7 +382,9 @@ async def test_monitor_with_fallback_stream_enabled():
         callback_results.append("RSS_FALLBACK")
 
     with patch("catalyst_bot.sec_stream.is_sec_stream_enabled", return_value=True):
-        with patch("catalyst_bot.sec_stream.monitor_sec_stream", new_callable=AsyncMock) as mock_monitor:
+        with patch(
+            "catalyst_bot.sec_stream.monitor_sec_stream", new_callable=AsyncMock
+        ) as mock_monitor:
             # Simulate successful stream
             await monitor_with_fallback(mock_callback, mock_rss_fallback)
 
@@ -405,7 +421,9 @@ async def test_monitor_with_fallback_on_exception():
         callback_results.append("RSS_FALLBACK")
 
     with patch("catalyst_bot.sec_stream.is_sec_stream_enabled", return_value=True):
-        with patch("catalyst_bot.sec_stream.monitor_sec_stream", new_callable=AsyncMock) as mock_monitor:
+        with patch(
+            "catalyst_bot.sec_stream.monitor_sec_stream", new_callable=AsyncMock
+        ) as mock_monitor:
             # Simulate stream failure
             mock_monitor.side_effect = SECStreamException("WebSocket failed")
 

@@ -1,7 +1,5 @@
 """Tests for SEC filing parser."""
 
-import pytest
-
 from catalyst_bot.sec_parser import (
     ITEM_CATALYST_MAP,
     FilingSection,
@@ -90,7 +88,9 @@ def test_parse_8k_skips_short_sections():
 
 def test_extract_filing_metadata():
     """Test extracting CIK and accession from EDGAR URL."""
-    url = "https://www.sec.gov/Archives/edgar/data/1234567/000123456721000001/form8k.htm"
+    url = (
+        "https://www.sec.gov/Archives/edgar/data/1234567/000123456721000001/form8k.htm"
+    )
 
     metadata = extract_filing_metadata(url)
 
@@ -110,7 +110,8 @@ def test_extract_filing_metadata_invalid_url():
 
 def test_parse_10q():
     """Test parsing 10-Q filing."""
-    filing_text = """
+    filing_text = (
+        """
     UNITED STATES SECURITIES AND EXCHANGE COMMISSION
     FORM 10-Q
     QUARTERLY REPORT
@@ -118,7 +119,9 @@ def test_parse_10q():
     For the quarterly period ended September 30, 2024
 
     Acme Corporation reported net income of $25M for Q3 2024.
-    """ * 10  # Make it long enough
+    """
+        * 10
+    )  # Make it long enough
 
     section = parse_10q_10k(filing_text, "10-Q", "https://sec.gov/10q.htm")
 
@@ -205,18 +208,22 @@ def test_filing_section_dataclass():
 
 def test_parse_8k_with_mixed_formatting():
     """Test parsing 8-K with various formatting styles."""
+    # Each section needs at least 50 characters of content to not be skipped
     filing_text = """
     Item 1.01.   Entry into a Material Definitive Agreement
 
-    Text for item 1.01...
+    On January 15, 2025, the Company entered into a Material Definitive Agreement
+    with ABC Corporation. This agreement relates to the acquisition of assets.
 
     ITEM 5.02: Departure of Directors or Certain Officers
 
-    Text for item 5.02...
+    Effective January 10, 2025, John Smith resigned from his position as Chief
+    Financial Officer of the Company. A replacement has not yet been named.
 
     Item 8.01 - Other Events
 
-    Text for item 8.01...
+    The Company announced that it will hold its quarterly earnings call on February
+    15, 2025. Management will discuss recent developments and future outlook.
     """
 
     sections = parse_8k_items(filing_text)
