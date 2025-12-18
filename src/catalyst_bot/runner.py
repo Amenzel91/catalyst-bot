@@ -251,15 +251,26 @@ class HeartbeatAccumulator:
         self.total_scanned = 0
         self.total_alerts = 0
         self.total_errors = 0
+        self.total_deduped = 0
+        self.total_skipped = 0
         self.cycles_completed = 0
         # Use simulation-aware time for simulation mode compatibility
         self.last_heartbeat_time = sim_now()
 
-    def add_cycle(self, scanned: int, alerts: int, errors: int):
+    def add_cycle(
+        self,
+        scanned: int,
+        alerts: int,
+        errors: int,
+        deduped: int = 0,
+        skipped: int = 0,
+    ):
         """Record stats from a completed cycle."""
         self.total_scanned += scanned
         self.total_alerts += alerts
         self.total_errors += errors
+        self.total_deduped += deduped
+        self.total_skipped += skipped
         self.cycles_completed += 1
 
     def should_send_heartbeat(self, interval_minutes: int = 60) -> bool:
@@ -299,6 +310,8 @@ class HeartbeatAccumulator:
             "total_scanned": self.total_scanned,
             "total_alerts": self.total_alerts,
             "total_errors": self.total_errors,
+            "total_deduped": self.total_deduped,
+            "total_skipped": self.total_skipped,
             "cycles_completed": self.cycles_completed,
             "elapsed_minutes": round(elapsed_min, 1),
             "avg_alerts_per_cycle": self._format_avg_alerts(),
@@ -1211,30 +1224,52 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 except Exception:
                     pass
             features_value = "\n".join(failing) if failing else "—"
-        # Gather last cycle metrics from the global LAST_CYCLE_STATS dict.  Do not
-        # re-import from this module to avoid stale copies.
+        # WAVE ALPHA Agent 1: Get accumulator stats for interval heartbeats
+        # Must retrieve acc_stats BEFORE gathering counters so we can use
+        # accumulated data for interval heartbeats.
+        # Note: Only use acc_stats for "interval" - endday should use TOTAL_STATS
+        # because the accumulator is reset after each interval heartbeat.
+        acc_stats = None
+        if reason == "interval":
+            try:
+                acc = globals().get("_heartbeat_acc")
+                if acc and hasattr(acc, "get_stats"):
+                    acc_stats = acc.get_stats()
+            except Exception:
+                acc_stats = None
+
+        # Gather metrics for display:
+        # - interval: use HeartbeatAccumulator (accumulated over period)
+        # - boot/endday: use LAST_CYCLE_STATS (single cycle snapshot)
+        # For endday, the all-time totals in TOTAL_STATS show cumulative data.
         try:
-            items_cnt = str(LAST_CYCLE_STATS.get("items", "—"))
-            dedup_cnt = str(LAST_CYCLE_STATS.get("deduped", "—"))
-            skipped_cnt = str(LAST_CYCLE_STATS.get("skipped", "—"))
-            alerted_cnt = str(LAST_CYCLE_STATS.get("alerts", "—"))
+            if acc_stats and reason == "interval":
+                # Use accumulated stats for interval heartbeats
+                items_cnt = str(acc_stats.get("total_scanned", "—"))
+                dedup_cnt = str(acc_stats.get("total_deduped", "—"))
+                skipped_cnt = str(acc_stats.get("total_skipped", "—"))
+                alerted_cnt = str(acc_stats.get("total_alerts", "—"))
+            else:
+                # Use last cycle stats for boot/endday heartbeats
+                items_cnt = str(LAST_CYCLE_STATS.get("items", "—"))
+                dedup_cnt = str(LAST_CYCLE_STATS.get("deduped", "—"))
+                skipped_cnt = str(LAST_CYCLE_STATS.get("skipped", "—"))
+                alerted_cnt = str(LAST_CYCLE_STATS.get("alerts", "—"))
         except Exception:
             items_cnt = dedup_cnt = skipped_cnt = alerted_cnt = "—"
 
-        # Build counters that show new and cumulative totals.  Use the global
-        # TOTAL_STATS mapping; if unavailable, fall back to the per‑cycle
-        # values only.  Format as "new | total" so operators can see both
-        # the current cycle and cumulative counts at a glance.  When totals
-        # are missing, just display the new value.
+        # Build counters that show period/cycle value and cumulative totals.
+        # For interval heartbeats: "period_total | all_time_total"
+        # For boot heartbeats: "last_cycle | all_time_total"
         def _fmt_counter(new_val: Any, total_key: str) -> str:
-            """Return a formatted string showing the per‑cycle value and the
-            cumulative total.  When the TOTAL_STATS mapping is unavailable or
-            missing the requested key, only the new value is shown.
+            """Return a formatted string showing the period/cycle value and
+            the cumulative total. When the TOTAL_STATS mapping is unavailable
+            or missing the requested key, only the new value is shown.
 
             Parameters
             ----------
             new_val : Any
-                The count for the current cycle (string or int).
+                The count for the period (interval) or cycle (boot).
             total_key : str
                 The key to look up in the TOTAL_STATS dict for the
                 cumulative count.
@@ -1246,9 +1281,9 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
                 totals are unavailable.
             """
             try:
-                # Access the module-level TOTAL_STATS dict directly.  No
+                # Access the module-level TOTAL_STATS dict directly. No
                 # import is needed because this helper lives in the same
-                # module.  Use getattr to guard against missing globals.
+                # module. Use getattr to guard against missing globals.
                 tot_map = globals().get("TOTAL_STATS")
                 tot = None
                 if isinstance(tot_map, dict):
@@ -1263,16 +1298,6 @@ def _send_heartbeat(log, settings, reason: str = "boot") -> None:
         dedup_val = _fmt_counter(dedup_cnt, "deduped")
         skipped_val = _fmt_counter(skipped_cnt, "skipped")
         alerts_val = _fmt_counter(alerted_cnt, "alerts")
-
-        # WAVE ALPHA Agent 1: Get accumulator stats for interval/endday heartbeats
-        acc_stats = None
-        if reason in ("interval", "endday"):
-            try:
-                acc = globals().get("_heartbeat_acc")
-                if acc and hasattr(acc, "get_stats"):
-                    acc_stats = acc.get_stats()
-            except Exception:
-                acc_stats = None
 
         embed_fields = [
             {"name": "Target", "value": target_label, "inline": True},
@@ -3823,6 +3848,8 @@ def _cycle(log, settings, market_info: dict | None = None) -> None:
                 scanned=len(items),
                 alerts=alerted,
                 errors=cycle_errors,
+                deduped=len(deduped),
+                skipped=skipped_total,
             )
         except Exception:
             # ignore accumulator errors

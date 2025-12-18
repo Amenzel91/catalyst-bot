@@ -419,8 +419,9 @@ class LLMService:
                         cost_estimate=llm_response.cost_usd,
                         latency_ms=latency_ms,
                     )
-            except Exception:
-                pass  # Non-critical - don't fail request if logging fails
+            except Exception as e:
+                # Log warning so we can debug if heartbeat metrics are missing
+                log.debug("legacy_llm_monitor_bridge_failed err=%s", str(e))
 
             # 8. Cache response
             if request.enable_cache and self.cache:
