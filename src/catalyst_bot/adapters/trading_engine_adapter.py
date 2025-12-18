@@ -10,16 +10,34 @@ This is the drop-in replacement for the legacy paper_trader.execute_paper_trade(
 
 from __future__ import annotations
 
-import asyncio
 from decimal import Decimal
-from typing import Optional
 
-from ..models import ScoredItem
 from ..logging_utils import get_logger
-from .signal_adapter import SignalAdapter, SignalAdapterConfig
+from ..models import ScoredItem
+from ..trading.signal_generator import SignalGenerator
 from ..utils.event_loop_manager import run_async
 
+# Legacy imports kept for backward compatibility (may be used by external code)
+from .signal_adapter import SignalAdapter, SignalAdapterConfig  # noqa: F401
+
 logger = get_logger(__name__)
+
+# Module-level SignalGenerator instance (singleton)
+_signal_generator: SignalGenerator = None
+
+
+def _get_signal_generator() -> SignalGenerator:
+    """Get or create SignalGenerator singleton."""
+    global _signal_generator
+    if _signal_generator is None:
+        _signal_generator = SignalGenerator()
+        from ..trading.signal_generator import BUY_KEYWORDS
+
+        logger.info(
+            f"SignalGenerator initialized: {len(BUY_KEYWORDS)} buy keywords, "
+            f"min_score={_signal_generator.min_score}"
+        )
+    return _signal_generator
 
 
 def execute_with_trading_engine(
@@ -52,35 +70,27 @@ def execute_with_trading_engine(
     """
     try:
         # Import TradingEngine here to avoid circular dependency
-        from ..trading.trading_engine import TradingEngine
+        pass
 
-        # Get data_collection_mode from settings (defaults to False if not available)
-        data_collection_mode = getattr(settings, "data_collection_mode", False) if settings else False
+        # Get SignalGenerator instance (unified signal generation)
+        signal_generator = _get_signal_generator()
 
-        # Initialize signal adapter with default configuration
-        adapter_config = SignalAdapterConfig(
-            default_stop_loss_pct=0.05,  # 5% stop-loss
-            default_take_profit_pct=0.10,  # 10% take-profit
-            base_position_size_pct=0.03,  # 3% of portfolio
-            max_position_size_pct=0.05,  # 5% of portfolio
-            min_confidence_for_trade=0.60,  # Minimum 60% confidence
-        )
-        adapter = SignalAdapter(config=adapter_config)
-
-        # Convert ScoredItem to TradingSignal
-        signal = adapter.from_scored_item(
+        # Generate signal using keyword-based SignalGenerator
+        # This provides:
+        # - Keyword-specific risk parameters (FDA=92% conf, Merger=95% conf, etc.)
+        # - AVOID keyword handling (offering, dilution → skip trade)
+        # - CLOSE keyword handling (bankruptcy, fraud → exit positions)
+        signal = signal_generator.generate_signal(
             scored_item=item,
             ticker=ticker,
             current_price=current_price,
-            extended_hours=extended_hours,
-            data_collection_mode=data_collection_mode,
         )
 
         # If no actionable signal, return False
         if signal is None:
             logger.info(
                 f"No actionable signal generated for {ticker} "
-                f"(below confidence threshold or neutral sentiment)"
+                f"(below threshold, neutral keywords, or AVOID keyword detected)"
             )
             return False
 
@@ -90,7 +100,7 @@ def execute_with_trading_engine(
         # Execute signal using TradingEngine (async call wrapped in run_async)
         position = run_async(
             trading_engine._execute_signal(signal),
-            timeout=60.0  # Allow 60s for order execution
+            timeout=60.0,  # Allow 60s for order execution
         )
 
         # Return True if position was successfully created
@@ -146,8 +156,7 @@ def _get_trading_engine_instance(settings=None):
 
         # Initialize the engine (async operation wrapped in run_async)
         initialized = run_async(
-            engine.initialize(),
-            timeout=30.0  # Allow 30s for broker connection
+            engine.initialize(), timeout=30.0  # Allow 30s for broker connection
         )
 
         if not initialized:

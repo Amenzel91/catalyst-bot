@@ -49,6 +49,7 @@ from ..portfolio.position_manager import (
 from ..time_utils import is_simulation as is_sim_mode
 from ..time_utils import now as sim_now
 from .market_data import MarketDataFeed  # Market data provider (Agent 3)
+from .signal_generator import SignalGenerator  # Keyword-based signal generation
 
 logger = get_logger(__name__)
 
@@ -182,7 +183,9 @@ class TradingEngine:
         self.broker: Optional[AlpacaBrokerClient] = None
         self.order_executor: Optional[OrderExecutor] = None
         self.position_manager: Optional[PositionManager] = None
-        self.signal_generator = None  # Will be set after SignalGenerator is implemented
+        self.signal_generator: SignalGenerator = (
+            SignalGenerator()
+        )  # Keyword-based signal generation
         self.market_data_feed: Optional[MarketDataFeed] = (
             None  # Market data provider (Agent 3)
         )
@@ -277,9 +280,14 @@ class TradingEngine:
             self.logger.info("Initializing MarketDataFeed...")
             self.market_data_feed = MarketDataFeed()
 
-            # TODO: Initialize SignalGenerator (Agent 1 will implement)
-            # from .signal_generator import SignalGenerator
-            # self.signal_generator = SignalGenerator()
+            # SignalGenerator is initialized in __init__() (no async dependencies)
+            from .signal_generator import AVOID_KEYWORDS, BUY_KEYWORDS
+
+            self.logger.info(
+                f"SignalGenerator ready: {len(BUY_KEYWORDS)} buy keywords, "
+                f"{len(AVOID_KEYWORDS)} avoid keywords, "
+                f"min_score={self.signal_generator.min_score}"
+            )
 
             self._initialized = True
             self.logger.info("TradingEngine initialized successfully")
@@ -335,8 +343,12 @@ class TradingEngine:
             if not self._check_trading_enabled():
                 return None
 
-            # 2. Generate signal (stub for now - Agent 1 will implement)
-            signal = self._generate_signal_stub(scored_item, ticker, current_price)
+            # 2. Generate signal using keyword-based SignalGenerator
+            signal = self.signal_generator.generate_signal(
+                scored_item=scored_item,
+                ticker=ticker,
+                current_price=current_price,
+            )
             if not signal:
                 self.logger.debug(f"No actionable signal for {ticker}")
                 return None
@@ -750,7 +762,7 @@ class TradingEngine:
             return {}
 
     # ========================================================================
-    # Signal Generation (Stub for Agent 1)
+    # Signal Generation (DEPRECATED - Use SignalGenerator Instead)
     # ========================================================================
 
     def _generate_signal_stub(
@@ -760,10 +772,10 @@ class TradingEngine:
         current_price: Decimal,
     ) -> Optional[TradingSignal]:
         """
-        Stub signal generator.
+        DEPRECATED: Use SignalGenerator.generate_signal() instead.
 
-        This will be replaced by SignalGenerator (Agent 1).
-        For now, it generates simple signals based on score threshold.
+        This stub method is kept for backward compatibility with tests.
+        It will be removed in a future version.
 
         Args:
             scored_item: Scored item from classification
@@ -773,6 +785,13 @@ class TradingEngine:
         Returns:
             TradingSignal if actionable, None otherwise
         """
+        import warnings
+
+        warnings.warn(
+            "_generate_signal_stub is deprecated. Use SignalGenerator.generate_signal() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             # Only generate signals for high-confidence items
             if scored_item.total_score < 2.0:

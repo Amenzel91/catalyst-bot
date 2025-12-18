@@ -1,11 +1,20 @@
 """
 Signal Adapter Module
 
-Converts ScoredItem objects from the classification system into TradingSignal
-objects consumable by the TradingEngine. This adapter serves as the integration
-layer between the keyword-based alert system and the paper trading infrastructure.
+DEPRECATED: Use SignalGenerator from trading.signal_generator instead.
 
-Design Principles:
+This module is kept for backward compatibility. The unified signal generation
+system now uses SignalGenerator which provides:
+- Keyword-specific risk parameters (FDA=92% confidence, Merger=95%, etc.)
+- AVOID keyword handling (offering, dilution → skip trade)
+- CLOSE keyword handling (bankruptcy, fraud → exit positions)
+
+For new code, use:
+    from catalyst_bot.trading.signal_generator import SignalGenerator
+    generator = SignalGenerator()
+    signal = generator.generate_signal(scored_item, ticker, current_price)
+
+Original Design Principles (for legacy reference):
 - Zero Data Loss: All meaningful data from ScoredItem is preserved
 - Clean Separation: No dependencies on broker or execution logic
 - Extended Hours Support: Preserves and propagates extended hours parameters
@@ -18,12 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Optional
 from uuid import uuid4
 
-from ..models import ScoredItem
 from ..execution.order_executor import TradingSignal
 from ..logging_utils import get_logger
+from ..models import ScoredItem
 
 logger = get_logger(__name__)
 
@@ -60,9 +69,19 @@ class SignalAdapter:
         """
         Initialize signal adapter with configuration.
 
+        DEPRECATED: Use SignalGenerator instead for keyword-specific trading logic.
+
         Args:
             config: Adapter configuration (uses defaults if None)
         """
+        import warnings
+
+        warnings.warn(
+            "SignalAdapter is deprecated. Use SignalGenerator from "
+            "trading.signal_generator for keyword-specific trading parameters.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = config or SignalAdapterConfig()
         self.logger = get_logger(__name__)
 
@@ -91,7 +110,10 @@ class SignalAdapter:
         confidence = self._calculate_confidence(scored_item)
 
         # Check minimum confidence threshold (skip in data collection mode)
-        if not data_collection_mode and confidence < self.config.min_confidence_for_trade:
+        if (
+            not data_collection_mode
+            and confidence < self.config.min_confidence_for_trade
+        ):
             self.logger.debug(
                 f"Signal for {ticker} below minimum confidence threshold: "
                 f"{confidence:.2%} < {self.config.min_confidence_for_trade:.2%}"
@@ -104,7 +126,8 @@ class SignalAdapter:
         # Skip if action is "hold"
         if action == "hold":
             self.logger.debug(
-                f"Signal for {ticker} resulted in 'hold' action (sentiment: {scored_item.sentiment:.2f})"
+                f"Signal for {ticker} resulted in 'hold' action "
+                f"(sentiment: {scored_item.sentiment:.2f})"
             )
             return None
 

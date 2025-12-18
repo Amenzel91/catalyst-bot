@@ -454,41 +454,52 @@ def _get_trading_engine_data() -> Dict[str, Any]:
         daily_pnl = "—"
         status = "Initialized"
 
-        # Try to get position count (synchronous operation)
+        # Try to get positions and portfolio directly from Alpaca
+        # This is the source of truth - local PositionManager may miss async fills
         try:
-            if trading_engine.position_manager and hasattr(
-                trading_engine.position_manager, "get_all_positions"
-            ):
-                positions = trading_engine.position_manager.get_all_positions()
-                position_count = len(positions)
+            import os
 
-                # Calculate daily P&L from positions
-                total_pnl = sum(float(pos.unrealized_pnl) for pos in positions)
-                daily_pnl = f"${total_pnl:,.2f}"
+            from alpaca.trading.client import TradingClient
+
+            api_key = os.getenv("ALPACA_API_KEY", "").strip()
+            api_secret = (
+                os.getenv("ALPACA_SECRET", "").strip()
+                or os.getenv("ALPACA_API_SECRET", "").strip()
+            )
+
+            if api_key and api_secret:
+                # Create a sync client for this one-off call
+                sync_client = TradingClient(api_key, api_secret, paper=True)
+
+                # Get actual positions from Alpaca (source of truth)
+                alpaca_positions = sync_client.get_all_positions()
+                position_count = len(alpaca_positions)
+
+                # Calculate daily P&L from Alpaca positions
+                if alpaca_positions:
+                    total_pnl = sum(
+                        float(pos.unrealized_pl) for pos in alpaca_positions
+                    )
+                    daily_pnl = f"${total_pnl:,.2f}"
+
+                # Get account equity
+                account = sync_client.get_account()
+                portfolio_value = f"${float(account.equity):,.2f}"
+
         except Exception:
-            pass  # Keep default values
+            # Fallback to local position manager if Alpaca call fails
+            try:
+                if trading_engine.position_manager and hasattr(
+                    trading_engine.position_manager, "get_all_positions"
+                ):
+                    positions = trading_engine.position_manager.get_all_positions()
+                    position_count = len(positions)
 
-        # Try to get portfolio value (requires alpaca client)
-        try:
-            if trading_engine.broker and hasattr(trading_engine.broker, "session"):
-                # Can't call async method synchronously - use alpaca-py TradingClient directly
-                import os
-
-                from alpaca.trading.client import TradingClient
-
-                api_key = os.getenv("ALPACA_API_KEY", "").strip()
-                api_secret = (
-                    os.getenv("ALPACA_SECRET", "").strip()
-                    or os.getenv("ALPACA_API_SECRET", "").strip()
-                )
-
-                if api_key and api_secret:
-                    # Create a sync client for this one-off call
-                    sync_client = TradingClient(api_key, api_secret, paper=True)
-                    account = sync_client.get_account()
-                    portfolio_value = f"${float(account.equity):,.2f}"
-        except Exception:
-            pass  # Keep default value
+                    # Calculate daily P&L from positions
+                    total_pnl = sum(float(pos.unrealized_pnl) for pos in positions)
+                    daily_pnl = f"${total_pnl:,.2f}"
+            except Exception:
+                pass  # Keep default values
 
         # Check circuit breaker status
         circuit_breaker_status = (
