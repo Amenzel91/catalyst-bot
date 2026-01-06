@@ -5,23 +5,22 @@ Tests initialization, process_scored_item flow, risk limit checks,
 position updates, and stop-loss/take-profit triggers.
 """
 
-import pytest
-import pytest_asyncio
-import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from catalyst_bot.models import ScoredItem
-from catalyst_bot.trading.trading_engine import TradingEngine, TradingEngineConfig
-from catalyst_bot.broker.broker_interface import Account, Position as BrokerPosition, OrderSide, AccountStatus
+import pytest
+import pytest_asyncio
+
+from catalyst_bot.broker.broker_interface import Account, AccountStatus
 from catalyst_bot.execution.order_executor import TradingSignal
-from catalyst_bot.portfolio.position_manager import ManagedPosition, ClosedPosition
-
+from catalyst_bot.models import ScoredItem
+from catalyst_bot.trading.trading_engine import TradingEngine
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
 
 def create_mock_account(equity: Decimal = Decimal("100000.00")) -> MagicMock:
     """Create mock account with required fields."""
@@ -39,6 +38,7 @@ def create_mock_account(equity: Decimal = Decimal("100000.00")) -> MagicMock:
 # ============================================================================
 # Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def mock_broker():
@@ -104,7 +104,13 @@ def trading_engine_config():
 
 
 @pytest_asyncio.fixture
-async def trading_engine(trading_engine_config, mock_broker, mock_order_executor, mock_position_manager, mock_market_data):
+async def trading_engine(
+    trading_engine_config,
+    mock_broker,
+    mock_order_executor,
+    mock_position_manager,
+    mock_market_data,
+):
     """Create trading engine with mocked components."""
     engine = TradingEngine(config=trading_engine_config)
 
@@ -147,20 +153,28 @@ def scored_item_close():
 # Initialization Tests
 # ============================================================================
 
+
 class TestInitialization:
     """Test trading engine initialization."""
 
     @pytest.mark.asyncio
     async def test_initialization_success(self, trading_engine_config):
         """Test successful initialization."""
-        with patch.dict('os.environ', {
-            'ALPACA_API_KEY': 'test-key',
-            'ALPACA_SECRET': 'test-secret',
-        }):
-            with patch('catalyst_bot.trading.trading_engine.AlpacaBrokerClient') as mock_client:
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "test-key",
+                "ALPACA_SECRET": "test-secret",
+            },
+        ):
+            with patch(
+                "catalyst_bot.trading.trading_engine.AlpacaBrokerClient"
+            ) as mock_client:
                 mock_instance = AsyncMock()
                 mock_instance.connect = AsyncMock()
-                mock_instance.get_account = AsyncMock(return_value=create_mock_account())
+                mock_instance.get_account = AsyncMock(
+                    return_value=create_mock_account()
+                )
                 mock_client.return_value = mock_instance
 
                 engine = TradingEngine(config=trading_engine_config)
@@ -183,14 +197,21 @@ class TestInitialization:
     @pytest.mark.asyncio
     async def test_initialization_stores_daily_balance(self, trading_engine_config):
         """Test initialization stores daily start balance."""
-        with patch.dict('os.environ', {
-            'ALPACA_API_KEY': 'test-key',
-            'ALPACA_SECRET': 'test-secret',
-        }):
-            with patch('catalyst_bot.trading.trading_engine.AlpacaBrokerClient') as mock_client:
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "test-key",
+                "ALPACA_SECRET": "test-secret",
+            },
+        ):
+            with patch(
+                "catalyst_bot.trading.trading_engine.AlpacaBrokerClient"
+            ) as mock_client:
                 mock_instance = AsyncMock()
                 mock_instance.connect = AsyncMock()
-                mock_instance.get_account = AsyncMock(return_value=create_mock_account())
+                mock_instance.get_account = AsyncMock(
+                    return_value=create_mock_account()
+                )
                 mock_client.return_value = mock_instance
 
                 engine = TradingEngine(config=trading_engine_config)
@@ -211,6 +232,7 @@ class TestInitialization:
 # Process Scored Item Tests
 # ============================================================================
 
+
 class TestProcessScoredItem:
     """Test process_scored_item flow."""
 
@@ -220,7 +242,13 @@ class TestProcessScoredItem:
         trading_engine.config.trading_enabled = False
 
         result = await trading_engine.process_scored_item(
-            scored_item=ScoredItem(relevance=4.0, sentiment=0.8, tags=[], keyword_hits={}, source_weight=1.0),
+            scored_item=ScoredItem(
+                relevance=4.0,
+                sentiment=0.8,
+                tags=[],
+                keyword_hits={},
+                source_weight=1.0,
+            ),
             ticker="TEST",
             current_price=Decimal("10.00"),
         )
@@ -248,20 +276,26 @@ class TestProcessScoredItem:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_close_signal_closes_position(self, trading_engine, scored_item_close):
+    async def test_close_signal_closes_position(
+        self, trading_engine, scored_item_close
+    ):
         """Test CLOSE signal closes existing position."""
         # Mock existing position
         mock_position = MagicMock()
         mock_position.position_id = "test-position"
         mock_position.ticker = "TEST"
-        trading_engine.position_manager.get_position_by_ticker = AsyncMock(return_value=mock_position)
+        trading_engine.position_manager.get_position_by_ticker = Mock(
+            return_value=mock_position
+        )
 
         # Mock close_position
         closed_position = MagicMock()
         closed_position.realized_pnl = Decimal("50.00")
-        trading_engine.position_manager.close_position = AsyncMock(return_value=closed_position)
+        trading_engine.position_manager.close_position = AsyncMock(
+            return_value=closed_position
+        )
 
-        result = await trading_engine.process_scored_item(
+        await trading_engine.process_scored_item(
             scored_item=scored_item_close,
             ticker="TEST",
             current_price=Decimal("1.00"),
@@ -299,6 +333,7 @@ class TestProcessScoredItem:
 # Risk Management Tests
 # ============================================================================
 
+
 class TestRiskManagement:
     """Test risk management checks."""
 
@@ -321,7 +356,7 @@ class TestRiskManagement:
     def test_check_trading_enabled_circuit_breaker_active(self, trading_engine):
         """Test check_trading_enabled returns False when circuit breaker active."""
         trading_engine.circuit_breaker_active = True
-        trading_engine.circuit_breaker_triggered_at = datetime.now()
+        trading_engine.circuit_breaker_triggered_at = datetime.now(timezone.utc)
 
         result = trading_engine._check_trading_enabled()
 
@@ -413,6 +448,7 @@ class TestRiskManagement:
 # Update Positions Tests
 # ============================================================================
 
+
 class TestUpdatePositions:
     """Test position update logic."""
 
@@ -432,7 +468,9 @@ class TestUpdatePositions:
         # Mock open positions
         mock_position = MagicMock()
         mock_position.ticker = "AAPL"
-        trading_engine.position_manager.get_all_positions = AsyncMock(return_value=[mock_position])
+        trading_engine.position_manager.get_all_positions = Mock(
+            return_value=[mock_position]
+        )
 
         # Mock price fetch
         trading_engine.market_data_feed.get_current_prices = AsyncMock(
@@ -441,6 +479,7 @@ class TestUpdatePositions:
 
         # Mock metrics
         from catalyst_bot.portfolio.position_manager import PortfolioMetrics
+
         metrics = PortfolioMetrics(
             total_positions=1,
             long_positions=1,
@@ -450,7 +489,9 @@ class TestUpdatePositions:
             total_unrealized_pnl=Decimal("50.00"),
             total_unrealized_pnl_pct=Decimal("0.05"),
         )
-        trading_engine.position_manager.calculate_portfolio_metrics = Mock(return_value=metrics)
+        trading_engine.position_manager.calculate_portfolio_metrics = Mock(
+            return_value=metrics
+        )
 
         result = await trading_engine.update_positions()
 
@@ -464,7 +505,9 @@ class TestUpdatePositions:
         # Mock open positions
         mock_position = MagicMock()
         mock_position.ticker = "TEST"
-        trading_engine.position_manager.get_all_positions = AsyncMock(return_value=[mock_position])
+        trading_engine.position_manager.get_all_positions = Mock(
+            return_value=[mock_position]
+        )
 
         # Mock triggered stop
         trading_engine.position_manager.check_stop_losses = AsyncMock(
@@ -480,6 +523,7 @@ class TestUpdatePositions:
 
         # Mock metrics
         from catalyst_bot.portfolio.position_manager import PortfolioMetrics
+
         metrics = PortfolioMetrics(
             total_positions=0,
             long_positions=0,
@@ -489,7 +533,9 @@ class TestUpdatePositions:
             total_unrealized_pnl=Decimal("0"),
             total_unrealized_pnl_pct=Decimal("0"),
         )
-        trading_engine.position_manager.calculate_portfolio_metrics = Mock(return_value=metrics)
+        trading_engine.position_manager.calculate_portfolio_metrics = Mock(
+            return_value=metrics
+        )
 
         result = await trading_engine.update_positions()
 
@@ -503,7 +549,9 @@ class TestUpdatePositions:
         # Mock open positions
         mock_position = MagicMock()
         mock_position.ticker = "TEST"
-        trading_engine.position_manager.get_all_positions = AsyncMock(return_value=[mock_position])
+        trading_engine.position_manager.get_all_positions = Mock(
+            return_value=[mock_position]
+        )
 
         # Mock triggered take-profit
         trading_engine.position_manager.check_take_profits = AsyncMock(
@@ -519,6 +567,7 @@ class TestUpdatePositions:
 
         # Mock metrics
         from catalyst_bot.portfolio.position_manager import PortfolioMetrics
+
         metrics = PortfolioMetrics(
             total_positions=0,
             long_positions=0,
@@ -528,7 +577,9 @@ class TestUpdatePositions:
             total_unrealized_pnl=Decimal("0"),
             total_unrealized_pnl_pct=Decimal("0"),
         )
-        trading_engine.position_manager.calculate_portfolio_metrics = Mock(return_value=metrics)
+        trading_engine.position_manager.calculate_portfolio_metrics = Mock(
+            return_value=metrics
+        )
 
         result = await trading_engine.update_positions()
 
@@ -539,6 +590,7 @@ class TestUpdatePositions:
 # ============================================================================
 # Market Data Integration Tests
 # ============================================================================
+
 
 class TestMarketDataIntegration:
     """Test market data feed integration."""
@@ -590,6 +642,7 @@ class TestMarketDataIntegration:
 # Utility Tests
 # ============================================================================
 
+
 class TestUtilities:
     """Test utility methods."""
 
@@ -607,7 +660,9 @@ class TestUtilities:
             total_unrealized_pnl=Decimal("500.00"),
             total_unrealized_pnl_pct=Decimal("0.05"),
         )
-        trading_engine.position_manager.calculate_portfolio_metrics = Mock(return_value=metrics)
+        trading_engine.position_manager.calculate_portfolio_metrics = Mock(
+            return_value=metrics
+        )
 
         result = await trading_engine.get_portfolio_metrics()
 
@@ -630,6 +685,7 @@ class TestUtilities:
 # ============================================================================
 # Error Handling Tests
 # ============================================================================
+
 
 class TestErrorHandling:
     """Test error handling."""
@@ -663,7 +719,9 @@ class TestErrorHandling:
         """Test update_positions handles price fetch errors gracefully."""
         mock_position = MagicMock()
         mock_position.ticker = "TEST"
-        trading_engine.position_manager.get_all_positions = AsyncMock(return_value=[mock_position])
+        trading_engine.position_manager.get_all_positions = Mock(
+            return_value=[mock_position]
+        )
 
         trading_engine.market_data_feed.get_current_prices = AsyncMock(
             side_effect=Exception("Price fetch failed")

@@ -1597,6 +1597,60 @@ class Settings:
         }
     )
 
+    # =========================================================================
+    # MOA Feedback Loop Integration
+    # =========================================================================
+    # Enable integration of feedback loop keyword performance multipliers into
+    # SignalGenerator confidence calculations. When enabled, keywords with strong
+    # historical performance receive confidence boosts; weak keywords are penalized.
+    feature_feedback_signal_integration: bool = _b(
+        "FEATURE_FEEDBACK_SIGNAL_INTEGRATION", False
+    )
+
+    # Multiplier bounds (conservative to prevent over/under-confidence)
+    feedback_multiplier_min: float = float(
+        os.getenv("FEEDBACK_MULTIPLIER_MIN", "0.8") or "0.8"
+    )
+    feedback_multiplier_max: float = float(
+        os.getenv("FEEDBACK_MULTIPLIER_MAX", "1.2") or "1.2"
+    )
+
+    # Cache TTL in minutes for keyword multipliers (reduces DB load)
+    feedback_cache_ttl_minutes: int = int(
+        os.getenv("FEEDBACK_CACHE_TTL_MINUTES", "60") or "60"
+    )
+
+    # Minimum sample size before applying multipliers (statistical confidence)
+    feedback_min_sample_size: int = int(
+        os.getenv("FEEDBACK_MIN_SAMPLE_SIZE", "10") or "10"
+    )
+
+    # =========================================================================
+    # Adaptive Limit Pricing (Extended Hours)
+    # =========================================================================
+    # Enable adaptive limit order pricing for extended hours based on price tier.
+    # Lower-priced stocks use wider spreads to account for increased volatility.
+    feature_adaptive_pricing: bool = _b("FEATURE_ADAPTIVE_PRICING", False)
+
+    # Price tier markup percentages (as decimal, e.g., 0.07 = 7%)
+    adaptive_pricing_tier_sub1: float = float(
+        os.getenv("ADAPTIVE_PRICING_TIER_SUB1", "0.07") or "0.07"
+    )  # <$1: 7%
+    adaptive_pricing_tier_1to2: float = float(
+        os.getenv("ADAPTIVE_PRICING_TIER_1TO2", "0.055") or "0.055"
+    )  # $1-2: 5.5%
+    adaptive_pricing_tier_2to5: float = float(
+        os.getenv("ADAPTIVE_PRICING_TIER_2TO5", "0.04") or "0.04"
+    )  # $2-5: 4%
+    adaptive_pricing_tier_5to10: float = float(
+        os.getenv("ADAPTIVE_PRICING_TIER_5TO10", "0.025") or "0.025"
+    )  # $5-10: 2.5%
+
+    # Extended hours additional multiplier (applied on top of tier spread)
+    adaptive_pricing_extended_multiplier: float = float(
+        os.getenv("ADAPTIVE_PRICING_EXTENDED_MULT", "1.5") or "1.5"
+    )
+
     # Per-source weight map (lowercase hosts) — used by classify()
     rss_sources: Dict[str, float] = field(
         default_factory=lambda: {

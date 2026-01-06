@@ -488,6 +488,79 @@ class OrderExecutor:
             self.logger.error(f"Failed to round price {price}: {e}")
             raise ValueError(f"Invalid price value: {price}") from e
 
+    def _calculate_adaptive_limit_price(
+        self,
+        base_price: Optional[Decimal],
+        action: str,
+        extended_hours: bool = False,
+    ) -> Optional[Decimal]:
+        """
+        Calculate adaptive limit price based on price tier and market session.
+
+        Price tiers for extended hours (higher volatility = wider spread):
+        - Sub-$1: 7% spread (highest volatility)
+        - $1-2: 5.5% spread
+        - $2-5: 4% spread
+        - $5-10: 2.5% spread (lowest volatility)
+
+        Extended hours applies additional 1.5x multiplier to base spread.
+
+        Args:
+            base_price: Current market price
+            action: "buy" or "sell"
+            extended_hours: Whether this is an extended hours order
+
+        Returns:
+            Limit price adjusted for tier and session, or None if base_price is None
+        """
+        if base_price is None:
+            return None
+
+        settings = get_settings()
+
+        # Feature disabled or regular hours: use base price (market orders preferred)
+        if not settings.feature_adaptive_pricing:
+            return self._round_price_for_alpaca(base_price)
+
+        # For regular hours, return base price (market orders handle this better)
+        if not extended_hours:
+            return self._round_price_for_alpaca(base_price)
+
+        # Determine price tier
+        price_float = float(base_price)
+
+        if price_float < 1.0:
+            tier_spread = settings.adaptive_pricing_tier_sub1  # 7%
+        elif price_float < 2.0:
+            tier_spread = settings.adaptive_pricing_tier_1to2  # 5.5%
+        elif price_float < 5.0:
+            tier_spread = settings.adaptive_pricing_tier_2to5  # 4%
+        else:
+            tier_spread = settings.adaptive_pricing_tier_5to10  # 2.5%
+
+        # Apply extended hours multiplier
+        adjusted_spread = tier_spread * settings.adaptive_pricing_extended_multiplier
+
+        # Calculate limit price based on action
+        if action.lower() == "buy":
+            # For buys, limit price is ABOVE market (willing to pay more)
+            limit_price = base_price * Decimal(str(1 + adjusted_spread))
+        else:  # sell
+            # For sells, limit price is BELOW market (willing to accept less)
+            limit_price = base_price * Decimal(str(1 - adjusted_spread))
+
+        # Round to Alpaca's pricing rules
+        rounded = self._round_price_for_alpaca(limit_price)
+
+        self.logger.debug(
+            f"adaptive_limit_price_calculated base=${price_float:.4f} "
+            f"tier_spread={tier_spread:.1%} "
+            f"extended_mult={settings.adaptive_pricing_extended_multiplier:.1f}x "
+            f"final_spread={adjusted_spread:.1%} limit=${float(rounded):.4f}"
+        )
+
+        return rounded
+
     async def execute_signal(
         self,
         signal: TradingSignal,
@@ -635,9 +708,14 @@ class OrderExecutor:
             if extended_hours:
                 order_type = OrderType.LIMIT
                 time_in_force = TimeInForce.DAY
-                # Use current price as limit for extended hours limit order
+                # Calculate adaptive limit price for extended hours
+                # (applies price tier markup for better fill rates)
                 raw_price = signal.current_price or signal.entry_price
-                limit_price = self._round_price_for_alpaca(raw_price)
+                limit_price = self._calculate_adaptive_limit_price(
+                    raw_price,
+                    signal.action,
+                    extended_hours=True,
+                )
             else:
                 order_type = OrderType.MARKET
                 time_in_force = TimeInForce.DAY

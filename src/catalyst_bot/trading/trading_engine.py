@@ -646,13 +646,36 @@ class TradingEngine:
                 )
                 return None
 
-            # Open position in PositionManager
+            # Adjust stop/take profit for actual fill price (handle slippage)
+            fill_price = filled_order.filled_avg_price
+            signal_price = signal.current_price
+            adjusted_stop = signal.stop_loss_price
+            adjusted_take = signal.take_profit_price
+
+            if fill_price and signal_price and signal.stop_loss_price:
+                # Calculate price ratio to adjust levels proportionally
+                price_ratio = fill_price / signal_price
+                adjusted_stop = signal.stop_loss_price * price_ratio
+                if signal.take_profit_price:
+                    adjusted_take = signal.take_profit_price * price_ratio
+
+                # Log adjustment for debugging
+                slippage_pct = abs(fill_price - signal_price) / signal_price * 100
+                if slippage_pct > 0.1:  # Only log if slippage > 0.1%
+                    self.logger.debug(
+                        f"Adjusted risk levels for {signal.ticker}: "
+                        f"slippage={slippage_pct:.2f}%, "
+                        f"stop ${signal.stop_loss_price:.2f}->${adjusted_stop:.2f}, "
+                        f"take ${signal.take_profit_price:.2f}->${adjusted_take:.2f}"
+                    )
+
+            # Open position in PositionManager with adjusted levels
             position = await self.position_manager.open_position(
                 order=filled_order,
                 signal_id=signal.signal_id,
                 strategy="catalyst_keyword_v1",
-                stop_loss_price=signal.stop_loss_price,
-                take_profit_price=signal.take_profit_price,
+                stop_loss_price=adjusted_stop,
+                take_profit_price=adjusted_take,
             )
 
             return position

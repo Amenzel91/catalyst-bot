@@ -63,23 +63,18 @@ Database Schema:
 """
 
 import json
-import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-from ..broker.broker_interface import (
-    BrokerInterface,
-    Order,
-    Position as BrokerPosition,
-    PositionSide,
-)
+from ..broker.broker_interface import BrokerInterface, Order, PositionSide
 from ..config import get_settings
 from ..logging_utils import get_logger
+from ..time_utils import now as sim_now
 
 logger = get_logger(__name__)
 
@@ -118,8 +113,8 @@ class ManagedPosition:
     take_profit_price: Optional[Decimal] = None
 
     # Timestamps
-    opened_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
+    opened_at: datetime = field(default_factory=sim_now)
+    updated_at: datetime = field(default_factory=sim_now)
 
     # Tracking
     entry_order_id: Optional[str] = None
@@ -151,7 +146,7 @@ class ManagedPosition:
 
     def get_hold_duration(self) -> timedelta:
         """Get how long position has been held"""
-        return datetime.now() - self.opened_at
+        return sim_now() - self.opened_at
 
     def calculate_risk_reward_ratio(self) -> Optional[float]:
         """Calculate risk/reward ratio"""
@@ -310,7 +305,8 @@ class PositionManager:
 
             with sqlite3.connect(self.db_path) as conn:
                 # Create positions table
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS positions (
                         position_id TEXT PRIMARY KEY,
                         ticker TEXT NOT NULL,
@@ -331,10 +327,12 @@ class PositionManager:
                         strategy TEXT,
                         metadata JSON
                     )
-                """)
+                """
+                )
 
                 # Create closed_positions table
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS closed_positions (
                         position_id TEXT PRIMARY KEY,
                         ticker TEXT NOT NULL,
@@ -355,29 +353,40 @@ class PositionManager:
                         strategy TEXT,
                         metadata JSON
                     )
-                """)
+                """
+                )
 
                 # Create indexes
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_positions_ticker
                     ON positions(ticker)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_positions_opened_at
                     ON positions(opened_at)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_closed_positions_ticker
                     ON closed_positions(ticker)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_closed_positions_closed_at
                     ON closed_positions(closed_at)
-                """)
-                conn.execute("""
+                """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_closed_positions_strategy
                     ON closed_positions(strategy)
-                """)
+                """
+                )
 
                 conn.commit()
                 self.logger.info("Database initialized successfully")
@@ -418,8 +427,16 @@ class PositionManager:
                         float(position.market_value),
                         float(position.unrealized_pnl),
                         float(position.unrealized_pnl_pct),
-                        float(position.stop_loss_price) if position.stop_loss_price else None,
-                        float(position.take_profit_price) if position.take_profit_price else None,
+                        (
+                            float(position.stop_loss_price)
+                            if position.stop_loss_price
+                            else None
+                        ),
+                        (
+                            float(position.take_profit_price)
+                            if position.take_profit_price
+                            else None
+                        ),
                         position.opened_at.isoformat(),
                         position.updated_at.isoformat(),
                         position.entry_order_id,
@@ -500,7 +517,9 @@ class PositionManager:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute("DELETE FROM positions WHERE position_id = ?", (position_id,))
+                conn.execute(
+                    "DELETE FROM positions WHERE position_id = ?", (position_id,)
+                )
                 conn.commit()
                 self.logger.debug(f"Deleted position {position_id} from database")
 
@@ -557,8 +576,8 @@ class PositionManager:
             unrealized_pnl_pct=Decimal("0"),
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
-            opened_at=order.filled_at or datetime.now(),
-            updated_at=datetime.now(),
+            opened_at=order.filled_at or sim_now(),
+            updated_at=sim_now(),
             entry_order_id=order.order_id,
             signal_id=signal_id,
             strategy=strategy,
@@ -624,7 +643,9 @@ class PositionManager:
         else:  # SHORT
             realized_pnl = (position.entry_price - exit_price) * position.quantity
 
-        realized_pnl_pct = realized_pnl / position.cost_basis if position.cost_basis else Decimal("0")
+        realized_pnl_pct = (
+            realized_pnl / position.cost_basis if position.cost_basis else Decimal("0")
+        )
 
         # Create closed position
         closed = ClosedPosition(
@@ -638,8 +659,8 @@ class PositionManager:
             realized_pnl=realized_pnl,
             realized_pnl_pct=realized_pnl_pct,
             opened_at=position.opened_at,
-            closed_at=datetime.now(),
-            hold_duration_seconds=int((datetime.now() - position.opened_at).total_seconds()),
+            closed_at=sim_now(),
+            hold_duration_seconds=int((sim_now() - position.opened_at).total_seconds()),
             exit_reason=exit_reason,
             exit_order_id=exit_order_id,
             entry_order_id=position.entry_order_id,
@@ -702,9 +723,13 @@ class PositionManager:
             position.market_value = current_price * position.quantity
 
             if position.side == PositionSide.LONG:
-                position.unrealized_pnl = (current_price - position.entry_price) * position.quantity
+                position.unrealized_pnl = (
+                    current_price - position.entry_price
+                ) * position.quantity
             else:  # SHORT
-                position.unrealized_pnl = (position.entry_price - current_price) * position.quantity
+                position.unrealized_pnl = (
+                    position.entry_price - current_price
+                ) * position.quantity
 
             position.unrealized_pnl_pct = (
                 position.unrealized_pnl / position.cost_basis
@@ -712,7 +737,7 @@ class PositionManager:
                 else Decimal("0")
             )
 
-            position.updated_at = datetime.now()
+            position.updated_at = sim_now()
 
             # Save to database
             self._save_position_to_db(position)
@@ -744,9 +769,7 @@ class PositionManager:
                 if price:
                     prices[position.ticker] = price
             except Exception as e:
-                self.logger.warning(
-                    f"Failed to fetch price for {position.ticker}: {e}"
-                )
+                self.logger.warning(f"Failed to fetch price for {position.ticker}: {e}")
 
         return prices
 
@@ -840,10 +863,7 @@ class PositionManager:
 
     def get_positions_by_strategy(self, strategy: str) -> List[ManagedPosition]:
         """Get all positions for a specific strategy"""
-        return [
-            p for p in self._positions.values()
-            if p.strategy == strategy
-        ]
+        return [p for p in self._positions.values() if p.strategy == strategy]
 
     # ========================================================================
     # Portfolio Metrics
@@ -903,7 +923,9 @@ class PositionManager:
         positions_at_take_profit = sum(1 for p in positions if p.should_take_profit())
 
         # Average position size
-        avg_position_size = total_exposure / total_positions if total_positions else Decimal("0")
+        avg_position_size = (
+            total_exposure / total_positions if total_positions else Decimal("0")
+        )
 
         return PortfolioMetrics(
             total_positions=total_positions,
@@ -967,7 +989,7 @@ class PositionManager:
                 params.append(limit)
 
                 cursor = conn.execute(query, params)
-                rows = cursor.fetchall()
+                cursor.fetchall()
 
                 # TODO: Parse rows into ClosedPosition objects
                 # This requires mapping column indices to fields
@@ -1070,7 +1092,7 @@ if __name__ == "__main__":
             filled_quantity=10,
             filled_avg_price=Decimal("150.00"),
             status=OrderStatus.FILLED,
-            filled_at=datetime.now(),
+            filled_at=sim_now(),
         )
 
         # Open position
@@ -1082,7 +1104,7 @@ if __name__ == "__main__":
             take_profit_price=Decimal("160.00"),
         )
 
-        print(f"\nOpened Position:")
+        print("\nOpened Position:")
         print(f"  Ticker: {position.ticker}")
         print(f"  Quantity: {position.quantity}")
         print(f"  Entry Price: ${position.entry_price}")
@@ -1091,14 +1113,16 @@ if __name__ == "__main__":
         print(f"  Take Profit: ${position.take_profit_price}")
 
         # Update prices
-        await manager.update_position_prices({
-            "AAPL": Decimal("155.00"),
-        })
+        await manager.update_position_prices(
+            {
+                "AAPL": Decimal("155.00"),
+            }
+        )
 
         # Get updated position
         updated_position = manager.get_position(position.position_id)
         if updated_position:
-            print(f"\nUpdated Position:")
+            print("\nUpdated Position:")
             print(f"  Current Price: ${updated_position.current_price}")
             print(f"  Market Value: ${updated_position.market_value}")
             print(f"  Unrealized P&L: ${updated_position.unrealized_pnl:.2f}")
@@ -1107,14 +1131,14 @@ if __name__ == "__main__":
         # Check stop losses
         stop_losses = await manager.check_stop_losses()
         take_profits = await manager.check_take_profits()
-        print(f"\nRisk Checks:")
+        print("\nRisk Checks:")
         print(f"  Stop Losses Hit: {len(stop_losses)}")
         print(f"  Take Profits Hit: {len(take_profits)}")
 
         # Get portfolio metrics
         account = await broker.get_account()
         metrics = manager.calculate_portfolio_metrics(account_value=account.equity)
-        print(f"\nPortfolio Metrics:")
+        print("\nPortfolio Metrics:")
         print(f"  Total Positions: {metrics.total_positions}")
         print(f"  Total Exposure: ${metrics.total_exposure}")
         print(f"  Total Unrealized P&L: ${metrics.total_unrealized_pnl:.2f}")
@@ -1126,7 +1150,7 @@ if __name__ == "__main__":
         )
 
         if closed:
-            print(f"\nClosed Position:")
+            print("\nClosed Position:")
             print(f"  Exit Price: ${closed.exit_price}")
             print(f"  Realized P&L: ${closed.realized_pnl:.2f}")
             print(f"  Realized P&L %: {closed.realized_pnl_pct*100:.2f}%")
@@ -1134,7 +1158,7 @@ if __name__ == "__main__":
 
         # Get performance stats
         stats = manager.get_performance_stats(days=30)
-        print(f"\nPerformance Stats (30 days):")
+        print("\nPerformance Stats (30 days):")
         print(f"  Total Trades: {stats.get('total_trades', 0)}")
         print(f"  Win Rate: {stats.get('win_rate', 0)*100:.1f}%")
         print(f"  Total P&L: ${stats.get('total_pnl', 0):.2f}")

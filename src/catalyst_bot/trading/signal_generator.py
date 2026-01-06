@@ -186,6 +186,9 @@ class SignalGenerator:
             float(self.settings.__dict__.get("DEFAULT_TAKE_PROFIT_PCT", 10.0)),
         )
 
+        # Lazy-loaded keyword performance provider for feedback loop integration
+        self._keyword_performance_provider = None
+
         log.info(
             "signal_generator_initialized min_confidence=%.2f min_score=%.2f "
             "base_position_pct=%.2f max_position_pct=%.2f",
@@ -194,6 +197,15 @@ class SignalGenerator:
             self.base_position_pct,
             self.max_position_pct,
         )
+
+    @property
+    def keyword_performance_provider(self):
+        """Lazy-load keyword performance provider."""
+        if self._keyword_performance_provider is None:
+            from .keyword_performance import KeywordPerformanceProvider
+
+            self._keyword_performance_provider = KeywordPerformanceProvider()
+        return self._keyword_performance_provider
 
     def generate_signal(
         self,
@@ -530,6 +542,34 @@ class SignalGenerator:
             confidence = base_confidence * 1.2
         else:
             confidence = base_confidence
+
+        # Apply feedback loop multiplier (if feature enabled)
+        if keyword_config and action in ("buy", "sell"):
+            # Get the keyword name from the config's action field
+            # Look up performance multiplier for this keyword category
+            keyword_name = None
+            for kw, cfg in BUY_KEYWORDS.items():
+                if cfg is keyword_config:
+                    keyword_name = kw
+                    break
+            # Note: AVOID_KEYWORDS is a List[str] without KeywordConfig,
+            # so feedback multipliers only apply to BUY_KEYWORDS
+
+            if keyword_name:
+                multiplier = self.keyword_performance_provider.get_multiplier(
+                    keyword_name
+                )
+                if multiplier != 1.0:
+                    original_conf = confidence
+                    confidence *= multiplier
+                    log.debug(
+                        "feedback_multiplier_applied keyword=%s original=%.3f "
+                        "multiplier=%.2f adjusted=%.3f",
+                        keyword_name,
+                        original_conf,
+                        multiplier,
+                        confidence,
+                    )
 
         # Clamp to valid range
         confidence = max(0.0, min(1.0, confidence))
