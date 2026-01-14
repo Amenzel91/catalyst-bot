@@ -99,6 +99,92 @@ BUY_KEYWORDS: Dict[str, KeywordConfig] = {
     ),
 }
 
+# EXTENDED BUY KEYWORDS - Controlled by FEATURE_EXTENDED_KEYWORDS flag
+# These are additional keyword categories that generate trading signals
+# when the feature flag is enabled. See KW-1 in implementation plan.
+EXTENDED_BUY_KEYWORDS: Dict[str, KeywordConfig] = {
+    "earnings": KeywordConfig(
+        action="buy",
+        base_confidence=0.82,
+        size_multiplier=1.3,
+        stop_loss_pct=5.0,
+        take_profit_pct=10.0,
+        rationale="Positive earnings surprise = momentum catalyst",
+    ),
+    "guidance": KeywordConfig(
+        action="buy",
+        base_confidence=0.80,
+        size_multiplier=1.2,
+        stop_loss_pct=5.5,
+        take_profit_pct=9.0,
+        rationale="Raised guidance = forward-looking bullish signal",
+    ),
+    "energy_discovery": KeywordConfig(
+        action="buy",
+        base_confidence=0.85,
+        size_multiplier=1.5,
+        stop_loss_pct=6.0,
+        take_profit_pct=15.0,
+        rationale="Oil/gas discovery = significant asset value increase",
+    ),
+    "advanced_therapies": KeywordConfig(
+        action="buy",
+        base_confidence=0.86,
+        size_multiplier=1.4,
+        stop_loss_pct=6.0,
+        take_profit_pct=12.0,
+        rationale="Gene/cell therapy progress = biotech moonshot",
+    ),
+    "tech_contracts": KeywordConfig(
+        action="buy",
+        base_confidence=0.83,
+        size_multiplier=1.3,
+        stop_loss_pct=5.0,
+        take_profit_pct=10.0,
+        rationale="Government/enterprise contract = revenue catalyst",
+    ),
+    "ai_quantum": KeywordConfig(
+        action="buy",
+        base_confidence=0.84,
+        size_multiplier=1.4,
+        stop_loss_pct=5.5,
+        take_profit_pct=12.0,
+        rationale="AI/quantum partnership = high-growth sector exposure",
+    ),
+    "crypto_blockchain": KeywordConfig(
+        action="buy",
+        base_confidence=0.78,
+        size_multiplier=1.2,
+        stop_loss_pct=7.0,
+        take_profit_pct=15.0,
+        rationale="Crypto/blockchain adoption = speculative momentum",
+    ),
+    "mining_resources": KeywordConfig(
+        action="buy",
+        base_confidence=0.82,
+        size_multiplier=1.3,
+        stop_loss_pct=6.0,
+        take_profit_pct=12.0,
+        rationale="Mineral discovery/feasibility = asset value catalyst",
+    ),
+    "compliance": KeywordConfig(
+        action="buy",
+        base_confidence=0.80,
+        size_multiplier=1.2,
+        stop_loss_pct=5.0,
+        take_profit_pct=8.0,
+        rationale="Compliance regained = delisting fear removed",
+    ),
+    "activist_institutional": KeywordConfig(
+        action="buy",
+        base_confidence=0.81,
+        size_multiplier=1.3,
+        stop_loss_pct=5.0,
+        take_profit_pct=10.0,
+        rationale="Activist/institutional interest = potential catalyst",
+    ),
+}
+
 # AVOID KEYWORDS - Wait for better entry or skip trade
 AVOID_KEYWORDS: List[str] = [
     "offering",
@@ -206,6 +292,27 @@ class SignalGenerator:
 
             self._keyword_performance_provider = KeywordPerformanceProvider()
         return self._keyword_performance_provider
+
+    def _get_active_buy_keywords(self) -> Dict[str, KeywordConfig]:
+        """
+        Get active BUY keywords based on feature flag.
+
+        Returns:
+            Dict mapping keyword name to KeywordConfig.
+            Includes extended keywords if FEATURE_EXTENDED_KEYWORDS is enabled.
+        """
+        # Start with core keywords (always active)
+        active = dict(BUY_KEYWORDS)
+
+        # Add extended keywords if feature flag is enabled
+        if getattr(self.settings, "feature_extended_keywords", False):
+            active.update(EXTENDED_BUY_KEYWORDS)
+            log.debug(
+                "extended_keywords_enabled count=%d",
+                len(EXTENDED_BUY_KEYWORDS),
+            )
+
+        return active
 
     def generate_signal(
         self,
@@ -472,14 +579,15 @@ class SignalGenerator:
             if keyword.lower() in AVOID_KEYWORDS:
                 return ("avoid", None)
 
-        # Find strongest BUY keyword
+        # Find strongest BUY keyword (uses feature flag for extended keywords)
         strongest_config = None
         strongest_score = 0.0
+        active_buy_keywords = self._get_active_buy_keywords()
 
         for keyword, weight in keywords.items():
             keyword_lower = keyword.lower()
-            if keyword_lower in BUY_KEYWORDS:
-                config = BUY_KEYWORDS[keyword_lower]
+            if keyword_lower in active_buy_keywords:
+                config = active_buy_keywords[keyword_lower]
                 # Calculate combined score: keyword weight * base confidence
                 combined_score = weight * config.base_confidence
 
@@ -548,7 +656,8 @@ class SignalGenerator:
             # Get the keyword name from the config's action field
             # Look up performance multiplier for this keyword category
             keyword_name = None
-            for kw, cfg in BUY_KEYWORDS.items():
+            active_buy_keywords = self._get_active_buy_keywords()
+            for kw, cfg in active_buy_keywords.items():
                 if cfg is keyword_config:
                     keyword_name = kw
                     break
