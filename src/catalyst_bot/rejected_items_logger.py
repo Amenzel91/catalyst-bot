@@ -9,16 +9,20 @@ Only logs items within price range ($0.10-$10) to avoid massive files.
 CRITICAL FIX: Added deduplication based on (ticker, rejection_ts) tuple to prevent
 duplicate logging of the same rejection event. Uses a bounded LRU cache for memory efficiency.
 
+MOA Phase 2 (Jan 2026): Added integration with MOA real-time outcome tracking database.
+Rejected items are now also recorded to the SQLite database for incremental price tracking.
+
 Author: Claude Code (MOA Phase 1)
 Date: 2025-10-10
 Updated: 2025-10-16 (Added deduplication)
+Updated: 2026-01-06 (Added MOA outcome tracking integration)
 """
 
 import json
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Price range filter: only log items within this range
 PRICE_FLOOR = 0.10
@@ -208,6 +212,30 @@ def log_rejected_item(
             f.write(json.dumps(rejected_item, ensure_ascii=False) + "\n")
     except Exception:
         # Silently fail - don't crash the bot if logging fails
+        pass
+
+    # MOA Phase 2: Record rejection to SQLite database for real-time outcome tracking
+    # This enables the MOA system to track price movements of rejected items
+    try:
+        from .moa.rejection_recorder import record_rejection_simple
+
+        # Extract keywords as list from the cls_data
+        kw_list: List[str] = cls_data.get("keywords", [])
+
+        record_rejection_simple(
+            ticker=ticker,
+            reason=rejection_reason,
+            score=score or 0.0,
+            price=price or 0.0,
+            keywords=kw_list,
+            source=item.get("source", "unknown"),
+            headline=item.get("title", ""),
+        )
+    except ImportError:
+        # MOA module not available - silently skip
+        pass
+    except Exception:
+        # Don't crash on MOA recording errors
         pass
 
 

@@ -398,6 +398,29 @@ class Settings:
     # Defaults to True (enabled).
     feature_insider_sentiment: bool = _b("FEATURE_INSIDER_SENTIMENT", True)
 
+    # --- Manual Capture Feature (MOA Enhancement, Jan 2026) ---
+    # When enabled, starts a Discord listener that monitors a dedicated channel
+    # for user-submitted screenshots of missed stock opportunities. Users can
+    # upload article screenshots and chart screenshots, and the bot will use
+    # Gemini vision to extract catalyst data (headlines, keywords, patterns,
+    # price levels) and store it in the MOA database for learning.
+    #
+    # Required config:
+    # - DISCORD_BOT_TOKEN: Bot token with MESSAGE_CONTENT intent
+    # - MANUAL_CAPTURE_CHANNEL_ID: Channel ID to monitor for submissions
+    #
+    # User workflow:
+    # 1. Post in #missed-opportunities with article screenshot + $TICKER
+    # 2. Optionally include chart screenshots (5min + daily recommended)
+    # 3. Bot reacts with checkmark and posts summary of extracted data
+    # Defaults to false (disabled).
+    feature_manual_capture: bool = _b("FEATURE_MANUAL_CAPTURE", False)
+
+    # Discord channel ID for manual capture submissions. Users post screenshots
+    # of missed opportunities here, and the bot processes them automatically.
+    # Get the channel ID by right-clicking the channel in Discord (Developer Mode).
+    manual_capture_channel_id: str = os.getenv("MANUAL_CAPTURE_CHANNEL_ID", "")
+
     # API keys for optional sentiment providers.  The Alpha Vantage key
     # (ALPHAVANTAGE_API_KEY) defined above is reused for the news sentiment
     # endpoint.  These additional keys are read here for completeness.
@@ -1081,6 +1104,21 @@ class Settings:
     # DISCORD_ADMIN_CHANNEL_ID. Set MOA_REVIEW_CHANNEL_ID to override.
     moa_review_channel_id: Optional[str] = os.getenv("MOA_REVIEW_CHANNEL_ID")
 
+    # --- MOA Real-Time Outcome Tracking ---
+    # Enable real-time tracking of rejected items and their price outcomes.
+    # When enabled, the bot records rejected items during classification and
+    # tracks their prices at 1h, 4h, 24h, and 7d intervals. This provides
+    # fresh data for MOA analysis instead of relying on stale historical data.
+    # Set FEATURE_MOA_OUTCOME_TRACKING=1 to enable. Defaults to enabled.
+    feature_moa_outcome_tracking: bool = _b("FEATURE_MOA_OUTCOME_TRACKING", True)
+
+    # Interval in minutes between outcome price tracking runs during the main
+    # loop. Lower values provide more timely updates but increase API calls.
+    # Defaults to 15 minutes. Set MOA_OUTCOME_TRACKING_INTERVAL_MIN to override.
+    moa_outcome_tracking_interval_min: int = int(
+        os.getenv("MOA_OUTCOME_TRACKING_INTERVAL_MIN", "15") or "15"
+    )
+
     # --- Market Regime Classification (VIX/SPY Analysis) ---
     # Enable market regime classification based on VIX and SPY trends.
     # When enabled, the bot will classify market conditions (BULL_MARKET,
@@ -1556,6 +1594,38 @@ class Settings:
                 "acquires rights",
                 "therapeutic program acquisition",
             ],
+            # EARNINGS - Positive earnings catalysts (Jan 2026)
+            "earnings": [
+                "earnings beat",
+                "earnings surprise",
+                "revenue beat",
+                "eps beat",
+                "quarterly results exceed",
+                "record revenue",
+                "record earnings",
+                "profit increase",
+                "margin expansion",
+                "strong quarter",
+                "beat expectations",
+                "beat estimates",
+                "above consensus",
+                "better than expected",
+            ],
+            # GUIDANCE - Positive forward guidance (Jan 2026)
+            "guidance": [
+                "raised guidance",
+                "raises guidance",
+                "guidance increase",
+                "outlook raised",
+                "forecast increased",
+                "upward revision",
+                "positive outlook",
+                "full year guidance raised",
+                "annual guidance raised",
+                "increased full-year guidance",
+                "raises full-year guidance",
+                "guidance above consensus",
+            ],
             # NEGATIVE CATALYST KEYWORDS (for exit signals)
             "offering_negative": [
                 "public offering",
@@ -1596,6 +1666,18 @@ class Settings:
             ],
         }
     )
+
+    # =========================================================================
+    # Extended Keywords for SignalGenerator
+    # =========================================================================
+    # Enable additional keyword categories for trading signals. When enabled,
+    # SignalGenerator will generate signals for: earnings, guidance, energy_discovery,
+    # advanced_therapies, tech_contracts, ai_quantum, crypto_blockchain,
+    # mining_resources, compliance, activist_institutional.
+    # These categories align with classifier keywords that previously weren't
+    # generating trading signals. Added Jan 2026 based on MOA analysis.
+    # Set FEATURE_EXTENDED_KEYWORDS=1 to enable. Defaults to OFF for safe rollout.
+    feature_extended_keywords: bool = _b("FEATURE_EXTENDED_KEYWORDS", False)
 
     # =========================================================================
     # MOA Feedback Loop Integration

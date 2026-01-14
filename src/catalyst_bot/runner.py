@@ -175,6 +175,9 @@ ERROR_TRACKER: List[Dict[str, Any]] = (
 # This is persisted to data/moa/last_scheduled_run.json to survive restarts
 _MOA_LAST_RUN_DATE: date | None = None
 
+# MOA Outcome Tracker: Track last update time to throttle periodic updates
+_MOA_OUTCOME_LAST_UPDATE: datetime | None = None
+
 
 def _load_moa_last_run_date() -> date | None:
     """
@@ -4244,6 +4247,25 @@ def _run_moa_nightly_if_scheduled(log, settings) -> None:
         try:
             log.info("moa_nightly_start")
 
+            # 0. Export fresh outcomes from real-time tracking database
+            # This ensures MOA analyzes current data, not stale historical data
+            try:
+                from .moa.outcome_tracker import export_outcomes_to_jsonl
+
+                exported_count = export_outcomes_to_jsonl(days=14)
+                if exported_count > 0:
+                    log.info(
+                        "moa_outcomes_exported count=%d",
+                        exported_count,
+                    )
+                else:
+                    log.debug("moa_no_outcomes_to_export")
+            except Exception as e:
+                log.warning(
+                    "moa_outcome_export_failed err=%s",
+                    e.__class__.__name__,
+                )
+
             # 1. Run MOA Historical Analyzer
             try:
                 from .moa_historical_analyzer import run_historical_moa_analysis
@@ -4528,6 +4550,34 @@ def runner_main(
         except Exception as e:
             log.warning("health_endpoint_failed err=%s", str(e))
 
+    # Manual Capture Listener (Jan 2026)
+    # Monitors a dedicated Discord channel for user-submitted missed opportunities
+    if getattr(settings, "feature_manual_capture", False):
+        try:
+            from .moa import start_manual_capture_listener
+
+            import asyncio
+
+            # Start the listener in the background
+            async def _start_capture():
+                return await start_manual_capture_listener()
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            started = loop.run_until_complete(_start_capture())
+            if started:
+                log.info("manual_capture_listener_started")
+            else:
+                log.warning("manual_capture_listener_not_started check_config")
+        except ImportError as ie:
+            log.warning("manual_capture_import_failed err=%s", str(ie))
+        except Exception as e:
+            log.error("manual_capture_startup_failed err=%s", str(e), exc_info=True)
+
     # WAVE 1.2: Initialize feedback loop database
     if FEEDBACK_AVAILABLE and getattr(settings, "feature_feedback_loop", False):
         try:
@@ -4750,6 +4800,40 @@ def runner_main(
                     log.info(f"moa_reviews_expired_and_applied count={expired_count}")
         except Exception as e:
             log.warning(f"moa_review_expiry_check_failed err={e}")
+
+        # Run MOA outcome tracking to update price outcomes for rejected items
+        # This runs periodically (default every 15 minutes) to track prices at
+        # 1h, 4h, 24h, 7d intervals after rejection
+        global _MOA_OUTCOME_LAST_UPDATE
+        try:
+            settings = get_settings()
+            if getattr(settings, "feature_moa_outcome_tracking", True):
+                interval_min = getattr(
+                    settings, "moa_outcome_tracking_interval_min", 15
+                )
+                now = datetime.now(timezone.utc)
+
+                # Check if enough time has passed since last update
+                should_update = (
+                    _MOA_OUTCOME_LAST_UPDATE is None
+                    or (now - _MOA_OUTCOME_LAST_UPDATE).total_seconds()
+                    >= interval_min * 60
+                )
+
+                if should_update:
+                    from .moa.outcome_tracker import update_outcome_prices
+
+                    updated, completed = update_outcome_prices(batch_size=50)
+                    _MOA_OUTCOME_LAST_UPDATE = now
+                    if updated > 0:
+                        log.info(
+                            "moa_outcome_tracking_cycle "
+                            "updated=%d completed=%d",
+                            updated,
+                            completed,
+                        )
+        except Exception as e:
+            log.warning("moa_outcome_tracking_failed err=%s", str(e))
 
         # Skip scanning during no-scan periods (configurable)
         if market_hours_enabled and current_market_info:
